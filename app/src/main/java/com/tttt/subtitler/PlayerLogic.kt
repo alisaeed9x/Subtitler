@@ -47,10 +47,21 @@ object PlayerLogic {
         val n = (w.size + thresh - 1) / thresh; val per = (w.size + n - 1) / n
         return w.chunked(per).map { it.joinToString(" ") }
     }
+    /** تقسيم الجملة عند علامات الترقيم (نقطة ؟ ! … فاصلة). الجزء اللي أقل من minWords كلمات بيتلزق في اللي جنبه. جملة بسطر جديد = جزء واحد */
+    fun splitPunct(text: String, minWords: Int = 2): List<String> {
+        if (text.contains('\n')) return listOf(text)
+        val raw = text.trim().split(Regex("(?<=[.!?؟…،,])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (raw.size <= 1) return listOf(text)
+        fun wc(x: String) = x.split(Regex("\\s+")).count { it.isNotEmpty() }
+        val out = ArrayList<String>(); var buf = ""
+        for (q in raw) { buf = if (buf.isEmpty()) q else "$buf $q"; if (wc(buf) >= minWords) { out.add(buf); buf = "" } }
+        if (buf.isNotEmpty()) { if (out.isEmpty()) out.add(buf) else out[out.lastIndex] = out.last() + " " + buf }
+        return if (out.isEmpty()) listOf(text) else out
+    }
     /** أي جزء يظهر دلوقتي: التوقيت موزّع على مدة الجملة بالتناسب مع عدد كلمات كل جزء (البداية والنهاية الأصليتين ما بيتغيروش) */
-    fun partIndex(startMs: Long, endMs: Long, t: Long, parts: List<String>): Int {
+    fun partIndex(startMs: Long, endMs: Long, t: Long, parts: List<String>, byChars: Boolean = false): Int {
         if (parts.size <= 1) return 0
-        val wc = parts.map { maxOf(1, it.trim().split(Regex("\\s+")).size) }; val total = wc.sum()
+        val wc = parts.map { if (byChars) maxOf(1, it.count { c -> !c.isWhitespace() }) else maxOf(1, it.trim().split(Regex("\\s+")).size) }; val total = wc.sum()
         val frac = ((t - startMs).toDouble() / (endMs - startMs).coerceAtLeast(1)).coerceIn(0.0, 0.9999)
         var acc = 0
         for (i in parts.indices) { acc += wc[i]; if (frac < acc.toDouble() / total) return i }

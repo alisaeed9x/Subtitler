@@ -28,6 +28,11 @@ fun main() {
     check("تداخل: أقصى 3 جمل", PlayerLogic.activeIndices(longArrayOf(0, 100, 200, 300), longArrayOf(5000, 5000, 5000, 5000), 1000, 0) == listOf(1, 2, 3))
     check("تداخل: مع إزاحة", PlayerLogic.activeIndices(s2, e2, 2500, 1000) == listOf(0, 1))
     check("تداخل: جملة طويلة بدأت بدري وجملة قصيرة خلصت", PlayerLogic.activeIndices(longArrayOf(0, 1000, 1200), longArrayOf(9000, 1500, 9000), 2000, 0).let { it == listOf(0, 2) })
+    val pp = PlayerLogic.splitPunct("يعني حبر فقعات. آلة الطباعة دي أكتر حاجة بتطبعها في الآخر هي العلامة المميزة.")
+    check("splitPunct: نقطة = جزئين", pp == listOf("يعني حبر فقعات.", "آلة الطباعة دي أكتر حاجة بتطبعها في الآخر هي العلامة المميزة."), pp.toString())
+    check("splitPunct: فاصلة + كلمة واحدة بتتلزق", PlayerLogic.splitPunct("أيوه، فاهم عليك يا صاحبي، بس استنى.") == listOf("أيوه، فاهم عليك يا صاحبي،", "بس استنى."))
+    check("splitPunct: رقم عشري وجملة من غير علامات وسطر جديد", PlayerLogic.splitPunct("سعره 3.5 جنيه بس") == listOf("سعره 3.5 جنيه بس") && PlayerLogic.splitPunct("a. b c.\nd e. f g.").size == 1)
+    check("partIndex بالحروف: الجزء الطويل ياخد وقت أطول", PlayerLogic.partIndex(0, 10000, 1000, listOf("أب", "أبجدهوزحطي"), true) == 0 && PlayerLogic.partIndex(0, 10000, 5000, listOf("أب", "أبجدهوزحطي"), true) == 1)
     check("ترتيب المتحدثين بالـ speaker_tag", PlayerLogic.orderSpeakers(listOf(sb(0.0, 1.0, "ب").copy(speakerTag = "2"), sb(0.0, 1.0, "أ").copy(speakerTag = "1"))).map { it.translated } == listOf("أ", "ب") && PlayerLogic.orderSpeakers(listOf(sb(0.0, 1.0, "ب"), sb(0.5, 1.0, "أ"))).map { it.translated } == listOf("ب", "أ"))
     check("combine: واحدة ترجع نفسها", sb(1.0, 2.0, "أ").let { PlayerLogic.combine(listOf(it)) === it } && PlayerLogic.combine(emptyList()) == null)
     val cb = PlayerLogic.combine(listOf(sb(0.0, 3.0, "أ"), sb(1.0, 2.5, "ب")))!!

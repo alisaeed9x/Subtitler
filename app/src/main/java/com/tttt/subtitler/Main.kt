@@ -314,6 +314,7 @@ class MainActivity : Activity() {
             sw("نص أبيض عادي بحجم ثابت (بدون ألوان الجنس والأسماء وكلمة التأكيد والتكبير التلقائي وتأثيرات الانفعال)", "sub_plain", true),
             sw("لون نص موحّد", "sub_uni_on", false),
             ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) },
+            sw("قسّم الجملة عند النقطة والفاصلة (كل جزء يظهر في وقته ويختفي)", "sub_punct", true),
             sw("تقسيم الجمل الطويلة لأجزاء بالتتابع (تقدير بعدد الكلمات — جيميناي بيقسّم عند الوقفات أصلًا)", "sub_split_on", false), slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, ""),
             sw("إخفاء الخلفية", "sub_nobg", false), slider("شفافية الخلفية", "sub_bgopa", 45, 0, 90, "%"), slider("نعومة حواف الخلفية (blur) — 0 = بدون", "sub_blur", 0, 0, 20, ""))
         val sec = ui.section("🎬 ستايل الترجمة", true, *body.toTypedArray())
@@ -797,9 +798,11 @@ class PlayerActivity : Activity(), Host {
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
                 var parts: List<String> = emptyList(); var part = 0
                 val ssn = sub.style
-                if (ccOn && gs.size == 1 && ssn.splitOn) {
-                    parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh)
-                    if (parts.size > 1) part = PlayerLogic.partIndex(starts[idx], ends[idx], cur - offsetMs, parts)
+                if (ccOn && gs.size == 1) {
+                    var byChars = false
+                    if (ssn.punctOn) { parts = PlayerLogic.splitPunct(gs[0].translated); byChars = true }
+                    if (parts.size <= 1 && ssn.splitOn) { parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh); byChars = false }
+                    if (parts.size > 1) part = PlayerLogic.partIndex(starts[idx], ends[idx], cur - offsetMs, parts, byChars)
                 }
                 val key = act.joinToString(",") + ":" + part
                 if (idx != curIdx || key != curKey) {

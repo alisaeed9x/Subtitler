@@ -30,6 +30,7 @@ fun main() {
     check("fontPx بيحترم الحدود والسكيل", SubStyle.fontPx(1080, 2f, 100) == 36f && SubStyle.fontPx(300, 2f, 200) == 52f)
     check("emotionKind", SubStyle.emotionKind("shouting") == "shout" && SubStyle.emotionKind("Whisper") == "whisper" && SubStyle.emotionKind("neutral") == "")
     check("الافتراضي: نص عادي + تقسيم العرض مقفول (جيميناي بيقسّم)", d.plain && !d.splitOn && SubStyle.load { _, def -> def }.let { it.plain && !it.splitOn })
+    check("قسّم عند الترقيم: شغّال افتراضيًا", d.punctOn && SubStyle.load { _, def -> def }.punctOn)
     check("ألوان المتحدثين: نفس الجنس = لونين مختلفين", SubStyle.lineColors(listOf(mk("male"), mk("male"))).let { it[0] != it[1] } && SubStyle.lineColors(listOf(mk("male"), mk("female"))) == listOf(SubStyle.MALE, SubStyle.FEMALE))
     check("plain: حجم ثابت ومن غير تمييز", d.sizeFor(1) == 1f && d.sizeFor(20) == 1f && d.highlights("أحمد", mk(ppl = listOf("أحمد"))).isEmpty())
     check("غير plain: تكبير تلقائي وألوان جنس شغالة", d.copy(plain = false).sizeFor(1) == 1.18f && d.copy(plain = false).colorFor(mk("female")) == SubStyle.FEMALE)
