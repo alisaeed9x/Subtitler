@@ -5,9 +5,9 @@ class Entrance(val id: String, val label: String)
 class FontOpt(val id: String, val label: String, val serif: Boolean = false, val file: String? = null, val weight: Int = 700)
 
 data class SubStyle(
-    val scale: Int = 100, val bgOpa: Int = 45, val noBg: Boolean = false, val blur: Int = 6, val animMs: Int = 250,
-    val anim: String = "default", val font: String = "Cairo", val plain: Boolean = false, val dual: Int = 0,
-    val uniOn: Boolean = false, val uniColor: String = "#FFFFFF", val splitOn: Boolean = false, val splitThresh: Int = 8,
+    val scale: Int = 100, val bgOpa: Int = 45, val noBg: Boolean = false, val blur: Int = 0, val animMs: Int = 250,
+    val anim: String = "default", val font: String = "Cairo", val plain: Boolean = true, val dual: Int = 0,
+    val uniOn: Boolean = false, val uniColor: String = "#FFFFFF", val splitOn: Boolean = true, val splitThresh: Int = 8,
     val fontStyle: String = "orig"
 ) {
     companion object {
@@ -31,9 +31,9 @@ data class SubStyle(
             fun i(k: String, d: Int, lo: Int, hi: Int) = (get(k, d.toString()).trim().toIntOrNull() ?: d).coerceIn(lo, hi)
             fun b(k: String, d: Boolean) = get(k, if (d) "1" else "0") == "1"
             val an = get("sub_anim", "default").let { a -> if (entrances.any { it.id == a }) a else "default" }
-            return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 90), b("sub_nobg", false), i("sub_blur", 6, 0, 20), i("sub_aspeed", 250, 50, 600),
-                an, get("sub_font", "Cairo"), b("sub_plain", false), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
-                get("sub_uni_color", "#FFFFFF"), b("sub_split_on", false), i("sub_split", 8, 3, 30),
+            return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 90), b("sub_nobg", false), i("sub_blur", 0, 0, 20), i("sub_aspeed", 250, 50, 600),
+                an, get("sub_font", "Cairo"), b("sub_plain", true), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
+                get("sub_uni_color", "#FFFFFF"), b("sub_split_on", true), i("sub_split", 8, 3, 30),
                 get("sub_fontstyle", "orig").let { if (it in fontStyles.map { f -> f.first }) it else "orig" })
         }
 
@@ -77,8 +77,11 @@ data class SubStyle(
         2 -> s.pivot
         else -> ""
     }
+    /** حجم النص الثابت في الوضع العادي (plain)، والتكبير/التصغير التلقائي في الباقي */
+    fun sizeFor(wordCount: Int): Float = if (plain) 1f else sizeMult(wordCount)
     fun mainText(s: Sub): String {
-        var t = if (splitOn) splitLong(s.translated, splitThresh) else s.translated
+        // تقسيم الجمل الطويلة بقى بالتتابع في PlayerLogic.splitParts/partIndex (مش سطور فوق بعض)
+        var t = s.translated
         if (s.isContinuation) t += " ⋯"
         return t
     }

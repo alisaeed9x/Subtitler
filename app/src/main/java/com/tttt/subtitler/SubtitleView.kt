@@ -35,7 +35,9 @@ class SubtitleView(ctx: Context) : View(ctx) {
         duration = 700; repeatCount = ValueAnimator.INFINITE
         addUpdateListener { emoT = it.animatedValue as Float; if (emoKind() != "") invalidate() }
     }
-    private fun emoKind() = sub?.let { SubStyle.emotionKind(it.emotion) } ?: ""
+    private fun emoKind() = if (style.plain) "" else (sub?.let { SubStyle.emotionKind(it.emotion) } ?: "")
+    /** متحدثين في نفس الوقت: كل سطر بلونه (ذكر/أنثى/موحّد) */
+    private var lines: List<Sub> = emptyList()
     // ===== blur حقيقي للي ورا الصندوق =====
     private val bdHandler = Handler(Looper.getMainLooper())
     private val bdPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -92,10 +94,10 @@ class SubtitleView(ctx: Context) : View(ctx) {
 
     private val PAD_H = 12 * d; private val PAD_T = 5 * d; private val PAD_B = 7 * d
 
-    fun show(s: Sub?) {
+    fun show(s: Sub?, group: List<Sub> = emptyList()) {
         val same = s === sub || (s != null && sub != null && s.start == sub!!.start && s.translated == sub!!.translated)
         if (same) return
-        sub = s
+        sub = s; lines = if (group.size > 1) group else emptyList()
         if (s == null) { main = null; sec = null; animator.cancel(); emoAnim.cancel(); visibility = INVISIBLE; startBackdrop(); return }
         visibility = VISIBLE; relayout(); startBackdrop()
         animator.cancel(); animator.duration = style.animMs.toLong()
@@ -124,9 +126,20 @@ class SubtitleView(ctx: Context) : View(ctx) {
         val s = sub ?: return
         val w = measuredWidth.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val avail = (w * 0.95f - 2 * PAD_H).toInt().coerceAtLeast(50)
-        val txt0 = style.mainText(s)
+        val multi = lines.size > 1
+        val ranges = ArrayList<IntRange>()
+        val txt0 = if (multi) {
+            val sb = StringBuilder()
+            lines.forEachIndexed { i, x ->
+                if (i > 0) sb.append('\n')
+                val st0 = sb.length
+                sb.append(PlayerLogic.arNum(i + 1)).append(") ").append(x.translated.ifBlank { x.original })
+                ranges.add(st0 until sb.length)
+            }
+            sb.toString()
+        } else style.mainText(s)
         val nWords = txt0.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
-        val px = SubStyle.fontPx(w, d, style.scale) * SubStyle.sizeMult(nWords)
+        val px = SubStyle.fontPx(w, d, style.scale) * style.sizeFor(nWords)
         val ss = style; val col = ss.colorFor(s)
         tp.apply { textSize = px; typeface = typefaceFor(); fontVariationSettings = "'wght' ${ss.weight()}"; color = col; letterSpacing = 0.02f; setShadowLayer(6f, 0f, 1f, 0xAA000000.toInt()) }
         tp2.apply { textSize = (px * 0.75f).coerceAtLeast(11 * d); typeface = Typeface.create("sans-serif", Typeface.NORMAL); color = 0xBBFFFFFF.toInt(); setShadowLayer(4f, 0f, 1f, 0xAA000000.toInt()) }
@@ -143,6 +156,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
                 i++
             }
         }
+        if (multi) ranges.forEachIndexed { i, r -> if (!r.isEmpty()) sp.setSpan(ForegroundColorSpan(ss.colorFor(lines[i])), r.first, r.last + 1, 0) }
         for ((a, b, place) in style.highlights(txt, s)) {
             if (place) sp.setSpan(ForegroundColorSpan(SubStyle.PLACE), a, b, 0)
             else { sp.setSpan(ForegroundColorSpan(SubStyle.WHITE), a, b, 0); sp.setSpan(StyleSpan(Typeface.BOLD), a, b, 0) }
@@ -185,7 +199,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
             "drop" -> { c.translate(0f, -(1 - p) * 36 * d); alpha = minOf(1f, p * 3) }
             "glow" -> tp.setShadowLayer(6f + 14f * (1f - p) + 4f * Math.sin(emoT * 6.28).toFloat().coerceAtLeast(0f), 0f, 0f, 0xFFFFFFFF.toInt())
         }
-        when (SubStyle.emotionKind(s.emotion)) {
+        when (emoKind()) {
             "shout" -> { val sh = Math.sin(emoT * 6.28 * 3).toFloat(); c.translate(sh * 1.5f * d, 0f); val k = 1.02f + 0.01f * sh; c.scale(k, k, pvx, pvy) }
             "surprise" -> if (p < 1f || emoT < 0.5f) { val k = 1f + 0.08f * (1 - emoT).coerceIn(0f, 1f); c.scale(k, k, pvx, pvy) }
             "cry" -> { c.translate(0f, Math.sin(emoT * 6.28).toFloat() * 1.5f * d); alpha *= 0.85f + 0.15f * (0.5f + 0.5f * Math.sin(emoT * 6.28).toFloat()) }

@@ -24,6 +24,7 @@ object Recents {
             .put("dur", r.durSec).put("subs", r.subs).put("cover", r.coverSec).put("ts", r.ts))
         return a.toString()
     }
+    fun remove(l: List<Recent>, id: String): List<Recent> = l.filter { it.id != id }
     /** نفس الفيديو بيتحدّث ويطلع فوق؛ والقايمة محدودة */
     fun upsert(l: List<Recent>, r: Recent, max: Int = 15): List<Recent> = (listOf(r) + l.filter { it.id != r.id }).take(max)
 

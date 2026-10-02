@@ -121,7 +121,9 @@ class FlowRow(ctx: Context) : ViewGroup(ctx) {
             if (c.visibility == GONE) continue
             val lp = c.layoutParams as MarginLayoutParams
             val hs = if (lp.height > 0) MeasureSpec.makeMeasureSpec(lp.height, MeasureSpec.EXACTLY) else MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-            c.measure(MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST), hs)
+            // العرض الثابت (lp.width > 0) لازم يتحترم — View عادي بـ AT_MOST بيتمدد لكل العرض ويكسر الصف
+            val ws = if (lp.width > 0) MeasureSpec.makeMeasureSpec(lp.width, MeasureSpec.EXACTLY) else MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST)
+            c.measure(ws, hs)
             val cw = c.measuredWidth + lp.leftMargin + lp.rightMargin
             val ch = c.measuredHeight + lp.topMargin + lp.bottomMargin
             if (x > 0 && x + cw > maxW) { y += rowH; x = 0; rowH = 0 }

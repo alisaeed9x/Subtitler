@@ -33,19 +33,8 @@ import android.view.ViewGroup
 import android.app.PictureInPictureParams
 import android.content.res.Configuration
 import android.os.Build
-import android.util.Rational
 
-/** اختيار ملف من أي مدير ملفات (MiXplorer وغيره): GET_CONTENT + OPEN_DOCUMENT كخيار إضافي في نفس الـ chooser */
-fun filePicker(mime: String, title: String, persist: Boolean): Intent {
-    val get = Intent(Intent.ACTION_GET_CONTENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = mime; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-    val open = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-        addCategory(Intent.CATEGORY_OPENABLE); type = mime
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or (if (persist) Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION else 0))
-    }
-    return Intent.createChooser(get, title).putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(open))
-}
-
-class MainActivity : Activity() {
+class LegacyMainActivity : Activity() {
     lateinit var link: EditText
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -53,11 +42,11 @@ class MainActivity : Activity() {
         val th = Themes.byId(Cfg.str("theme", "default"))
         val ui = Ui(this, th)
         window.statusBarColor = th.bg; window.navigationBarColor = th.bg
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, ui.dp(32), 0, ui.dp(110)); layoutDirection = View.LAYOUT_DIRECTION_RTL; clipChildren = false; clipToPadding = false }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(12), ui.dp(36), ui.dp(12), ui.dp(24)); layoutDirection = View.LAYOUT_DIRECTION_RTL }
         val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
         val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
         val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
-        var modelSel = Cfg.str("model", Models.DEFAULT)
+        var modelSel = Cfg.str("model", "gemini-2.5-flash")
         val model = ui.input("الموديل (اكتب يدوي أو اختار من فوق)", modelSel)
         val modelNames = Models.builtin.map { it.id }
         val modelDesc = ui.text("", 12f, th.muted)
@@ -117,38 +106,14 @@ class MainActivity : Activity() {
         }
         // ===== الواجهة بشكل نسخة الـ HTML: دوائر علوية + كارت فيديو + كبسولة + شبكة أزرار + زرار الترجمة =====
         var recentDlg: android.app.Dialog? = null
-        val recentFile = File(filesDir, "recent.json")
-        val recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        fun uriOk(u: String): Boolean = try { contentResolver.openInputStream(Uri.parse(u))?.close(); true } catch (_: Exception) { false }
-        fun rebuildRecents() {
-            recentBox.removeAllViews()
-            val recents = Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" })
-            if (recents.isEmpty()) { recentBox.addView(ui.text("مفيش فيديوهات محفوظة لسه", 13f, th.muted)); return }
-            recents.forEach { r ->
-                val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-                info.addView(ui.text(r.title, 14f, th.text, true))
-                info.addView(ui.text("جمل ${r.subs} · تغطية ${r.percent}% · وقف عند ${PlayerLogic.clock((r.posSec * 1000).toLong())}", 11f, th.muted))
-                val del = TextView(this).apply {
-                    text = "🗑"; textSize = 18f; gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4))
-                    setOnClickListener {
-                        try { recentFile.writeText(Recents.toJson(Recents.remove(Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }), r.id))) } catch (_: Exception) {}
-                        rebuildRecents()
-                    }
-                }
-                val row = LinearLayout(this).apply {
-                    layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(ui.dp(10), ui.dp(8), ui.dp(4), ui.dp(8)); background = ui.box(th.surface, th.border, 8)
-                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, ui.dp(4), 0, ui.dp(4)) }
-                    addView(info, LinearLayout.LayoutParams(0, -2, 1f)); addView(del)
-                    setOnClickListener {
-                        save()
-                        if (r.uri.isNotEmpty()) {
-                            if (uriOk(r.uri)) { recentDlg?.dismiss(); play("", Uri.parse(r.uri)) }
-                            else Toast.makeText(this@MainActivity, "الملف ده مبقاش متاح (الصلاحية اتفقدت) — افتحه تاني من \"فتح فيديو\"", Toast.LENGTH_LONG).show()
-                        } else if (r.url.isNotEmpty()) { recentDlg?.dismiss(); play(r.url, null) }
-                    }
-                }
-                recentBox.addView(row)
+        val recents = Recents.parse(try { File(filesDir, "recent.json").readText() } catch (_: Exception) { "" })
+        val recentViews: List<View> = if (recents.isEmpty()) listOf(ui.text("مفيش فيديوهات محفوظة لسه", 13f, th.muted)) else recents.map { r ->
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.box(th.surface, th.border, 8)
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, ui.dp(4), 0, ui.dp(4)) }
+                addView(ui.text(r.title, 14f, th.text, true))
+                addView(ui.text("جمل ${r.subs} · تغطية ${r.percent}% · وقف عند ${PlayerLogic.clock((r.posSec * 1000).toLong())}", 11f, th.muted))
+                setOnClickListener { save(); recentDlg?.dismiss(); if (r.uri.isNotEmpty()) play("", Uri.parse(r.uri)) else play(r.url, null) }
             }
         }
         val keyChipTv = ui.text("", 13f, th.text, true)
@@ -174,11 +139,10 @@ class MainActivity : Activity() {
             ui.text("اللهجة", 13f, th.muted), ui.chips(langs, { lang }) { lang = it },
             ui.text("أسلوب الترجمة", 13f, th.muted), ui.chips(styles, { style }) { style = it },
             ui.text("جدول الشخصيات", 13f, th.muted), roster, ui.text("مسرد المصطلحات", 13f, th.muted), gloss), false) { save() }
-        recentDlg = ui.sheet(this, "📼 فيديوهات محفوظة", listOf<View>(recentBox), false)
-        recentDlg!!.setOnShowListener { rebuildRecents() }
+        recentDlg = ui.sheet(this, "📼 فيديوهات محفوظة", recentViews, false)
         refreshChip()
 
-        // الشريط العلوي (.quick-key-bar): من اليمين: مفتاح، محرك، موديل، مظهر، إعدادات، ستايل — دواير 32dp
+        // الشريط العلوي (من اليمين: مفتاح، محرك، موديل، مظهر، إعدادات، ستايل)
         val topRow = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
         topRow.addView(ui.circleBtn("🔑", true) { keyDlg.show() })
         topRow.addView(ui.circleBtn("⏱") { engDlg.show() })
@@ -186,10 +150,7 @@ class MainActivity : Activity() {
         topRow.addView(ui.circleBtn("🎨") { themeDlg.show() })
         topRow.addView(ui.circleBtn("⚙️") { setDlg.show() })
         topRow.addView(ui.circleBtn("🎛") { styleDlg.show() })
-        root.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false; layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(ui.dp(13), 0, ui.dp(13), 0); clipToPadding = false; addView(topRow)
-        })
+        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; layoutDirection = View.LAYOUT_DIRECTION_RTL; addView(topRow) })
 
         // شيب حالة المفتاح
         val chipTexts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(keyChipTv); addView(keyTailTv) }
@@ -199,77 +160,65 @@ class MainActivity : Activity() {
             addView(chipTexts); addView(keyPctTv, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(16) })
             setOnClickListener { keyDlg.show() }
         }
-        root.addView(keyChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, ui.dp(6), ui.dp(16), ui.dp(8)) })
+        root.addView(keyChip, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(4), ui.dp(6), 0, ui.dp(8)) })
 
-        // كارت الفيديو (.video-section: 16:9، radius 14، حدود متقطعة، هالة كهرمانية) — حالة NO SIGNAL
-        val cardW = resources.displayMetrics.widthPixels - ui.dp(32)
+        // كارت الفيديو (NO SIGNAL)
         link.hint = "رابط الفيديو (MP4 / M3U8 ...)"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR
-        link.setTextColor(th.text); link.setHintTextColor(th.muted); link.textSize = 12f
-        link.background = ui.box(th.surface, th.border, 8); link.setPadding(ui.dp(10), 0, ui.dp(10), 0)
-        link.layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+        link.setTextColor(Color.WHITE); link.setHintTextColor(0x99FFFFFF.toInt()); link.textSize = 13f
+        link.background = ui.box(0x26FFFFFF, 0x4DFFFFFF, 10)
+        link.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         val loadBtn = TextView(this).apply {
-            text = "تحميل"; textSize = 13f; gravity = Gravity.CENTER; setTextColor(ui.onPrimary()); typeface = android.graphics.Typeface.DEFAULT_BOLD
-            background = ui.box(th.primary, th.primary, 8)
+            text = "تحميل"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(ui.onPrimary()); typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10)); background = ui.box(th.primary, th.primary, 10)
             setOnClickListener { save(); play(link.text.toString().trim(), null) }
         }
-        val urlRow = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
-        urlRow.addView(loadBtn, LinearLayout.LayoutParams(ui.dp(55), -1).apply { marginEnd = ui.dp(8) }); urlRow.addView(link)
+        val urlRow = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(14), 0, ui.dp(14), 0) }
+        urlRow.addView(loadBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(8) }); urlRow.addView(link)
         val folder = TextView(this).apply {
-            text = "📁"; textSize = 22f; gravity = Gravity.CENTER; includeFontPadding = false
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT); setStroke((1.5f * resources.displayMetrics.density).toInt(), th.primary, ui.dp(4).toFloat(), ui.dp(3).toFloat()) }
+            text = "📁"; textSize = 30f; gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT); setStroke(ui.dp(2), th.primary, ui.dp(4).toFloat(), ui.dp(3).toFloat()) }
             setOnClickListener { save(); pickVideo() }
         }
-        val orRow = LinearLayout(this).apply { gravity = Gravity.CENTER; layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        orRow.addView(View(this).apply { setBackgroundColor(th.border) }, LinearLayout.LayoutParams(ui.dp(40), 1))
-        orRow.addView(ui.text("أو", 11f, th.muted).apply { setPadding(ui.dp(10), 0, ui.dp(10), 0) })
-        orRow.addView(View(this).apply { setBackgroundColor(th.border) }, LinearLayout.LayoutParams(ui.dp(40), 1))
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        col.addView(ui.text("NO SIGNAL", 11f, th.muted).apply { letterSpacing = 0.25f; typeface = android.graphics.Typeface.MONOSPACE; gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, -2))
-        col.addView(folder, LinearLayout.LayoutParams(ui.dp(56), ui.dp(56)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = ui.dp(14) })
-        col.addView(ui.text("اختار فيديو", 14f, th.text, true).apply { gravity = Gravity.START; includeFontPadding = false }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4) })
-        col.addView(ui.text("MP4 · MOV · WebM · AVI", 11f, th.muted).apply { gravity = Gravity.START; includeFontPadding = false }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(5) })
-        col.addView(orRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
-        col.addView(urlRow, LinearLayout.LayoutParams(-1, ui.dp(32)).apply { topMargin = ui.dp(8) })
-        val card = FrameLayout(this).apply {
-            background = GradientDrawable().apply { setColor(th.bg); cornerRadius = ui.dp(14).toFloat(); setStroke(ui.dp(1), th.border, ui.dp(4).toFloat(), ui.dp(3).toFloat()) }
-            elevation = ui.dp(12).toFloat()
-            if (Build.VERSION.SDK_INT >= 28) { outlineSpotShadowColor = th.primary; outlineAmbientShadowColor = th.primary }
-            addView(col, FrameLayout.LayoutParams(cardW - ui.dp(88), -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(1) })
-            addView(ui.fsCircle("⛶") { save(); pickVideo() }, FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT).apply { setMargins(ui.dp(10), 0, 0, ui.dp(10)) })
+        val orRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        orRow.addView(View(this).apply { setBackgroundColor(0x30FFFFFF) }, LinearLayout.LayoutParams(ui.dp(40), 1))
+        orRow.addView(ui.text("أو", 12f, 0x99FFFFFF.toInt()).apply { setPadding(ui.dp(10), 0, ui.dp(10), 0) })
+        orRow.addView(View(this).apply { setBackgroundColor(0x30FFFFFF) }, LinearLayout.LayoutParams(ui.dp(40), 1))
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(0, ui.dp(14), 0, ui.dp(16))
+            background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = ui.dp(20).toFloat(); setStroke(ui.dp(1), th.border, ui.dp(5).toFloat(), ui.dp(4).toFloat()) }
         }
-        root.addView(card, LinearLayout.LayoutParams(-1, cardW * 9 / 16).apply { setMargins(ui.dp(16), ui.dp(4), ui.dp(16), 0) })
+        card.addView(ui.text("NO SIGNAL", 11f, th.muted).apply { letterSpacing = 0.25f; typeface = android.graphics.Typeface.MONOSPACE; setPadding(0, 0, 0, ui.dp(12)) })
+        card.addView(folder, LinearLayout.LayoutParams(ui.dp(76), ui.dp(76)))
+        card.addView(ui.text("اختار فيديو", 20f, Color.WHITE, true).apply { setPadding(0, ui.dp(10), 0, 0) })
+        card.addView(ui.text("MP4 · MOV · WebM · AVI", 13f, 0x99FFFFFF.toInt()).apply { setPadding(0, ui.dp(4), 0, ui.dp(10)) })
+        card.addView(orRow, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(10) })
+        card.addView(urlRow, LinearLayout.LayoutParams(-1, -2))
+        root.addView(card, LinearLayout.LayoutParams(-1, -2))
 
         // شريط التقدم + الكبسولة (شكل بس لحد ما فيديو يتفتح) + الرام/الكاش
-        val ctl = ui.controls()
-        root.addView(ctl.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10) })
+        val ctl = ui.controls(); ctl.root.alpha = 0.45f
+        root.addView(ctl.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
         val mem = ui.memRow(); mem.update(this)
-        root.addView(mem.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10) })
+        root.addView(mem.root)
 
-        // شبكة الأزرار (.tools-row — 6 أعمدة)
+        // شبكة الأزرار
         root.addView(ui.grid(listOf<View>(
-            ui.gridBtn("🔑", "مفاتيح") { keyDlg.show() },
-            ui.gridBtn("⏱", "المحرك") { engDlg.show() },
-            ui.gridBtn("🎨", "المظهر") { themeDlg.show() },
-            ui.gridBtn("⚙️", "إعدادات") { setDlg.show() },
+            ui.gridBtn("🌐", "المتصفح") { save(); startActivity(Intent(this, BrowserActivity::class.java)) },
             ui.gridBtn("📼", "فيديوهات محفوظة") { recentDlg?.show() },
             ui.gridBtn("🔤", "معاينة الخطوط") { styleDlg.show() },
-            ui.gridBtn("🌐", "المتصفح") { save(); startActivity(Intent(this, BrowserActivity::class.java)) },
+            ui.gridBtn("⚙️", "إعدادات") { setDlg.show() },
             ui.gridBtn("📂", "فتح فيديو") { save(); pickVideo() },
             ui.gridBtn("🗑", "مسح التقدم") {
                 val n = Store.clearAll(File(filesDir, "progress"))
                 Toast.makeText(this, "اتمسح تقدم $n فيديو", Toast.LENGTH_SHORT).show()
             }
-        )), LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(13), ui.dp(10), ui.dp(13), 0) })
-
-        // زرار الترجمة الثابت أسفل الشاشة + فقاعة ☰ (.action-fab-translate / .main-fab-bubble)
-        val frame = FrameLayout(this).apply { setBackgroundColor(th.bg); clipChildren = false; layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        frame.addView(ScrollView(this).apply { clipChildren = false; clipToPadding = false; addView(root) }, FrameLayout.LayoutParams(-1, -1))
-        frame.addView(ui.mainBubble { setDlg.show() })
-        frame.addView(ui.bigAction("✨", "ترجم الفيديو") {
+        )))
+        root.addView(ui.bigAction("✨ ترجم الفيديو") {
             save(); val u = link.text.toString().trim()
             if (u.isNotEmpty()) play(u, null) else pickVideo()
         })
-        setContentView(frame)
+        setContentView(ScrollView(this).apply { setBackgroundColor(th.bg); addView(root) })
         if (intent?.action == Intent.ACTION_SEND) {
             val t = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
             Regex("https?://\\S+").find(t)?.let { link.setText(it.value); play(it.value, null) }
@@ -281,11 +230,7 @@ class MainActivity : Activity() {
             "female", "unknown", "none", listOf("أحمد"), listOf("القاهرة"), false, false, -1, "", false, "", false, "I met Ahmed in Cairo yesterday")
         val holder = FrameLayout(this).apply { setBackgroundColor(0xFF1B2733.toInt()); setPadding(0, ui.dp(30), 0, ui.dp(10)); addView(prev, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM)) }
         fun st() = SubStyle.load { k, d -> Cfg.str(k, d) }
-        fun showDemo() {
-            val p = st()
-            prev.show(if (p.splitOn) PlayerLogic.splitParts(demo.translated, p.splitThresh).firstOrNull()?.let { demo.copy(translated = it) } ?: demo else demo)
-        }
-        fun put(k: String, v: String) { Cfg.put(k, v); prev.style = st(); prev.show(null); showDemo() }
+        fun put(k: String, v: String) { Cfg.put(k, v); prev.style = st(); prev.show(null); prev.show(demo) }
         fun slider(label: String, k: String, d: Int, lo: Int, hi: Int, unit: String): LinearLayout {
             val tv = ui.text("$label: ${Cfg.int(k, d)}$unit", 13f, th.text)
             val sb = SeekBar(this).apply {
@@ -311,16 +256,18 @@ class MainActivity : Activity() {
             ui.text("نمط الخط", 13f, th.muted),
             ui.chips(SubStyle.fontStyles.map { it.second }, { SubStyle.fontStyles.first { f -> f.first == st().fontStyle }.second }) { n -> put("sub_fontstyle", SubStyle.fontStyles.first { it.second == n }.first) },
             slider("حجم النص", "sub_scale", 100, 60, 200, "%"),
-            sw("نص أبيض عادي بحجم ثابت (بدون ألوان الجنس والأسماء وكلمة التأكيد والتكبير التلقائي وتأثيرات الانفعال)", "sub_plain", true),
+            sw("نص أبيض عادي (بدون ألوان الجنس والأسماء)", "sub_plain", false),
             sw("لون نص موحّد", "sub_uni_on", false),
             ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) },
-            sw("تقسيم الجمل الطويلة لأجزاء بتظهر بالتتابع", "sub_split_on", true), slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, ""),
-            sw("إخفاء الخلفية", "sub_nobg", false), slider("شفافية الخلفية", "sub_bgopa", 45, 0, 90, "%"), slider("نعومة حواف الخلفية (blur) — 0 = بدون", "sub_blur", 0, 0, 20, ""))
+            sw("تقسيم الجمل الطويلة", "sub_split_on", false), slider("حد الكلمات في السطر", "sub_split", 8, 3, 30, ""),
+            sw("إخفاء الخلفية", "sub_nobg", false), slider("شفافية الخلفية", "sub_bgopa", 45, 0, 90, "%"), slider("نعومة حواف الخلفية (blur)", "sub_blur", 6, 0, 20, ""))
         val sec = ui.section("🎬 ستايل الترجمة", true, *body.toTypedArray())
-        prev.style = st(); holder.post { showDemo() }
+        prev.style = st(); holder.post { prev.show(demo) }
         return sec
     }
-    fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
+    fun pickVideo() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "video/*"; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, 1)
+    }
     fun play(u: String, uri: Uri?) {
         if (u.isBlank() && uri == null) return
         startActivity(Intent(this, PlayerActivity::class.java).apply {
@@ -426,10 +373,7 @@ class PlayerActivity : Activity(), Host {
     lateinit var adapter: BaseAdapter
     lateinit var extras: View
     lateinit var videoBoxRef: FrameLayout
-    lateinit var fsBadge: TransBadge
-    lateinit var fsBtnV: TextView
-    lateinit var fsBarFs: TextView
-    lateinit var fsBtnLp: FrameLayout.LayoutParams
+    lateinit var fsBadge: TextView
     lateinit var centerPlay: TextView
     lateinit var ctl: Ctl
     lateinit var mem: MemRow
@@ -480,7 +424,7 @@ class PlayerActivity : Activity(), Host {
         intent.getStringExtra("cookie")?.takeIf { it.isNotEmpty() }?.let { hdr["Cookie"] = it }
 
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        val videoBox = FrameLayout(this).apply { background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = ui.dp(14).toFloat() }; clipToOutline = true; layoutDirection = View.LAYOUT_DIRECTION_LTR }
+        val videoBox = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); layoutDirection = View.LAYOUT_DIRECTION_LTR }
         videoBoxRef = videoBox
         val sv = SurfaceView(this)
         videoBox.addView(sv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
@@ -490,18 +434,18 @@ class PlayerActivity : Activity(), Host {
         sub.backdrop = sv
         st = TextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
         videoBox.addView(st, FrameLayout.LayoutParams(-2, -2, Gravity.TOP))
-        // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (كل اللمس بتاع الفيديو بيعدي عليها)
-        val gestureLayer = View(this)
-        videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
 
         // زرار التشغيل الأوسط (بيظهر وقت الإيقاف) + شارة النسبة (شاشة كاملة) + فلاش السيك/الصوت/السطوع
         centerPlay = TextView(this).apply {
-            text = "▶"; textSize = 24f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x29FFFFFF) }
+            text = "▶"; textSize = 28f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x99000000.toInt()) }
             setOnClickListener { togglePlay() }
         }
-        videoBox.addView(centerPlay, FrameLayout.LayoutParams(ui.dp(64), ui.dp(64), Gravity.CENTER))
-        fsBadge = TransBadge(this, th).apply { visibility = View.GONE }
+        videoBox.addView(centerPlay, FrameLayout.LayoutParams(ui.dp(68), ui.dp(68), Gravity.CENTER))
+        fsBadge = TextView(this).apply {
+            textSize = 12f; setTextColor(th.primary); gravity = Gravity.END; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6)); background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); visibility = View.GONE
+        }
         videoBox.addView(fsBadge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(14), ui.dp(14), 0) })
         val gi = TextView(this).apply {
             textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -509,38 +453,38 @@ class PlayerActivity : Activity(), Host {
         }
         videoBox.addView(gi, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         val volInd = VertInd(this, "🔊"); val briInd = VertInd(this, "☀️")
-        videoBox.addView(volInd, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(24), 0) })
-        videoBox.addView(briInd, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(24), 0, 0, 0) })
+        videoBox.addView(volInd, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(78), 0) })
+        videoBox.addView(briInd, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(40), 0, 0, 0) })
         val indHide = Runnable { volInd.visibility = View.GONE; briInd.visibility = View.GONE }
         fun indShow(v: VertInd, f: Float) { v.set(f); h.removeCallbacks(indHide); h.postDelayed(indHide, 900) }
         // فقاعة الأدوات (Assistive Touch): ✦ تفتح عمود دوائر
         fun roundBtn(t: String, f: () -> Unit) = TextView(this).apply {
-            text = t; textSize = 16f; gravity = Gravity.CENTER; includeFontPadding = false
+            text = t; textSize = 20f; gravity = Gravity.CENTER
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF2A2140.toInt()); setStroke(ui.dp(2), 0xFF6B4FA0.toInt()) }
-            layoutParams = LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)).apply { setMargins(0, ui.dp(5), 0, ui.dp(5)) }
+            layoutParams = LinearLayout.LayoutParams(ui.dp(46), ui.dp(46)).apply { setMargins(ui.dp(5), ui.dp(5), ui.dp(5), ui.dp(5)) }
             setOnClickListener { f(); showChrome() }
         }
         val menu = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; visibility = View.GONE
-            setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)); background = ui.box(0xB814171C.toInt(), 0x2EFFFFFF, 26)
+            setPadding(ui.dp(4), ui.dp(6), ui.dp(4), ui.dp(6)); background = ui.box(0xE0141418.toInt(), 0x33FFFFFF, 30)
         }
         menu.addView(roundBtn("📝") { sentDlg.show() })
         menu.addView(roundBtn("🕳") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         menu.addView(roundBtn("📥") { doImport() })
         menu.addView(roundBtn("📂") { doOpen() })
         val fab = TextView(this).apply {
-            text = "✦"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE; alpha = 0.6f
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE01E2228.toInt()); setStroke((1.5f * resources.displayMetrics.density).toInt(), 0x66F5A623) }
-            setOnClickListener { val o = menu.visibility != View.VISIBLE; menu.visibility = if (o) View.VISIBLE else View.GONE; alpha = if (o) 1f else 0.6f }
+            text = "✦"; textSize = 26f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE0141418.toInt()); setStroke(ui.dp(2), th.primary) }
+            setOnClickListener { menu.visibility = if (menu.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         }
-        videoBox.addView(menu, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(60), 0) })
-        videoBox.addView(fab, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
+        videoBox.addView(menu, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(14), ui.dp(250)) })
+        videoBox.addView(fab, FrameLayout.LayoutParams(ui.dp(54), ui.dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(14), 0) })
         fsOnly = listOf<View>(fsBadge, fab); assistMenuV = menu
         val giHide = Runnable { gi.visibility = View.GONE }
         fun giShow(t: String, g: Int) {
             gi.text = t
             val lp = gi.layoutParams as FrameLayout.LayoutParams
-            lp.gravity = g; val edge = (videoBox.width * 0.18f).toInt(); lp.setMargins(edge, 0, edge, 0); gi.layoutParams = lp
+            lp.gravity = g; lp.setMargins(ui.dp(60), 0, ui.dp(60), 0); gi.layoutParams = lp
             gi.visibility = View.VISIBLE; h.removeCallbacks(giHide); h.postDelayed(giHide, 800)
         }
 
@@ -569,40 +513,39 @@ class PlayerActivity : Activity(), Host {
             offsetMs += d; Cfg.p.edit().putString("sub_offset_ms", offsetMs.toString()).apply()
             offFsB?.text = String.format("%+.1fs", offsetMs / 1000.0); curIdx = -2
         }
+        fun divider() = View(this).apply { setBackgroundColor(0x2EFFFFFF); layoutParams = LinearLayout.LayoutParams(ui.dp(1), ui.dp(22)).apply { setMargins(ui.dp(5), 0, ui.dp(5), 0) } }
 
         ctl = ui.controls()
-        // صفّين ثابتين من اليمين (نفس البداية ونفس الارتفاع 32dp، والمسافة بينهم 6dp = هامش 3+3)
-        fun tbRow() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
-        val row1 = tbRow(); val row2 = tbRow()
-        row1.addView(fb("A−") { scaleBy(-10) })
-        row1.addView(fb("A+") { scaleBy(10) })
-        row1.addView(fb("🔤 " + fontLabel()) { v ->
+        val tb = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        val tb2 = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        tb.addView(fb("A−") { scaleBy(-10) })
+        tb.addView(fb("A+") { scaleBy(10) })
+        tb.addView(fb("🔤 " + fontLabel()) { v ->
             val fs = SubStyle.fonts; val cf = curStyle().font
             val n = fs[(fs.indexOfFirst { it.id == cf } + 1) % fs.size]
             Cfg.put("sub_font", n.id); restyle(); v.text = "🔤 " + n.label
         })
-        row1.addView(fb("✨ " + entLabel()) { v ->
+        tb.addView(fb("✨ " + entLabel()) { v ->
             val es = SubStyle.entrances; val ca = curStyle().anim
             val n = es[(es.indexOfFirst { it.id == ca } + 1) % es.size]
             Cfg.put("sub_anim", n.id); restyle(); v.text = "✨ " + n.label
         })
-        row1.addView(fb("⬛ " + PlayerLogic.fitNames[fit]) { v ->
+        tb.addView(fb("⬛ " + PlayerLogic.fitNames[fit]) { v ->
             fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply()
             v.text = "⬛ " + PlayerLogic.fitNames[fit]; applyFit(sv, videoBox)
         })
         val spB = fb("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
-        fsSpeedB = spB; row1.addView(spB)
+        fsSpeedB = spB; tb.addView(spB)
+        tb.addView(divider())
         val ccB = fb("CC") { toggleCc() }
-        ccFsB = ccB; row2.addView(ccB)
-        row2.addView(fb("−") { setOff(-500) })
-        val offB = fb(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
-        offFsB = offB; row2.addView(offB)
-        row2.addView(fb("+") { setOff(500) })
-        row2.addView(fb("📤") { doExport() })
-        row2.addView(fb("🔁") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
-        row2.addView(fb("⧉") { enterPip() })
-        val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        tb.addView(row1, LinearLayout.LayoutParams(-2, -2)); tb.addView(row2, LinearLayout.LayoutParams(-2, -2))
+        ccFsB = ccB; tb2.addView(ccB)
+        tb2.addView(fb("−") { setOff(-500) })
+        val offB = ui.fsBtn(String.format("%+.1fs", offsetMs / 1000.0)) { }
+        offFsB = offB; tb2.addView(offB)
+        tb2.addView(fb("+") { setOff(500) })
+        tb2.addView(fb("📤") { doExport() })
+        tb2.addView(fb("🔁") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
+        tb2.addView(fb("⧉") { enterPip() })
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFF17130A.toInt())
@@ -611,29 +554,24 @@ class PlayerActivity : Activity(), Host {
         }
         fsEl = ui.text("0:00", 12f, Color.WHITE); fsDu = ui.text("0:00", 12f, Color.WHITE)
         fsProgV = DualProgress(this, th)
-        // الشريط LTR صريح (الوقت والتقدم بيتقروا من الشمال): ⛶ | الوقت | التقدم | المدة | ▶ (أقصى اليمين)
         val fsBar = LinearLayout(this).apply {
-            layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL
-            setPadding(ui.dp(8), 0, ui.dp(8), 0); background = ui.box(0xE00F1114.toInt(), 0x1AFFFFFF, 30)
+            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(ui.dp(8), 0, ui.dp(16), 0); background = ui.box(0xE00F1114.toInt(), 0x1AFFFFFF, 30)
         }
-        fsBarFs = ui.fsCircle("⛶") { toggleFs(); showChrome() }
-        fsBar.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)))
-        fsBar.addView(fsEl, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
-        fsBar.addView(fsProgV, LinearLayout.LayoutParams(0, -2, 1f))
-        fsBar.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
         fsBar.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)))
+        fsBar.addView(fsEl, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(12), 0, ui.dp(8), 0) })
+        fsBar.addView(fsProgV, LinearLayout.LayoutParams(0, -2, 1f))
+        fsBar.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(8), 0, ui.dp(4), 0) })
+        fsBar.addView(fb("⛶") { toggleFs() }, LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)).apply { setMargins(ui.dp(4), 0, 0, 0) })
         val chromeFrame = FrameLayout(this).apply { visibility = View.GONE }
-        chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })
+        val tbCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        tbCol.addView(tb, LinearLayout.LayoutParams(-1, ui.dp(40))); tbCol.addView(tb2, LinearLayout.LayoutParams(-1, ui.dp(40)).apply { topMargin = ui.dp(6) })
+        chromeFrame.addView(tbCol, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(14), ui.dp(14), ui.dp(110), 0) })
         chromeFrame.addView(fsBar, FrameLayout.LayoutParams(-1, ui.dp(52), Gravity.BOTTOM).apply { setMargins(ui.dp(14), 0, ui.dp(14), ui.dp(14)) })
         videoBox.addView(chromeFrame, FrameLayout.LayoutParams(-1, -1))
-        // زرار ⛶ (.fullscreen-btn): أسفل يسار الفيديو 10dp في الرأسي، 18dp في الشاشة الكاملة
-        fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
-        fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
-        videoBox.addView(fsBtnV, fsBtnLp)
         applyChromeFn = {
             val on = fullMode && chromeShown
             chromeFrame.visibility = if (on) View.VISIBLE else View.GONE
-            fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) ui.dp(84) else ui.dp(12); sub.requestLayout()
         }
 
@@ -641,31 +579,21 @@ class PlayerActivity : Activity(), Host {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         var volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         var briF = window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it }
-        var scrollLogged = false
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; return true }
+            override fun onDown(e: MotionEvent): Boolean = true
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (!fullMode) { log("👆 ضغطة: تشغيل/إيقاف"); togglePlay() }
-                else {
-                    // في الأفقي: ضغطة على الوسط = تشغيل/إيقاف، وأي مكان تاني = إظهار/إخفاء الشريط
-                    val center = Math.abs(e.x - videoBox.width / 2f) < ui.dp(48) && Math.abs(e.y - videoBox.height / 2f) < ui.dp(48)
-                    if (center) { log("👆 ضغطة وسط: تشغيل/إيقاف"); togglePlay() }
-                    else if (chromeShown) { log("👆 ضغطة: إخفاء الشريط"); h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
-                    else { log("👆 ضغطة: إظهار الشريط"); showChrome() }
-                }
+                if (fullMode) { if (chromeShown) { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() } else showChrome() } else togglePlay()
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 val right = e.x > videoBox.width / 2f
-                log(if (right) "👆👆 ضغطتين يمين: +10ث" else "👆👆 ضغطتين شمال: -10ث")
                 player.seekTo((player.currentPosition + (if (right) 10000 else -10000)).coerceAtLeast(0))
                 giShow(if (right) "10 ⏩" else "⏪ 10", (if (right) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL)
                 return true
             }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-                if (e1 == null || Math.abs(dy) < Math.abs(dx)) return false
+                if (!fullMode || e1 == null || Math.abs(dy) < Math.abs(dx)) return false
                 val d = dy / videoBox.height.coerceAtLeast(1) * 1.3f
-                if (!scrollLogged) { scrollLogged = true; log(if (e1.x > videoBox.width / 2f) "↕ سحب: الصوت" else "↕ سحب: السطوع") }
                 if (e1.x > videoBox.width / 2f) {
                     volF = (volF + d).coerceIn(0f, 1f)
                     val mx = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -679,7 +607,7 @@ class PlayerActivity : Activity(), Host {
                 return true
             }
         })
-        gestureLayer.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); true }
+        videoBox.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); true }
 
         // ---- الكبسولة تحت الفيديو (الوضع الرأسي) ----
         ctl.play.setOnClickListener { togglePlay() }
@@ -723,7 +651,7 @@ class PlayerActivity : Activity(), Host {
             layoutParams = LinearLayout.LayoutParams(-1, -1)
             setOnItemClickListener { _, _, i, _ -> player.seekTo(starts[i] + offsetMs) }
         }
-        counters = ui.text("", 10f, th.muted).apply { setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(2)) }
+        counters = ui.text("", 11f, th.muted).apply { setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4)) }
         sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(listView), true)
         logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logSv), true)
         mem = ui.memRow()
@@ -738,9 +666,8 @@ class PlayerActivity : Activity(), Host {
             ui.gridBtn("⧉", "نافذة عائمة") { enterPip() },
             ui.gridBtn("⚙️", "الإعدادات") { finish() }
         ))
-        val extrasCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, ui.dp(2), 0, ui.dp(20)) }
-        extrasCol.addView(ctl.root); extrasCol.addView(counters); extrasCol.addView(mem.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
-        extrasCol.addView(grid, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(13), ui.dp(10), ui.dp(13), 0) })
+        val extrasCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(20)) }
+        extrasCol.addView(ctl.root); extrasCol.addView(counters); extrasCol.addView(mem.root); extrasCol.addView(grid)
         val scroll = ScrollView(this).apply { addView(extrasCol) }
         extras = scroll
         page.addView(videoBox, LinearLayout.LayoutParams(-1, ui.dp(220)))
@@ -788,28 +715,15 @@ class PlayerActivity : Activity(), Host {
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
                 val idx = act.lastOrNull() ?: -1
-                val gs = act.map { list[it] }
-                // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
-                var parts: List<String> = emptyList(); var part = 0
-                val ssn = sub.style
-                if (ccOn && gs.size == 1 && ssn.splitOn) {
-                    parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh)
-                    if (parts.size > 1) part = PlayerLogic.partIndex(starts[idx], ends[idx], cur - offsetMs, parts)
-                }
-                val key = act.joinToString(",") + ":" + part
+                val key = act.joinToString(",")
                 if (idx != curIdx || key != curKey) {
                     curIdx = idx; curKey = key
-                    val shown: Sub? = when {
-                        !ccOn || gs.isEmpty() -> null
-                        parts.size > 1 -> gs[0].copy(translated = parts[part], isContinuation = gs[0].isContinuation && part == parts.size - 1)
-                        else -> PlayerLogic.combine(gs)
-                    }
-                    sub.show(shown, gs)
+                    sub.show(if (ccOn && act.isNotEmpty()) PlayerLogic.combine(act.map { list[it] }) else null)
                     adapter.notifyDataSetChanged()
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
                 st.text = status
-                if (fullMode) fsBadge.set(PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toString() + "%", list.size.toString() + " جملة")
+                if (fullMode) fsBadge.text = PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toString() + "%\n" + list.size + " جملة"
                 if (now - lastMem > 4000) { lastMem = now; if (!fullMode) mem.update(this@PlayerActivity) }
                 counters.text = "جمل ${list.size} · تغطية ${PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0)}% · فجوات ${engine.failedCount()} · كوتة ${Quota.used(conf.model)}/${Models.quotaOf(conf.model)}"
                 if (logDlg.isShowing) logTv.text = synchronized(logBuf) { logBuf.toString() }
@@ -825,11 +739,8 @@ class PlayerActivity : Activity(), Host {
         extras.visibility = if (f) View.GONE else View.VISIBLE
         val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams
         val dm = resources.displayMetrics
-        lp.height = if (f) -1 else (minOf(dm.widthPixels, dm.heightPixels) - ui.dp(32)) * 9 / 16
-        if (f) lp.setMargins(0, 0, 0, 0) else lp.setMargins(ui.dp(16), ui.dp(32), ui.dp(16), 0)
+        lp.height = if (f) -1 else minOf(dm.widthPixels, dm.heightPixels) * 9 / 16
         videoBoxRef.layoutParams = lp
-        videoBoxRef.background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = if (f) 0f else ui.dp(14).toFloat() }
-        fsBtnLp.setMargins(ui.dp(10), 0, 0, ui.dp(10)); fsBtnV.layoutParams = fsBtnLp
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
@@ -842,22 +753,18 @@ class PlayerActivity : Activity(), Host {
         requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     }
     fun enterPip() {
-        if (Build.VERSION.SDK_INT >= 26) try {
-            val pb = PictureInPictureParams.Builder()
-            if (vidW > 0 && vidH > 0) pb.setAspectRatio(Rational((vidW.toFloat() / vidH).coerceIn(0.45f, 2.3f).times(1000).toInt(), 1000))
-            enterPictureInPictureMode(pb.build())
-        } catch (_: Exception) { Toast.makeText(this, "PiP مش مدعوم على الجهاز ده", Toast.LENGTH_SHORT).show() }
+        if (Build.VERSION.SDK_INT >= 26) try { enterPictureInPictureMode(PictureInPictureParams.Builder().build()) } catch (_: Exception) { Toast.makeText(this, "PiP مش مدعوم على الجهاز ده", Toast.LENGTH_SHORT).show() }
     }
     fun doExport() { startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/x-subrip"; putExtra(Intent.EXTRA_TITLE, "subtitles.srt") }, 7) }
-    fun doImport() { startActivityForResult(filePicker("*/*", "اختار ملف SRT", false), 9) }
-    fun doOpen() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 8) }
+    fun doImport() { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, 9) }
+    fun doOpen() { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "video/*"; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, 8) }
     override fun onConfigurationChanged(c: Configuration) { super.onConfigurationChanged(c); applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE) }
     override fun onPictureInPictureModeChanged(inPip: Boolean, c: Configuration) {
         super.onPictureInPictureModeChanged(inPip, c)
         if (inPip) {
             h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn()
             extras.visibility = View.GONE; st.visibility = View.GONE; fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
-            val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
+            val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; videoBoxRef.layoutParams = lp
         } else applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE)
     }
 
@@ -919,16 +826,7 @@ class PlayerActivity : Activity(), Host {
             f.writeText(Recents.toJson(Recents.upsert(old, r)))
         } catch (_: Exception) {}
     }
-    /** أفقي: يرجع للرأسي من غير ما يقفل. رأسي: يحفظ التقدم ويوقف الفيديو ويقفل. */
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
-        if (fullMode) { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT; return }
-        try { player.pause() } catch (_: Exception) {}
-        saveRecent(); Thread { engine.saveNow() }.start()
-        super.onBackPressed()
-    }
     override fun onPause() { super.onPause(); saveRecent(); Thread { engine.saveNow() }.start() }
-    override fun onStop() { super.onStop(); saveRecent() }
     override fun onDestroy() {
         h.removeCallbacksAndMessages(null)
         saveRecent()

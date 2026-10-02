@@ -32,5 +32,14 @@ fun main() {
     val cb = PlayerLogic.combine(listOf(sb(0.0, 3.0, "أ"), sb(1.0, 2.5, "ب")))!!
     check("combine: ترقيم عربي وتوقيت", cb.translated == "١) أ\n٢) ب" && cb.start == 0.0 && cb.end == 3.0 && cb.overlap && !cb.isContinuation, cb.translated)
     check("arNum", PlayerLogic.arNum(12) == "١٢" && PlayerLogic.arNum(3) == "٣")
+    val ten = "1 2 3 4 5 6 7 8 9 10"
+    val pr = PlayerLogic.splitParts(ten, 8)
+    check("splitParts: 10 كلمات → جزئين 5+5", pr == listOf("1 2 3 4 5", "6 7 8 9 10"), pr.toString())
+    check("splitParts: قصيرة أو فيها سطر → جزء واحد", PlayerLogic.splitParts("a b c", 8) == listOf("a b c") && PlayerLogic.splitParts("a b\nc d e f g h i j k l", 3).size == 1)
+    check("splitParts: 17 كلمة → 3 أجزاء 6/6/5", PlayerLogic.splitParts((1..17).joinToString(" "), 8).map { it.split(" ").size } == listOf(6, 6, 5))
+    check("partIndex: توزيع بالتناسب على المدة", PlayerLogic.partIndex(1000, 3000, 1000, pr) == 0 && PlayerLogic.partIndex(1000, 3000, 1900, pr) == 0 && PlayerLogic.partIndex(1000, 3000, 2100, pr) == 1 && PlayerLogic.partIndex(1000, 3000, 3000, pr) == 1)
+    val uneven = listOf("a b c", "d e f g h i")   // 3 كلمات ثم 6 → الحد عند 1/3
+    check("partIndex: الوزن حسب عدد الكلمات", PlayerLogic.partIndex(0, 9000, 2900, uneven) == 0 && PlayerLogic.partIndex(0, 9000, 3100, uneven) == 1)
+    check("partIndex: جزء واحد = 0، ومدة صفر ما بتكسرش", PlayerLogic.partIndex(0, 0, 5, listOf("x")) == 0 && PlayerLogic.partIndex(5, 5, 9, pr) in 0..1)
     if (fails > 0) { println("فشل $fails"); System.exit(1) } else println("كل الاختبارات نجحت")
 }

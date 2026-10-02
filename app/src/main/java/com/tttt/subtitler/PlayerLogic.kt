@@ -40,6 +40,23 @@ object PlayerLogic {
         return keep.sorted().takeLast(maxN)
     }
 
+    /** تقسيم الجملة الطويلة لأجزاء متوازنة (حوالي thresh كلمات أو أقل لكل جزء). جملة قصيرة أو فيها سطور = جزء واحد */
+    fun splitParts(text: String, thresh: Int): List<String> {
+        val w = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (thresh < 1 || w.size <= thresh || text.contains('\n')) return listOf(text)
+        val n = (w.size + thresh - 1) / thresh; val per = (w.size + n - 1) / n
+        return w.chunked(per).map { it.joinToString(" ") }
+    }
+    /** أي جزء يظهر دلوقتي: التوقيت موزّع على مدة الجملة بالتناسب مع عدد كلمات كل جزء (البداية والنهاية الأصليتين ما بيتغيروش) */
+    fun partIndex(startMs: Long, endMs: Long, t: Long, parts: List<String>): Int {
+        if (parts.size <= 1) return 0
+        val wc = parts.map { maxOf(1, it.trim().split(Regex("\\s+")).size) }; val total = wc.sum()
+        val frac = ((t - startMs).toDouble() / (endMs - startMs).coerceAtLeast(1)).coerceIn(0.0, 0.9999)
+        var acc = 0
+        for (i in parts.indices) { acc += wc[i]; if (frac < acc.toDouble() / total) return i }
+        return parts.size - 1
+    }
+
     private val AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
     fun arNum(n: Int) = n.toString().map { AR_DIGITS[it - '0'] }.joinToString("")
 

@@ -131,7 +131,7 @@ object Cfg {
     fun snapshot(): Conf {
         val (main, bk) = KeyModes.split(allMainKeys(), KeyModes.parse(str("keymodes")))
         return Conf(
-            main, (keys("backup") + bk).distinct(), str("model", "gemini-2.5-flash").trim().ifEmpty { "gemini-2.5-flash" },
+            main, (keys("backup") + bk).distinct(), str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
             str("lang", "مصري"), str("style", "حرفي"),
             int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
