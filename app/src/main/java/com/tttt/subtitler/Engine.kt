@@ -1,0 +1,649 @@
+package com.tttt.subtitler
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
+
+interface Host {
+    fun log(s: String)
+    fun status(s: String)
+    /** القائمة اتغيرت (الواجهة تحدّث الترجمة المعروضة) */
+    fun changed()
+    /** مكان التشغيل الحالي بالثواني */
+    fun position(): Double
+    /** مدة الفيديو من المشغّل (0 لو لسه مش معروفة) */
+    fun playerDuration(): Double
+}
+
+private class BadReply(msg: String) : Exception(msg)
+
+class Engine(
+    private val conf: Conf,
+    private val openSource: () -> AudioSource,
+    private val store: Store?,
+    private val host: Host,
+    private val pb: PromptBuilder
+) {
+    companion object {
+        const val OVERLAP = 4.0          // ثواني تداخل بين المقاطع (زي الأصل)
+        const val MAX_TRIES = 25
+        const val MAX_FAILS = 3          // جولات فشل قبل ما المقطع يتحط كـ "فجوة"
+        const val GAP_PASSES = 3         // كام مرة نعيد المحاولة في الفجوات تلقائيًا
+        const val CROSS_MIN_DUR = 600.0  // المراجعة بين المقاطع بس للفيديوهات الطويلة (زي الأصل)
+        const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
+        const val CHAR_MIN_LINES = 12
+        const val PRON_MIN_LINES = 20
+    }
+
+    private val lock = Any()
+    @Volatile var subs: List<Sub> = emptyList()
+        private set
+    private val chars = ArrayList<Chr>()
+    private val gloss = ArrayList<Gloss>()
+    private val tplCache = HashMap<String, String>()
+    private val tplBusy = HashSet<String>()
+    private val tplFails = HashMap<String, Int>()
+    @Volatile private var srcLang = ""
+    @Volatile private var detDone = false
+    private val done = Ranges()
+    private val failed = ConcurrentHashMap<Int, Int>()
+    private val gapPass = ConcurrentHashMap<Int, Int>()
+    @Volatile private var lastGapTry = 0L
+    private val pool = Pool(conf)
+    @Volatile private var running = true
+    @Volatile var fatal: String? = null
+        private set
+    @Volatile private var source: AudioSource? = null
+    private val rr = AtomicInteger(0)
+    private val bounds = ConcurrentHashMap<Int, Double>()      // بداية المقطع بعد تعديلها لأقرب صمت
+    private val prepared = ConcurrentHashMap.newKeySet<Int>()
+    private val inflight = ConcurrentHashMap.newKeySet<Int>()
+    @Volatile private var anyApplied = false
+    private val gapTried = Ranges()      // بتتحفظ بين الجلسات
+    private val gapSession = Ranges()    // لجلسة التشغيل دي بس (للحد الأقصى)
+    private val gapBusy = AtomicInteger(0)
+    private val gapKeys = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var lastGapScan = 0L
+    private val gapEx = Executors.newFixedThreadPool(Gaps.MAX_PARALLEL) { r -> Thread(r).also { it.isDaemon = true } }
+    private var exec: java.util.concurrent.ExecutorService? = null
+    private var autoCharsAttempts = 0
+    private var charsTrySize = 0
+    private var charsBusy = false
+    private var pronUpTo = 0
+    private var pronBusy = false
+    private val reviews = AtomicInteger(0)
+    private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
+    private val ch get() = conf.chunkSec.toDouble()
+
+    // ===== واجهة للـ UI =====
+    fun failedCount() = failed.count { it.value >= MAX_FAILS }
+    fun coveredSec() = done.total()
+    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow() }
+    fun saveNow() = persist()
+    /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
+    fun importSubs(l: List<Sub>) { subs = l }
+    fun retryFailed() {
+        pool.clear(); gapPass.clear(); gapTried.clear(); lastGapTry = 0L
+        for (k in failed.keys) failed[k] = MAX_FAILS
+        host.log("🔁 هعيد محاولة المقاطع الفاشلة (${failedCount()})")
+    }
+    fun charactersNow(): List<Chr> = effectiveChars()
+
+    /** يسترجع التقدم المحفوظ. يرجع آخر مكان تشغيل (بالثواني) أو 0. */
+    fun load(): Double {
+        val s = store?.load() ?: return 0.0
+        synchronized(lock) {
+            subs = if (s.chunkSec == conf.chunkSec) s.subs else s.subs.map { it.copy(chunk = -1) }
+            for (r in s.done) done.add(r[0], r[1])
+            for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
+            chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
+            srcLang = s.srcLang; detDone = s.detDone; autoCharsAttempts = s.charsTried
+            pronUpTo = subs.size
+            if (s.chunkSec == conf.chunkSec) bounds.putAll(s.bounds)
+            for (r in s.gapTried) gapTried.add(r[0], r[1])
+        }
+        host.log("♻ استرجعت ${s.subs.size} جملة و${(done.total() / 60).toInt()} دقيقة مترجمة من الجلسة اللي فاتت")
+        host.changed()
+        return s.pos
+    }
+
+    // ===== الحلقة الرئيسية =====
+    // ملحوظة: فك الصوت (والتقصير لأقرب صمت) بيتم بالترتيب في الخيط ده، وإرسال الطلبات لجيميناي بيتم بالتوازي.
+    private fun cStart(i: Int): Double = bounds[i] ?: (i * ch)
+    private fun cEnd(i: Int, d: Double): Double { val e = cStart(i + 1); return if (d > 0) minOf(e, d) else e }
+
+    fun run() {
+        if (conf.keys.isEmpty() && conf.backup.isEmpty()) { host.status("⚠ ادخل مفتاح Gemini في الإعدادات"); host.log("⚠ مفيش مفاتيح Gemini"); return }
+        val cap = pool.capacity(conf.parallelPerKey)
+        val ex = Executors.newFixedThreadPool(cap) { r -> Thread(r).also { it.isDaemon = true } }
+        exec = ex
+        if (cap > 1) host.log("⚡ ترجمة متوازية: لحد $cap طلب في نفس الوقت")
+        try {
+            while (running) {
+                val d = currentDur()
+                val c = (host.position() / ch).toInt().coerceAtLeast(0)
+                var next = -1
+                for (i in c until c + conf.ahead.coerceAtLeast(1)) {
+                    if (d > 0 && cStart(i) >= d) break
+                    if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight) continue
+                    next = i; break
+                }
+                if (next >= 0) {
+                    // أول مقطع لوحده (عشان نعرف لغة الفيديو ونختار القالب الصح)، وبعدين بالتوازي
+                    if (inflight.size >= cap || (!anyApplied && inflight.isNotEmpty())) { gapTick(); nap(150); continue }
+                    dispatch(next, ex); continue
+                }
+                if (inflight.isEmpty() && retryGaps()) continue
+                if (gapTick()) continue
+                idleStatus(d)
+                nap(if (inflight.isEmpty()) 700 else 200)
+            }
+        } finally {
+            ex.shutdownNow()
+            try { source?.close() } catch (_: Exception) {}
+            persist()
+        }
+    }
+
+    private fun isDone(i: Int, d: Double): Boolean = done.covers(cStart(i), cEnd(i, d))
+
+    private fun currentDur(): Double {
+        val a = try { source?.durationSec() ?: 0.0 } catch (_: Exception) { 0.0 }
+        return if (a > 0) a else host.playerDuration()
+    }
+
+    private fun nap(ms: Long) {
+        var t = 0L
+        while (running && t < ms) { try { Thread.sleep(minOf(200L, ms - t)) } catch (_: InterruptedException) { return }; t += 200 }
+    }
+
+    private var lastIdle = ""
+    private fun idleStatus(d: Double) {
+        val pct = if (d > 0) (done.total() * 100 / d).toInt().coerceAtMost(100) else 0
+        val f = failedCount()
+        val s = "✅ مترجم $pct% — ${subs.size} جملة" + (if (f > 0) " — ⚠ $f مقطع فاشل" else "")
+        if (s != lastIdle) { lastIdle = s; host.status(s) }
+    }
+
+    /** بينفّذ خطوة خاصة بمقطع ويسجّل الفشل. بيرجع true لو نجحت. */
+    private fun guard(i: Int, block: () -> Unit): Boolean {
+        try {
+            block(); return true
+        } catch (e: Unsupported) {
+            fatal = e.message
+            host.log("⛔ ${e.message}"); host.status("⛔ ${e.message}")
+            running = false
+        } catch (e: Exception) {
+            if (!running) return false
+            val n = (failed[i] ?: 0) + 1
+            failed[i] = n
+            host.log("⚠ مقطع ${i + 1} فشل ($n/$MAX_FAILS): " + (e.message ?: e.toString()).take(160))
+            if (n >= MAX_FAILS) host.log("🕳 المقطع ${i + 1} اتسجل كفجوة — هعيد محاولته تلقائيًا بعد شوية")
+            persist()
+            nap(4000)
+        }
+        return false
+    }
+
+    /** فك صوت المقطع هنا (بالترتيب)، وبعدين الإرسال لجيميناي في خيط من الحوض */
+    private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService) {
+        guard(i) {
+            val p = prepare(i)
+            if (p == null) { failed.remove(i); return@guard }
+            inflight.add(i)
+            try {
+                ex.submit {
+                    try { if (guard(i) { send(i, p) }) failed.remove(i) } finally { inflight.remove(i) }
+                }
+            } catch (_: RejectedExecutionException) { inflight.remove(i) }
+        }
+    }
+
+    /** إعادة محاولة المقاطع الفاشلة لما نخلص الشغل اللي قدام المشاهد. */
+    private fun retryGaps(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastGapTry < 30_000) return false
+        val cand = failed.filter { it.value >= MAX_FAILS && (gapPass[it.key] ?: 0) < GAP_PASSES }.keys.sorted()
+        if (cand.isEmpty()) return false
+        lastGapTry = now
+        host.log("🕳 إعادة محاولة ${cand.size} مقطع فاشل…")
+        for (i in cand) {
+            if (!running) break
+            gapPass[i] = (gapPass[i] ?: 0) + 1
+            try { translateChunk(i); failed.remove(i); host.log("✅ المقطع ${i + 1} اتترجم في إعادة المحاولة") }
+            catch (e: Unsupported) { fatal = e.message; host.log("⛔ ${e.message}"); running = false; break }
+            catch (e: Exception) { host.log("⚠ المقطع ${i + 1} لسه فاشل: " + (e.message ?: e.toString()).take(120)) }
+        }
+        return true
+    }
+
+    // ===== ترجمة مقطع =====
+    @Synchronized private fun src(): AudioSource = source ?: openSource().also { it.setPreRoll(if (conf.hiTiming) 3.0 else 0.0); source = it }
+
+    private class Prep(val w: WavChunk, val rawStart: Double, val rawEnd: Double)
+
+    private fun translateChunk(i: Int) { prepare(i)?.let { send(i, it) } }
+
+    /** يفك الصوت (ويقصّر المقطع لأقرب لحظة صمت). null = مفيش حاجة تتبعت (صامت / مفيش صوت). */
+    private fun prepare(i: Int): Prep? {
+        val d = currentDur()
+        val rawStart = cStart(i)
+        var rawEnd = cEnd(i, d)
+        val start = if (i == 0) 0.0 else maxOf(0.0, rawStart - OVERLAP)
+        host.status("⏳ ترجمة المقطع ${i + 1}…")
+        val t0 = System.currentTimeMillis()
+        val s0 = src()
+        var w = s0.wav(start, rawEnd)
+        if (w == null) { host.log("… المقطع ${i + 1} مفيهوش صوت"); done.add(rawStart, rawEnd); persist(); return null }
+        host.log("🎧 صوت المقطع ${i + 1}: ${w.bytes.size / 1024}KB في ${System.currentTimeMillis() - t0}ms")
+        if (conf.vad && w.silent) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى"); done.add(rawStart, rawEnd); persist(); return null }
+        val last = d > 0 && rawEnd >= d - 0.01
+        val firstTime = prepared.add(i)
+        if (conf.silenceTrim && !last && firstTime && !bounds.containsKey(i + 1) && !prepared.contains(i + 1)) {
+            val cut = Silence.findCut(w.bytes)
+            if (cut != null) {
+                val adj = w.startSec + cut
+                if (adj > rawStart + 2.0 && adj < rawEnd - 0.2) {
+                    host.log("🌊 المقطع ${i + 1}: اتقصّر ${"%.1f".format(java.util.Locale.US, rawEnd - adj)}ث لأقرب لحظة صمت")
+                    w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent)
+                    rawEnd = adj; bounds[i + 1] = adj
+                    persist()
+                }
+            }
+        }
+        return Prep(w, rawStart, rawEnd)
+    }
+
+    private fun send(i: Int, p: Prep) {
+        val w = p.w; val rawStart = p.rawStart; val rawEnd = p.rawEnd
+        val prior = subs
+        var key = pool.pick(null, rr.getAndIncrement()) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0
+        while (running && tries++ < MAX_TRIES) {
+            val prompt = buildPrompt(w.durSec, w.startSec)
+            try {
+                val r = Api.generate(conf.model, key, prompt, w.bytes)
+                if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
+                if (r.finish.isNotEmpty() && r.finish != "STOP" && r.finish != "MAX_TOKENS") throw Exception("رد Gemini اتوقف: ${r.finish}")
+                var j: JSONObject? = null
+                if (r.text.isNotBlank()) { j = Parse.json(r.text); if (j == null) throw BadReply("رد Gemini مش JSON صالح") }
+                val fresh = if (j == null) emptyList() else Parse.subs(j, w.startSec, w.durSec)
+                if (fresh.isEmpty() && empties < 1) {
+                    empties++
+                    pool.pick(key, rr.getAndIncrement())?.let { key = it }
+                    nap(400); continue
+                }
+                pool.good(key)
+                applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
+                return
+            } catch (e: BadReply) {
+                if (bad++ < 2) { host.log("⚠ ${e.message} — إعادة المحاولة"); nap(600); continue }
+                throw e
+            } catch (e: ApiErr) {
+                val invalid = e.code == 403 || (e.code == 400 && (e.message ?: "").contains("API key", true))
+                if (e.code == 429) {
+                    pool.block(key, 60_000)
+                    val alt = pool.pick(key, rr.getAndIncrement())
+                    if (alt != null) { host.log("⏳ 429 على ${pool.tail(key)} — تحويل لمفتاح ${pool.tail(alt)}"); key = alt; continue }
+                    val s = pool.streakUp(); val wait = minOf(60, 10 * s)
+                    host.log("⏳ كل المفاتيح في كوتة — انتظار ${wait}ث"); nap(wait * 1000L)
+                    pool.clear(); continue
+                }
+                if (invalid) {
+                    pool.block(key, 3_600_000)
+                    val alt = pool.pick(key, rr.getAndIncrement())
+                    if (alt != null) { host.log("🔑 مفتاح ${pool.tail(key)} غير صالح — تحويل"); key = alt; continue }
+                    throw Exception("مفتاح API غير صالح أو الموديل مش متاح")
+                }
+                if (e.code >= 500) { host.log("⚠ خطأ من السيرفر (${e.code}) — إعادة المحاولة"); nap(3000); continue }
+                throw e
+            } catch (e: Unsupported) { throw e
+            } catch (e: IOException) {
+                if (++net > 4) throw e
+                host.log("📶 مشكلة اتصال: ${(e.message ?: "").take(80)} — إعادة المحاولة"); nap(2000L * net)
+            }
+        }
+        if (running) throw Exception("استنفدت المحاولات")
+    }
+
+    private fun buildPrompt(durSec: Double, start: Double): String {
+        val case = pb.caseOf(srcLang, detDone)
+        val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(conf, "other"))] } else null
+        return pb.build(conf, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf)
+    }
+
+    private fun tplKey(id: String) = "$srcLang|$id"
+
+    private fun effectiveChars(): List<Chr> = if (conf.manualChars.isNotEmpty()) conf.manualChars else synchronized(lock) { chars.toList() }
+    private fun effectiveGloss(): List<Gloss> = synchronized(lock) { gloss.toList() }
+
+    private fun applyChunk(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, j: JSONObject?, fresh: List<Sub>, prior: List<Sub>) {
+        if (j != null && !detDone) {
+            val d = j.optString("detected_source_language", "").trim()
+            if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
+        }
+        if (j != null) applyPrevCorrections(j)
+        val tagged = Subs.splitAll(fresh).map { it.copy(chunk = i) }
+        synchronized(lock) {
+            val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) }
+            subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
+        }
+        done.add(rawStart, rawEnd)
+        failed.remove(i)
+        anyApplied = true
+        host.changed()
+        host.log("✅ المقطع ${i + 1}: ${fresh.size} جملة — الإجمالي ${subs.size}")
+        persist()
+        afterChunk(w, fresh, prior)
+    }
+
+    private fun applyPrevCorrections(j: JSONObject) {
+        val pc = j.optJSONArray("prev_corrections") ?: return
+        var n = 0
+        synchronized(lock) {
+            val cur = subs.toMutableList()
+            for (k in 0 until pc.length()) {
+                val c = pc.optJSONObject(k) ?: continue
+                val snip = c.optString("original_snippet").trim()
+                if (snip.length < 3) continue
+                val idx = cur.indexOfLast { it.original.contains(snip) }
+                if (idx < 0) continue
+                var s = cur[idx]
+                c.optString("gender").lowercase().takeIf { it == "male" || it == "female" }?.let { s = s.copy(gender = it) }
+                c.optString("addressee").lowercase().takeIf { it in listOf("male", "female", "plural", "unknown") }?.let { s = s.copy(addressee = it) }
+                c.optString("topic_gender").lowercase().takeIf { it in listOf("male", "female", "plural", "none") }?.let { s = s.copy(topicGender = it) }
+                c.optString("translated").trim().takeIf { it.isNotEmpty() }?.let { s = s.copy(translated = it) }
+                cur[idx] = s; n++
+            }
+            if (n > 0) subs = cur
+        }
+        if (n > 0) host.log("🩺 تصحيح $n جملة قديمة (جنس/ضمير)")
+    }
+
+    // ===== المهام الخلفية بعد كل مقطع =====
+    private fun afterChunk(w: WavChunk, fresh: List<Sub>, prior: List<Sub>) {
+        if (conf.crossReview && currentDur() >= CROSS_MIN_DUR && prior.isNotEmpty() && fresh.isNotEmpty() && reviews.get() < 2) {
+            reviews.incrementAndGet()
+            val off = w.startSec
+            try { bg.submit { try { crossReview(prior, fresh, off) } catch (e: Exception) { host.log("⚠ المراجعة بين المقاطع فشلت: " + (e.message ?: "").take(100)) } finally { reviews.decrementAndGet() } } }
+            catch (_: Exception) { reviews.decrementAndGet() }
+        }
+        maybeAnalyze()
+        maybePronouns()
+    }
+
+    private fun helperKey(i: Int = 0): String? {
+        val pref = if (conf.backup.isNotEmpty()) conf.backup else conf.keys
+        val ok = pref.filter { pool.ok(it) }
+        if (ok.isNotEmpty()) return ok[Math.floorMod(i, ok.size)]
+        return pool.helper()
+    }
+
+    private fun bgCall(prompt: String, maxTokens: Int, temp: Double, json: Boolean = true, i: Int = 0): Api.Result {
+        var key = helperKey(i) ?: throw Exception("مفيش مفتاح")
+        var tries = 0
+        while (true) {
+            try { return Api.generate(conf.model, key, prompt, null, maxTokens, temp, json) }
+            catch (e: ApiErr) {
+                if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else throw e
+                val alt = helperKey(i + 1)
+                if (alt == null || alt == key || ++tries > 2) throw e
+                key = alt
+            }
+        }
+    }
+
+    // --- تحليل الشخصيات تلقائيًا (_maybeAutoAnalyzeCharacters / analyzeCharacters) ---
+    private fun maybeAnalyze() {
+        if (!conf.autoChars || conf.manualChars.isNotEmpty()) return
+        synchronized(lock) {
+            if (chars.isNotEmpty() || charsBusy || autoCharsAttempts >= 2 || subs.size < CHAR_MIN_LINES) return
+            if (autoCharsAttempts > 0 && subs.size < charsTrySize + 30) return
+            charsBusy = true; charsTrySize = subs.size
+        }
+        try {
+            bg.submit {
+                try { analyzeChars() } catch (e: Exception) { host.log("⚠ تحليل الشخصيات فشل: " + (e.message ?: "").take(100)) }
+                finally { synchronized(lock) { charsBusy = false; autoCharsAttempts++ }; persist() }
+            }
+        } catch (_: Exception) { synchronized(lock) { charsBusy = false } }
+    }
+
+    private fun analyzeChars() {
+        val snap = subs
+        val stride = if (snap.size > 400) Math.ceil(snap.size / 400.0).toInt() else 1
+        val sample = snap.filterIndexed { i, _ -> i % stride == 0 }
+        val dialogue = sample.joinToString("\n") { s ->
+            val g = if (s.gender == "female") "أنثى" else "ذكر"
+            val names = if (s.people.isNotEmpty()) " [أسماء مذكورة: ${s.people.joinToString("، ")}]" else ""
+            "[متكلم:$g]$names ${s.translated.ifEmpty { s.original }}"
+        }
+        host.log("🧑‍🤝‍🧑 بحلل الشخصيات من ${sample.size} جملة…")
+        val r = bgCall(pb.read("prompts/analyze_chars.txt").replace("§DIALOGUE§", dialogue), 3072, 0.2)
+        val j = Parse.json(r.text) ?: throw Exception("رد غير صالح")
+        var nc = 0; var ng = 0
+        synchronized(lock) {
+            val ca = j.optJSONArray("characters")
+            for (k in 0 until (ca?.length() ?: 0)) {
+                val o = ca!!.optJSONObject(k) ?: continue
+                val name = o.optString("name").trim(); if (name.isEmpty()) continue
+                val g = if (o.optString("gender").lowercase().startsWith("f")) "female" else "male"
+                val role = o.optString("role").trim()
+                val ix = chars.indexOfFirst { it.name == name }
+                if (ix >= 0) chars[ix] = Chr(name, g, role.ifEmpty { chars[ix].role }) else chars.add(Chr(name, g, role))
+                nc++
+            }
+            val ga = j.optJSONArray("glossary")
+            for (k in 0 until (ga?.length() ?: 0)) {
+                val o = ga!!.optJSONObject(k) ?: continue
+                val term = (o.optString("term").ifEmpty { o.optString("name") }).trim(); if (term.isEmpty()) continue
+                val note = (o.optString("note").ifEmpty { o.optString("translation") }).trim()
+                if (gloss.none { it.term == term }) { gloss.add(Gloss(term, note)); ng++ }
+            }
+        }
+        host.log("🧑‍🤝‍🧑 اتحددت $nc شخصية و$ng مصطلح — هتتحط في الـ prompt من المقطع الجاي")
+    }
+
+    // --- تصحيح الضمائر تلقائيًا (_maybeAutoCorrectPronouns) ---
+    private fun maybePronouns() {
+        if (!conf.autoPronouns) return
+        if (effectiveChars().isEmpty()) return
+        synchronized(lock) {
+            if (pronBusy || subs.size < PRON_MIN_LINES || pronUpTo >= subs.size) return
+            pronBusy = true
+        }
+        try {
+            bg.submit {
+                try { pronounPass() } catch (e: Exception) { host.log("⚠ تصحيح الضمائر فشل: " + (e.message ?: "").take(100)) }
+                finally { synchronized(lock) { pronBusy = false } }
+            }
+        } catch (_: Exception) { synchronized(lock) { pronBusy = false } }
+    }
+
+    private fun pronounPass() {
+        val cs = effectiveChars(); if (cs.isEmpty()) return
+        val snap = subs
+        val names = cs.map { it.name.trim() }.filter { it.isNotEmpty() }.toSet()
+        val named = snap.indices.filter { i -> snap[i].people.any { it.trim() in names } }.toSet()
+        val cand = (pronUpTo until snap.size).filter { i -> (i - 3..i + 3).any { it in named } }
+        var fixed = 0
+        for (batch in cand.chunked(40)) {
+            if (!running) return
+            fixed += runPronounCorrection(snap, batch, cs)
+        }
+        if (fixed > 0) { host.log("🩺 تصحيح ضمائر: $fixed جملة"); host.changed(); persist() }
+        pronUpTo = maxOf(pronUpTo, snap.size)
+    }
+
+    private fun runPronounCorrection(snap: List<Sub>, batch: List<Int>, cs: List<Chr>): Int {
+        val want = LinkedHashSet<Int>()
+        for (i in batch) for (k in i - 2..i + 2) if (k in snap.indices) want.add(k)
+        val list = JSONArray()
+        for (k in want) {
+            val s = snap[k]
+            list.put(JSONObject().put("idx", k).put("review", k in batch).put("original", s.original).put("translated", s.translated))
+        }
+        val table = cs.joinToString("\n") { "- \"${it.name}\": ${if (it.gender == "female") "أنثى (مؤنث)" else "ذكر (مذكر)"}" }
+        val prompt = pb.read("prompts/pronoun_fix.txt").replace("§TABLE§", table).replace("§LIST§", list.toString())
+        val r = bgCall(prompt, 8192, 0.1)
+        val j = Parse.json(r.text) ?: return 0
+        val arr = j.optJSONArray("corrections") ?: return 0
+        var n = 0
+        synchronized(lock) {
+            val cur = subs.toMutableList()
+            for (q in 0 until arr.length()) {
+                val c = arr.optJSONObject(q) ?: continue
+                if (!c.has("idx")) continue
+                val idx = c.optInt("idx", -1)
+                if (idx !in batch) continue
+                val tr = c.optString("translated").trim(); if (tr.isEmpty()) continue
+                val target = snap[idx]
+                val at = cur.indexOfFirst { Math.abs(it.start - target.start) < 0.05 && it.original == target.original }
+                if (at >= 0 && cur[at].translated != tr) { cur[at] = cur[at].copy(translated = tr); n++ }
+            }
+            if (n > 0) subs = cur
+        }
+        return n
+    }
+
+    // --- المراجعة بين المقاطع (reviewCrossChunkContext) ---
+    private fun crossReview(prior: List<Sub>, fresh: List<Sub>, offsetSec: Double) {
+        nap(4500)
+        if (!running) return
+        val base = if (prior.size > PRIOR_CAP) prior.size - PRIOR_CAP else 0
+        val capped = prior.subList(base, prior.size)
+        val newList = JSONArray()
+        for ((k, s) in fresh.withIndex()) newList.put(JSONObject().put("idx", k)
+            .put("start", Math.round((s.start - offsetSec) * 100) / 100.0).put("end", Math.round((s.end - offsetSec) * 100) / 100.0)
+            .put("original", s.original).put("translated", s.translated))
+        val priorList = JSONArray()
+        for ((k, s) in capped.withIndex()) priorList.put(JSONObject().put("idx", k).put("original", s.original).put("translated", s.translated)
+            .put("gender", s.gender).put("addressee", s.addressee).put("topic_gender", s.topicGender))
+        val east = "   طبّق نفس قواعد تحديد الجنس الآسيوية دي في المراجعة:\n" + pb.read("prompts/east_asian.txt")
+        val prompt = pb.read("prompts/review_cross.txt").replace("§NEW§", newList.toString()).replace("§PRIOR§", priorList.toString()).replace("§EAST§", east)
+        val r = bgCall(prompt, 6144, 0.1, true, (offsetSec / ch).toInt())
+        val j = Parse.json(r.text) ?: return
+        val arr = j.optJSONArray("corrections") ?: return
+        var n = 0
+        synchronized(lock) {
+            val cur = subs.toMutableList()
+            for (q in 0 until arr.length()) {
+                val c = arr.optJSONObject(q) ?: continue
+                if (!c.has("idx")) continue
+                val idx = c.optInt("idx", -1)
+                if (idx < 0 || idx >= capped.size) continue
+                val target = capped[idx]
+                val at = cur.indexOfFirst { Math.abs(it.start - target.start) < 0.05 && it.original == target.original }
+                if (at < 0) continue
+                var s = cur[at]; val before = s
+                c.optString("gender").lowercase().takeIf { it == "male" || it == "female" }?.let { s = s.copy(gender = it) }
+                c.optString("addressee").lowercase().takeIf { it in listOf("male", "female", "plural", "unknown") }?.let { s = s.copy(addressee = it) }
+                c.optString("topic_gender").lowercase().takeIf { it in listOf("male", "female", "plural", "none") }?.let { s = s.copy(topicGender = it) }
+                c.optString("translated").trim().takeIf { it.isNotEmpty() }?.let { s = s.copy(translated = it) }
+                if (s != before) { cur[at] = s; n++ }
+            }
+            if (n > 0) subs = cur
+        }
+        if (n > 0) { host.log("🔎 مراجعة بين المقاطع: صححت $n جملة قديمة"); host.changed(); persist() }
+    }
+
+    // --- ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز (_translatePromptTemplate) ---
+    private fun maybeTranslateTemplate() {
+        if (!conf.autoTemplate) return
+        if (pb.caseOf(srcLang, detDone) != "other") return
+        val lang = srcLang
+        if (lang.contains("عرب")) return
+        val id = pb.templateId(conf, "other")
+        val k = "$lang|$id"
+        synchronized(tplCache) { if (tplCache.containsKey(k) || tplBusy.contains(k) || (tplFails[k] ?: 0) >= 2) return; tplBusy.add(k) }
+        try {
+            bg.submit {
+                try { translateTemplate(id, lang, k) }
+                catch (e: Exception) { synchronized(tplCache) { tplFails[k] = (tplFails[k] ?: 0) + 1 }; host.log("⚠ ترجمة قالب الـ prompt فشلت: " + (e.message ?: "").take(100)) }
+                finally { synchronized(tplCache) { tplBusy.remove(k) } }
+            }
+        } catch (_: Exception) { synchronized(tplCache) { tplBusy.remove(k) } }
+    }
+
+    private fun translateTemplate(id: String, lang: String, k: String) {
+        val token = "[[ROSTER_BLOCK]]"
+        val text = pb.fixedPart(id).replace("§ROSTER§", token)
+        val prompt = pb.read("prompts/tpl_translate.txt").replace("§LANG§", lang).replace("§TEXT§", text)
+        host.log("🈯 بترجم قالب الـ prompt للغة $lang…")
+        val r = bgCall(prompt, 32768, 0.0, false)
+        val t = r.text.trim()
+        if (r.finish != "STOP" || t.length < 200) throw Exception("الترجمة ناقصة (${r.finish})")
+        val fin = if (t.contains(token)) t.replace(token, "§ROSTER§") else "$t\n§ROSTER§"
+        synchronized(tplCache) { tplCache[k] = fin }
+        host.log("🈯 قالب الـ prompt بقى بلغة $lang من المقطع الجاي")
+        persist()
+    }
+
+    // ===== سدّ الفجوات تلقائيًا أثناء المشاهدة (autoGapFill) =====
+    /** مناطق اتترجمت بس مفيهاش جمل لمدة طويلة، قريبة من مكان التشغيل: بتتبعت بمفاتيح المراقبين/الاحتياطي وبتتعلّم بـ «» */
+    private fun gapTick(): Boolean {
+        if (!conf.gapFill || !running) return false
+        val now = System.currentTimeMillis()
+        if (now - lastGapScan < Gaps.COOLDOWN_MS) return false
+        lastGapScan = now
+        if (gapBusy.get() >= Gaps.MAX_PARALLEL) return false
+        val pos = host.position(); val d = currentDur()
+        val atEnd = d > 0 && pos >= d - 2
+        val elig = Gaps.find(subs, done.list(), Gaps.MIN_SEC).filter {
+            !gapTried.covers(it[0], it[1]) && (atEnd || (pos >= it[0] - Gaps.LOOKAHEAD && pos < it[1]))
+        }
+        if (elig.isEmpty()) return false
+        var started = false
+        for (g in elig) {
+            if (gapBusy.get() >= Gaps.MAX_PARALLEL || gapSession.total() >= Gaps.MAX_TOTAL * ch) break
+            val key = pool.gapKey(gapKeys, rr.getAndIncrement()) ?: break
+            gapTried.add(g[0], g[1]); gapSession.add(g[0], g[1]); gapKeys.add(key); gapBusy.incrementAndGet()
+            host.log("🔁 سدّ فجوة تلقائي: ${"%.0f".format(java.util.Locale.US, g[0])}ث → ${"%.0f".format(java.util.Locale.US, g[1])}ث")
+            try {
+                gapEx.submit {
+                    try { for (pt in Gaps.parts(g[0], g[1], ch)) { if (!running) break; fillGap(pt[0], pt[1], key) } }
+                    catch (e: Exception) { host.log("⚠ سدّ الفجوة فشل: " + (e.message ?: "").take(100)) }
+                    finally { gapKeys.remove(key); gapBusy.decrementAndGet() }
+                }
+                started = true
+            } catch (_: RejectedExecutionException) { gapKeys.remove(key); gapBusy.decrementAndGet() }
+        }
+        return started
+    }
+
+    private fun fillGap(a: Double, b: Double, key0: String) {
+        val w = src().wav(a, b) ?: return
+        if (w.silent) { host.log("🔇 الفجوة ${a.toInt()}ث صامتة — اتخطّيت"); return }
+        var key = key0; var tries = 0
+        while (running && tries++ < 3) {
+            try {
+                val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec), w.bytes)
+                if (r.text.isBlank()) return
+                val j = Parse.json(r.text) ?: return
+                val marked = Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
+                if (marked.isEmpty()) return
+                synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + marked)).sortedBy { it.start } }
+                pool.good(key); host.changed(); persist()
+                host.log("✅ فجوة ${a.toInt()}ث: اتسدّ ${marked.size} جملة")
+                return
+            } catch (e: ApiErr) {
+                if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else throw e
+                key = pool.gapKey(gapKeys - key, rr.getAndIncrement()) ?: return
+            }
+        }
+    }
+
+    // ===== الحفظ =====
+    private fun persist() {
+        val st = store ?: return
+        val saved = synchronized(lock) {
+            val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }
+            Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list())
+        }
+        try { st.save(saved) } catch (e: Exception) { host.log("⚠ تعذر حفظ التقدم: " + (e.message ?: "").take(80)) }
+    }
+}
