@@ -28,6 +28,7 @@ fun main() {
     check("تداخل: أقصى 3 جمل", PlayerLogic.activeIndices(longArrayOf(0, 100, 200, 300), longArrayOf(5000, 5000, 5000, 5000), 1000, 0) == listOf(1, 2, 3))
     check("تداخل: مع إزاحة", PlayerLogic.activeIndices(s2, e2, 2500, 1000) == listOf(0, 1))
     check("تداخل: جملة طويلة بدأت بدري وجملة قصيرة خلصت", PlayerLogic.activeIndices(longArrayOf(0, 1000, 1200), longArrayOf(9000, 1500, 9000), 2000, 0).let { it == listOf(0, 2) })
+    check("ترتيب المتحدثين بالـ speaker_tag", PlayerLogic.orderSpeakers(listOf(sb(0.0, 1.0, "ب").copy(speakerTag = "2"), sb(0.0, 1.0, "أ").copy(speakerTag = "1"))).map { it.translated } == listOf("أ", "ب") && PlayerLogic.orderSpeakers(listOf(sb(0.0, 1.0, "ب"), sb(0.5, 1.0, "أ"))).map { it.translated } == listOf("ب", "أ"))
     check("combine: واحدة ترجع نفسها", sb(1.0, 2.0, "أ").let { PlayerLogic.combine(listOf(it)) === it } && PlayerLogic.combine(emptyList()) == null)
     val cb = PlayerLogic.combine(listOf(sb(0.0, 3.0, "أ"), sb(1.0, 2.5, "ب")))!!
     check("combine: ترقيم عربي وتوقيت", cb.translated == "١) أ\n٢) ب" && cb.start == 0.0 && cb.end == 3.0 && cb.overlap && !cb.isContinuation, cb.translated)

@@ -149,6 +149,12 @@ class PromptBuilder(private val readAsset: (String) -> String) {
 
     companion object {
         const val TAIL_MARK = "\n\n\n⏱ مدة هذا المقطع الصوتي"
+        /** تعليمات إضافية بتتحط على كل القوالب: التقسيم عند الوقفات الفعلية + المتحدثين المتداخلين (جيميناي هو اللي بيقسّم، مش التطبيق) */
+        const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
+            "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
+            "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
+            "- 🔴 لو الكلام متصل من غير وقفة خالص، قسّم عند أقرب نهاية فكرة أو فاصلة بحيث الجزء الواحد ما يزيدش عن 8 كلمات عربي تقريبًا.\n" +
+            "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرضهم كل واحد في سطر تحت التاني بلون مختلف.\n"
     }
 
     fun rosterText(chars: List<Chr>, gloss: List<Gloss>): String {
@@ -203,7 +209,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + glossBlock + tailFinal)
+        return (fixed + "\n" + SPLIT_BLOCK + glossBlock + tailFinal)
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }

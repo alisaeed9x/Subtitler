@@ -57,6 +57,13 @@ object PlayerLogic {
         return parts.size - 1
     }
 
+    /** ترتيب المتحدثين المتداخلين: لو كلهم ليهم speaker_tag رقم مختلف بيترتبوا بيه (1 فوق)، وإلا بترتيب البداية */
+    fun orderSpeakers(subs: List<Sub>): List<Sub> {
+        if (subs.size < 2) return subs
+        val tags = subs.map { it.speakerTag.trim().toIntOrNull() }
+        return if (tags.all { it != null } && tags.toSet().size == subs.size) subs.sortedBy { it.speakerTag.trim().toInt() } else subs
+    }
+
     private val AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
     fun arNum(n: Int) = n.toString().map { AR_DIGITS[it - '0'] }.joinToString("")
 

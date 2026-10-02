@@ -314,7 +314,7 @@ class MainActivity : Activity() {
             sw("نص أبيض عادي بحجم ثابت (بدون ألوان الجنس والأسماء وكلمة التأكيد والتكبير التلقائي وتأثيرات الانفعال)", "sub_plain", true),
             sw("لون نص موحّد", "sub_uni_on", false),
             ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) },
-            sw("تقسيم الجمل الطويلة لأجزاء بتظهر بالتتابع", "sub_split_on", true), slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, ""),
+            sw("تقسيم الجمل الطويلة لأجزاء بالتتابع (تقدير بعدد الكلمات — جيميناي بيقسّم عند الوقفات أصلًا)", "sub_split_on", false), slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, ""),
             sw("إخفاء الخلفية", "sub_nobg", false), slider("شفافية الخلفية", "sub_bgopa", 45, 0, 90, "%"), slider("نعومة حواف الخلفية (blur) — 0 = بدون", "sub_blur", 0, 0, 20, ""))
         val sec = ui.section("🎬 ستايل الترجمة", true, *body.toTypedArray())
         prev.style = st(); holder.post { showDemo() }
@@ -325,6 +325,8 @@ class MainActivity : Activity() {
         if (u.isBlank() && uri == null) return
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             if (uri != null) { data = uri; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) } else putExtra("url", u)
+            // لو فتحنا الإعدادات من المشغّل واخترنا فيديو جديد: امسح المشغّل القديم بدل ما يفضل تحته
+            if (intent?.getBooleanExtra("from_player", false) == true) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         })
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
@@ -444,6 +446,8 @@ class PlayerActivity : Activity(), Host {
     lateinit var assistMenuV: View
     var lastMem = 0L
     var applyChromeFn: () -> Unit = {}
+    var restyleFn: () -> Unit = {}
+    private var resumeAfterSettings = false
     val hideChrome = Runnable { chromeShown = false; applyChromeFn() }
     var fullMode = false
     var vid = ""
@@ -547,6 +551,7 @@ class PlayerActivity : Activity(), Host {
         // ---- نفس خطوات الأصل: تحكم الشاشة الكاملة (أزرار الترجمة فوق + كبسولة التقدم تحت) ----
         fun curStyle() = SubStyle.load { k, d -> Cfg.str(k, d) }
         fun restyle() { sub.style = curStyle(); curIdx = -2 }
+        restyleFn = { restyle() }
         fun fontLabel(): String { val f = curStyle().font; return SubStyle.fonts.firstOrNull { it.id == f }?.label ?: f }
         fun entLabel(): String { val a = curStyle().anim; return SubStyle.entrances.firstOrNull { it.id == a }?.label ?: "افتراضي" }
         fun scaleBy(dv: Int) { val n = (Cfg.int("sub_scale", 100) + dv).coerceIn(60, 200); Cfg.put("sub_scale", n.toString()); restyle(); giShow("📏 $n%", Gravity.CENTER) }
@@ -736,7 +741,7 @@ class PlayerActivity : Activity(), Host {
             ui.gridBtn("📥", "استيراد SRT") { doImport() },
             ui.gridBtn("📂", "فتح فيديو") { doOpen() },
             ui.gridBtn("⧉", "نافذة عائمة") { enterPip() },
-            ui.gridBtn("⚙️", "الإعدادات") { finish() }
+            ui.gridBtn("⚙️", "الإعدادات") { openSettings() }
         ))
         val extrasCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, ui.dp(2), 0, ui.dp(20)) }
         extrasCol.addView(ctl.root); extrasCol.addView(counters); extrasCol.addView(mem.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
@@ -788,7 +793,7 @@ class PlayerActivity : Activity(), Host {
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
                 val idx = act.lastOrNull() ?: -1
-                val gs = act.map { list[it] }
+                val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
                 var parts: List<String> = emptyList(); var part = 0
                 val ssn = sub.style
@@ -926,6 +931,19 @@ class PlayerActivity : Activity(), Host {
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
         super.onBackPressed()
+    }
+    /** الإعدادات من المشغّل: بتفتح شاشة الإعدادات فوق الفيديو من غير ما تقفله — الرجوع (Back) بيرجّعك للفيديو */
+    fun openSettings() {
+        resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
+        try { player.pause() } catch (_: Exception) {}
+        saveRecent(); Thread { engine.saveNow() }.start()
+        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true))
+    }
+    override fun onResume() {
+        super.onResume()
+        if (Cfg.str("theme", "default") != th.id) { recreate(); return }
+        restyleFn()
+        if (resumeAfterSettings) { resumeAfterSettings = false; try { player.play() } catch (_: Exception) {} }
     }
     override fun onPause() { super.onPause(); saveRecent(); Thread { engine.saveNow() }.start() }
     override fun onStop() { super.onStop(); saveRecent() }

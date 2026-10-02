@@ -7,7 +7,7 @@ class FontOpt(val id: String, val label: String, val serif: Boolean = false, val
 data class SubStyle(
     val scale: Int = 100, val bgOpa: Int = 45, val noBg: Boolean = false, val blur: Int = 0, val animMs: Int = 250,
     val anim: String = "default", val font: String = "Cairo", val plain: Boolean = true, val dual: Int = 0,
-    val uniOn: Boolean = false, val uniColor: String = "#FFFFFF", val splitOn: Boolean = true, val splitThresh: Int = 8,
+    val uniOn: Boolean = false, val uniColor: String = "#FFFFFF", val splitOn: Boolean = false, val splitThresh: Int = 8,
     val fontStyle: String = "orig"
 ) {
     companion object {
@@ -33,7 +33,7 @@ data class SubStyle(
             val an = get("sub_anim", "default").let { a -> if (entrances.any { it.id == a }) a else "default" }
             return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 90), b("sub_nobg", false), i("sub_blur", 0, 0, 20), i("sub_aspeed", 250, 50, 600),
                 an, get("sub_font", "Cairo"), b("sub_plain", true), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
-                get("sub_uni_color", "#FFFFFF"), b("sub_split_on", true), i("sub_split", 8, 3, 30),
+                get("sub_uni_color", "#FFFFFF"), b("sub_split_on", false), i("sub_split", 8, 3, 30),
                 get("sub_fontstyle", "orig").let { if (it in fontStyles.map { f -> f.first }) it else "orig" })
         }
 
@@ -43,6 +43,17 @@ data class SubStyle(
         /** تكبير/تصغير تلقائي حسب عدد كلمات الجملة (زي sizeMult في الأصل) */
         fun sizeMult(wordCount: Int): Float = when { wordCount <= 2 -> 1.18f; wordCount <= 4 -> 1.08f; wordCount >= 14 -> 0.82f; wordCount >= 10 -> 0.9f; else -> 1f }
 
+        /** ألوان سطور المتحدثين المتداخلين: لون الجنس أولًا، ولو اتكرر لون ياخد السطر لون تاني من الباليت عشان كل متحدث يبان لوحده */
+        fun lineColors(subs: List<Sub>): List<Int> {
+            val pal = listOf(MALE, FEMALE, PLACE, 0xFFB9F6CA.toInt(), 0xFFFFAB91.toInt())
+            val used = HashSet<Int>(); val out = ArrayList<Int>()
+            for (x in subs) {
+                var c = if (x.gender == "female") FEMALE else MALE
+                if (c in used) c = pal.firstOrNull { it !in used } ?: c
+                used.add(c); out.add(c)
+            }
+            return out
+        }
         /** تقسيم الجملة الطويلة لسطور متوازنة بحد أقصى كلمات للسطر */
         fun splitLong(text: String, thresh: Int): String {
             val w = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }

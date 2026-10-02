@@ -107,13 +107,20 @@ class SubtitleView(ctx: Context) : View(ctx) {
     }
 
     private val tfCache = HashMap<String, Typeface>()
+    /** الخط بالوزن جوه الـ Typeface نفسه (متخزّن بالملف+الوزن). ما بنستخدمش Paint.fontVariationSettings لأنه بيتجاهل التطبيق لو نفس النص اتحط قبل كده،
+     *  فكان الخط بيرجع للوزن الافتراضي من ثاني جملة. */
     private fun typefaceFor(): Typeface {
-        val f = style.effectiveFont()
+        val f = style.effectiveFont(); val wt = style.weight()
+        val key = (f.file ?: f.id) + "@" + wt
+        tfCache[key]?.let { return it }
+        var tf: Typeface? = null
         f.file?.let { fn ->
-            tfCache[fn]?.let { return it }
-            try { return Typeface.createFromAsset(context.assets, "fonts/$fn").also { tfCache[fn] = it } } catch (_: Exception) {}
+            try { tf = Typeface.Builder(context.assets, "fonts/$fn").setFontVariationSettings("'wght' $wt").build() } catch (_: Exception) {}
+            if (tf == null) try { tf = Typeface.createFromAsset(context.assets, "fonts/$fn") } catch (_: Exception) {}
         }
-        return Typeface.create(if (f.serif) "serif" else "sans-serif", Typeface.BOLD)
+        val out = tf ?: Typeface.create(if (f.serif) "serif" else "sans-serif", Typeface.BOLD)
+        tfCache[key] = out
+        return out
     }
     /** حافة الخلفية الناعمة (بديل الـ backdrop blur اللي مش ممكن فوق SurfaceView) */
     private fun ex(): Float = if (style.noBg || style.bgOpa == 0) 0f else style.blur * 0.6f * d
@@ -141,7 +148,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
         val nWords = txt0.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
         val px = SubStyle.fontPx(w, d, style.scale) * style.sizeFor(nWords)
         val ss = style; val col = ss.colorFor(s)
-        tp.apply { textSize = px; typeface = typefaceFor(); fontVariationSettings = "'wght' ${ss.weight()}"; color = col; letterSpacing = 0.02f; setShadowLayer(6f, 0f, 1f, 0xAA000000.toInt()) }
+        tp.apply { textSize = px; typeface = typefaceFor(); color = col; letterSpacing = 0.02f; setShadowLayer(6f, 0f, 1f, 0xAA000000.toInt()) }
         tp2.apply { textSize = (px * 0.75f).coerceAtLeast(11 * d); typeface = Typeface.create("sans-serif", Typeface.NORMAL); color = 0xBBFFFFFF.toInt(); setShadowLayer(4f, 0f, 1f, 0xAA000000.toInt()) }
         val txt = txt0
         val sp = SpannableString(txt)
@@ -156,7 +163,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
                 i++
             }
         }
-        if (multi) ranges.forEachIndexed { i, r -> if (!r.isEmpty()) sp.setSpan(ForegroundColorSpan(ss.colorFor(lines[i])), r.first, r.last + 1, 0) }
+        if (multi) { val lc = SubStyle.lineColors(lines); ranges.forEachIndexed { i, r -> if (!r.isEmpty()) sp.setSpan(ForegroundColorSpan(lc[i]), r.first, r.last + 1, 0) } }
         for ((a, b, place) in style.highlights(txt, s)) {
             if (place) sp.setSpan(ForegroundColorSpan(SubStyle.PLACE), a, b, 0)
             else { sp.setSpan(ForegroundColorSpan(SubStyle.WHITE), a, b, 0); sp.setSpan(StyleSpan(Typeface.BOLD), a, b, 0) }
