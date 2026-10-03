@@ -841,7 +841,7 @@ class PlayerActivity : Activity(), Host {
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
-                visOv.setBoxes(visual.boxesAt((cur - offsetMs) / 1000.0))
+                visOv.showBoxes(visual.boxesAt((cur - offsetMs) / 1000.0))
                 val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
                 val idx = act.lastOrNull() ?: -1
                 val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
@@ -1093,7 +1093,7 @@ class PlayerActivity : Activity(), Host {
             }
             d.dismiss()
         })
-        box.addView(ui.button("🗑 مسح النتائج") { visual.clear(); visOv.setBoxes(emptyList()); d.dismiss() })
+        box.addView(ui.button("🗑 مسح النتائج") { visual.clear(); visOv.showBoxes(emptyList()); d.dismiss() })
         d.setContentView(box)
         d.window?.apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT) }
         d.show()

@@ -152,7 +152,7 @@ class VisualOverlay(ctx: Context) : View(ctx) {
     var area: () -> RectF = { RectF(0f, 0f, width.toFloat(), height.toFloat()) }
     private val bgP = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
-    fun setBoxes(b: List<VisBox>) { if (b !== boxes && !(b.isEmpty() && boxes.isEmpty())) { boxes = b; invalidate() } }
+    fun showBoxes(b: List<VisBox>) { if (b !== boxes && !(b.isEmpty() && boxes.isEmpty())) { boxes = b; invalidate() } }
     override fun onDraw(c: Canvas) {
         if (boxes.isEmpty()) return
         val r = area(); val d = resources.displayMetrics.density
