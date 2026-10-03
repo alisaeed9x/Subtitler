@@ -15,7 +15,7 @@ class VisBox(
     val x: Float, val y: Float, val w: Float, val h: Float, val angle: Float,
     val original: String, val translated: String, val bg: Int, val fg: Int, val opacity: Int, val hasBox: Boolean
 )
-class VisFrame(val t: Double, val boxes: List<VisBox>)
+class VisFrame(val t: Double, val boxes: List<VisBox>, val dur: Double = VisualMode.STEP + 0.6)
 
 /** الوضع البصري: بياخد فريم كل ثانيتين قدّام مكان التشغيل، يبعته لـ Gemini، ويعرض النصوص المترجمة فوق الفيديو في مكانها */
 class VisualMode(
@@ -29,6 +29,7 @@ class VisualMode(
         const val STEP = 2.0            // ثانية بين كل فريم والتاني
         const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
         const val WAIT_429 = 30_000L
+        const val SNAP_DUR = 6.0        // ثواني عرض نتيجة اللقطة
 
         const val PROMPT_SCENE = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك فريم واحد من فيديو.\n" +
             "🔍 افحص الصورة بأقصى دقة ممكنة — النصوص أحياناً صغيرة ويسهل تفويتها.\n" +
@@ -65,6 +66,30 @@ class VisualMode(
     var sent = 0; private set
 
     fun clear() { frames.clear(); sent = 0 }
+
+    /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
+    fun snap(bmp: Bitmap, t: Double) {
+        Thread { try { snapWork(bmp, t) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) } }.also { it.isDaemon = true; it.start() }
+    }
+    private fun snapWork(bmp: Bitmap, t: Double) {
+        val keys = keyList()
+        if (keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
+        val jpeg = toJpeg(bmp); bmp.recycle()
+        val prompt = if (mode == "hardsub") PROMPT_HARDSUB.replace("§DIALECT§", "بلهجة ${conf.lang} وأسلوب ${conf.style}")
+            .replace("§LANG§", if (hardLang.isBlank()) "لغة الهاردسب: اكتشفها تلقائيًا من السطر المحروق." else "لغة الهاردسب في هذا الفيديو هي: \"$hardLang\" — اقرأ فقط الأسطر المكتوبة بيها.") else PROMPT_SCENE
+        var last = ""
+        for (round in 0 until 2) for (key in keys) {
+            try {
+                val res = Api.generateImage(conf.model, key, prompt, jpeg)
+                val boxes = parse(res.text)
+                frames.removeIf { Math.abs(it.t - t) < 0.5 }
+                frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
+                say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
+                changed(); return
+            } catch (e: ApiErr) { last = e.message ?: ""; if (e.code == 429) Thread.sleep(1500) }
+        }
+        say("👁 فشل: " + last.take(70))
+    }
 
     fun start() {
         stop(); running = true
@@ -142,7 +167,7 @@ class VisualMode(
     fun boxesAt(sec: Double): List<VisBox> {
         var f: VisFrame? = null
         for (x in frames) if (x.t <= sec + 0.3 && (f == null || x.t > f.t)) f = x
-        return if (f != null && sec <= f.t + STEP + 0.6) f.boxes else emptyList()
+        return if (f != null && sec <= f.t + f.dur) f.boxes else emptyList()
     }
 }
 

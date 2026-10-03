@@ -283,7 +283,7 @@ class MainActivity : Activity() {
             return
         }
         setContentView(frame)
-        if (!fromPlayer) frame.post { ensureKeys { refreshChip() } }
+        if (!fromPlayer) frame.post { ensureKeys { keys.setText(Cfg.str("keys")); refreshChip() } }
         if (intent?.action == Intent.ACTION_SEND) {
             val t = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
             Regex("https?://\\S+").find(t)?.let { link.setText(it.value); play(it.value, null) }
@@ -447,7 +447,9 @@ class PlayerActivity : Activity(), Host {
     var list: List<Sub> = emptyList()
     var starts = LongArray(0); var ends = LongArray(0)
     var curIdx = -1; var curKey = ""; var lastRefresh = 0L
-    var offsetMs = 0L; var speed = 1f; var fit = 0; var ccOn = true
+    var offsetMs = 0L; var speed = 1f; var fit = 0; var fsFit = 2; var ccOn = true; var fitFsB: TextView? = null
+    fun curFit() = if (fullMode) fsFit else fit
+    lateinit var svRef: android.view.SurfaceView
     var vidW = 0; var vidH = 0
     lateinit var listView: ListView
     lateinit var counters: TextView
@@ -503,7 +505,7 @@ class PlayerActivity : Activity(), Host {
         Cfg.init(this); conf = Cfg.snapshot()
         th = Themes.byId(Cfg.str("theme", "default")); ui = Ui(this, th)
         window.statusBarColor = th.bg; window.navigationBarColor = th.bg
-        speed = Cfg.str("speed", "1").toFloatOrNull() ?: 1f; fit = Cfg.int("fit", 0).coerceIn(0, 2); offsetMs = Cfg.str("sub_offset_ms", "0").toLongOrNull() ?: 0L
+        speed = Cfg.str("speed", "1").toFloatOrNull() ?: 1f; fit = Cfg.int("fit", 0).coerceIn(0, 2); fsFit = Cfg.int("fs_fit", 2).coerceIn(0, 2); offsetMs = Cfg.str("sub_offset_ms", "0").toLongOrNull() ?: 0L
         uri = intent.data; url = intent.getStringExtra("url")
         intent.getStringExtra("ua")?.takeIf { it.isNotEmpty() }?.let { hdr["User-Agent"] = it }
         intent.getStringExtra("ref")?.takeIf { it.isNotEmpty() }?.let { hdr["Referer"] = it }
@@ -512,7 +514,7 @@ class PlayerActivity : Activity(), Host {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_RTL }
         val videoBox = FrameLayout(this).apply { background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = ui.dp(14).toFloat() }; clipToOutline = true; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         videoBoxRef = videoBox
-        val sv = SurfaceView(this)
+        val sv = SurfaceView(this); svRef = sv
         videoBox.addView(sv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         sub = SubtitleView(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; style = SubStyle.load { k, d -> Cfg.str(k, d) } }
         val subLp = FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = ui.dp(12) }
@@ -556,6 +558,7 @@ class PlayerActivity : Activity(), Host {
             orientation = LinearLayout.VERTICAL; visibility = View.GONE
             setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)); background = ui.box(0xB814171C.toInt(), 0x2EFFFFFF, 26)
         }
+        menu.addView(roundBtn("👁") { menu.visibility = View.GONE; visualSnap() }.apply { setOnLongClickListener { menu.visibility = View.GONE; visualDialog(); true } })
         menu.addView(roundBtn("📝") { sentDlg.show() })
         menu.addView(roundBtn("🕳") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         menu.addView(roundBtn("📥") { doImport() })
@@ -613,10 +616,11 @@ class PlayerActivity : Activity(), Host {
         fun pd(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); after(false) }.apply { minimumWidth = ui.dp(150) }
         fun hRow() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
         fun gCol() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12) }
-        val gText = gCol(); val gTime = gCol(); val gAi = gCol(); val gTool = gCol()
-        val rA = hRow(); val rT = hRow()
-        gText.addView(rA); gTime.addView(rT)
-        val tb = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        val gText = gCol(); val gAi = gCol(); val gTool = gCol()
+        fun tRow() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        val tb1 = tRow(); val tb2 = tRow()
+        val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        tb.addView(tb1, LinearLayout.LayoutParams(-2, -2)); tb.addView(tb2, LinearLayout.LayoutParams(-2, -2))
         fun grp(label: String, col: LinearLayout): TextView = ui.fsBtn("$label ▾") { v ->
             val had = popupOwner === v; dismissPop()
             if (!had) {
@@ -627,8 +631,6 @@ class PlayerActivity : Activity(), Host {
             }
             showChrome(); if (popup != null) h.removeCallbacks(hideChrome)
         }
-        rA.addView(pk("A−") { scaleBy(-10) }.apply { minimumWidth = ui.dp(70) })
-        rA.addView(pk("A+") { scaleBy(10) }.apply { minimumWidth = ui.dp(70) })
         gText.addView(pk("🔤 " + fontLabel()) { v ->
             val fs = SubStyle.fonts; val cf = curStyle().font
             val n = fs[(fs.indexOfFirst { it.id == cf } + 1) % fs.size]
@@ -639,18 +641,22 @@ class PlayerActivity : Activity(), Host {
             val n = es[(es.indexOfFirst { it.id == ca } + 1) % es.size]
             Cfg.put("sub_anim", n.id); restyle(); v.text = "✨ " + n.label
         })
-        gText.addView(pk("⬛ " + PlayerLogic.fitNames[fit]) { v ->
-            fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply()
-            v.text = "⬛ " + PlayerLogic.fitNames[fit]; applyFit(sv, videoBox)
-        })
         val spB = pk("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
-        fsSpeedB = spB; gTime.addView(spB)
+        fsSpeedB = spB; gText.addView(spB)
         val ccB = fb("CC") { toggleCc() }
-        ccFsB = ccB; tb.addView(ccB)
-        rT.addView(pk("−") { setOff(-500) }.apply { minimumWidth = ui.dp(48) })
-        val offB = pk(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
-        offFsB = offB; offB.minimumWidth = ui.dp(60); rT.addView(offB)
-        rT.addView(pk("+") { setOff(500) }.apply { minimumWidth = ui.dp(48) })
+        ccFsB = ccB; tb1.addView(ccB)
+        tb1.addView(fb("A−") { scaleBy(-10) })
+        tb1.addView(fb("A+") { scaleBy(10) })
+        val fitB = fb("⬛ " + PlayerLogic.fitNames[curFit()]) { v ->
+            if (fullMode) { fsFit = (fsFit + 1) % 3; Cfg.p.edit().putString("fs_fit", fsFit.toString()).apply() }
+            else { fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply() }
+            v.text = "⬛ " + PlayerLogic.fitNames[curFit()]; applyFit(sv, videoBox)
+        }
+        fitFsB = fitB; tb1.addView(fitB)
+        tb1.addView(fb("تقديم −0.1") { setOff(-100) })
+        val offB = fb(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
+        offFsB = offB; tb1.addView(offB)
+        tb1.addView(fb("تأخير +0.1") { setOff(100) })
         gTool.addView(pd("📤 تصدير SRT") { doExport() })
         gTool.addView(pd("🔁 سد الفجوات") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         gTool.addView(pd("⧉ نافذة صغيرة") { enterPip() })
@@ -663,8 +669,7 @@ class PlayerActivity : Activity(), Host {
         gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
         gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Toast.makeText(this, if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة", Toast.LENGTH_SHORT).show(); curIdx = -2 })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
-        gTool.addView(pd("👁 بصري") { visualDialog() })
-        tb.addView(grp("🔤 النص", gText)); tb.addView(grp("⏱ التوقيت", gTime)); tb.addView(grp("✨ لهجة", gAi)); tb.addView(grp("🧰 أدوات", gTool))
+        tb2.addView(grp("🔤 النص", gText)); tb2.addView(grp("✨ لهجة", gAi)); tb2.addView(grp("🧰 أدوات", gTool))
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFF17130A.toInt())
@@ -897,6 +902,7 @@ class PlayerActivity : Activity(), Host {
     /** أفقي = ملء الشاشة (شريط الأزرار العلوي + كبسولة التقدم تظهر بلمسة)، رأسي = فيديو فوق والكبسولة وشبكة الأزرار تحت */
     private fun applyFull(f: Boolean) {
         fullMode = f
+        fitFsB?.text = "⬛ " + PlayerLogic.fitNames[curFit()]; if (::svRef.isInitialized) applyFit(svRef, videoBoxRef)
         extras.visibility = if (f) View.GONE else View.VISIBLE
         val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams
         val dm = resources.displayMetrics
@@ -938,7 +944,7 @@ class PlayerActivity : Activity(), Host {
 
     private fun applyFit(sv: SurfaceView, box: View) {
         if (vidW == 0 || box.width == 0) return
-        val (w, hh) = PlayerLogic.fitSize(box.width, box.height, vidW, vidH, fit)
+        val (w, hh) = PlayerLogic.fitSize(box.width, box.height, vidW, vidH, curFit())
         sv.layoutParams = FrameLayout.LayoutParams(w, hh, Gravity.CENTER)
     }
 
@@ -1090,6 +1096,26 @@ class PlayerActivity : Activity(), Host {
             if (u != null) r.setDataSource(this, u) else if (l != null && !l.contains(".m3u8", true)) r.setDataSource(l, HashMap(hdr)) else return null
             r
         } catch (_: Exception) { null }
+    }
+
+    fun visualSnap() {
+        if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Toast.makeText(this, "مفيش فيديو شغّال", Toast.LENGTH_SHORT).show(); return }
+        try { player.pause() } catch (_: Exception) {}
+        val pos = (player.currentPosition - offsetMs) / 1000.0
+        val curUs = player.currentPosition * 1000
+        Toast.makeText(this, "📸 بلقط الشاشة وبترجم…", Toast.LENGTH_SHORT).show()
+        fun fallback() {
+            Thread {
+                val r = makeRetriever()
+                val b = try { r?.getFrameAtTime(curUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
+                try { r?.release() } catch (_: Exception) {}
+                if (b != null) visual.snap(b, pos) else runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }
+            }.start()
+        }
+        val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            android.view.PixelCopy.request(svRef, bmp, { res -> if (res == android.view.PixelCopy.SUCCESS) visual.snap(bmp, pos) else fallback() }, Handler(Looper.getMainLooper()))
+        } catch (_: Exception) { fallback() }
     }
 
     fun visualDialog() {
