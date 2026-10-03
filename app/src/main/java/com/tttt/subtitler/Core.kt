@@ -154,7 +154,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
             "- 🔴🔴 علامات الترقيم هي أماكن القطع: ممنوع يبقى جوه حقل translated الواحد أكتر من جملة مفصولة بنقطة (.) أو ؟ أو ! أو …، وممنوع جزئين مفصولين بفاصلة (،) كل واحد ليه توقيت كلام مختلف. كل جملة بتنتهي بنقطة/؟/! = subtitle مستقل بتوقيته الفعلي (حتى لو المتحدث التاني هو اللي كمّلها بعد الأول مباشرة). وكل جزء بين فاصلتين = subtitle مستقل بتوقيت start/end الحقيقي بتاعه، بشرط يبقى كلمتين فأكتر (الكلمة الواحدة زي \"أيوه،\" بتتلزق في اللي بعدها). مثال غلط: {\"start\":3.0,\"end\":8.0,\"translated\":\"يعني حبر فقعات. آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. الصح: subtitle أول {\"start\":3.0,\"end\":4.6,\"translated\":\"يعني حبر فقعات.\"} وsubtitle تاني {\"start\":5.1,\"end\":8.0,\"translated\":\"آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. كل subtitle يختفي لما صوت صاحبه يخلص ويظهر اللي بعده لما صوت صاحبه يبدأ.\n" +
-            "- 🔴 لو الكلام متصل من غير وقفة خالص، قسّم عند أقرب نهاية فكرة أو فاصلة بحيث الجزء الواحد ما يزيدش عن 8 كلمات عربي تقريبًا.\n" +
+            "- 🔴 لو الكلام متصل من غير وقفة خالص، قسّم عند أقرب نهاية فكرة أو فاصلة. كل subtitle لازم يكون جملة أو عبارة مفهومة ومكتملة المعنى (ماتقطعش في نص عبارة ولا تسيب جملة ناقصة ولا تحذف أي كلمة من الكلام المسموع).\n" +
             "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرضهم كل واحد في سطر تحت التاني بلون مختلف.\n"
     }
 
@@ -283,6 +283,29 @@ object Api {
     /**
      * طلب generateContent. الصوت (wav) بيتبعت stream على دفعات (من غير ما نبني نص base64 كبير في الرام).
      */
+    /** طلب generateContent بصورة JPEG + نص (للوضع البصري) */
+    fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 1500, temp: Double = 0.0): Result {
+        Quota.hit(model)
+        val b64 = java.util.Base64.getEncoder().encodeToString(jpeg)
+        val body = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}},{\"text\":" + JSONObject.quote(prompt) + "}]}]," +
+            "\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp,\"responseMimeType\":\"application/json\"},\"safetySettings\":[$SAFETY]}"
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        val c = URL("$base/models/$model:generateContent?key=$key").openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 60000
+            c.setRequestProperty("Content-Type", "application/json"); c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            val code = c.responseCode
+            val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (code >= 300) throw ApiErr(code, try { JSONObject(txt).getJSONObject("error").getString("message") } catch (_: Exception) { "HTTP $code" })
+            val cand = JSONObject(txt).optJSONArray("candidates")?.optJSONObject(0) ?: return Result("", "")
+            val parts = cand.optJSONObject("content")?.optJSONArray("parts")
+            val sb = StringBuilder()
+            if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
+            return Result(sb.toString(), cand.optString("finishReason", ""))
+        } finally { c.disconnect() }
+    }
+
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
                  maxTokens: Int = 8192, temp: Double = 0.1, json: Boolean = true): Result {
         Quota.hit(model)

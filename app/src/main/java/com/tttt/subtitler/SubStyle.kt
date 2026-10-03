@@ -6,7 +6,7 @@ class FontOpt(val id: String, val label: String, val serif: Boolean = false, val
 
 data class SubStyle(
     val scale: Int = 100, val bgOpa: Int = 45, val noBg: Boolean = false, val blur: Int = 0, val animMs: Int = 250,
-    val anim: String = "default", val font: String = "Cairo", val plain: Boolean = true, val dual: Int = 0,
+    val anim: String = "default", val font: String = "Cairo", val plain: Boolean = false, val dual: Int = 0,
     val uniOn: Boolean = false, val uniColor: String = "#FFFFFF", val splitOn: Boolean = false, val splitThresh: Int = 8,
     val fontStyle: String = "orig", val punctOn: Boolean = true
 ) {
@@ -32,7 +32,7 @@ data class SubStyle(
             fun b(k: String, d: Boolean) = get(k, if (d) "1" else "0") == "1"
             val an = get("sub_anim", "default").let { a -> if (entrances.any { it.id == a }) a else "default" }
             return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 90), b("sub_nobg", false), i("sub_blur", 0, 0, 20), i("sub_aspeed", 250, 50, 600),
-                an, get("sub_font", "Cairo"), b("sub_plain", true), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
+                an, get("sub_font", "Cairo"), b("sub_plain", false), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
                 get("sub_uni_color", "#FFFFFF"), b("sub_split_on", false), i("sub_split", 8, 3, 30),
                 get("sub_fontstyle", "orig").let { if (it in fontStyles.map { f -> f.first }) it else "orig" }, b("sub_punct", true))
         }

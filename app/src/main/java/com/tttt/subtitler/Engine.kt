@@ -467,9 +467,7 @@ class Engine(
     private fun pronounPass() {
         val cs = effectiveChars(); if (cs.isEmpty()) return
         val snap = subs
-        val names = cs.map { it.name.trim() }.filter { it.isNotEmpty() }.toSet()
-        val named = snap.indices.filter { i -> snap[i].people.any { it.trim() in names } }.toSet()
-        val cand = (pronUpTo until snap.size).filter { i -> (i - 3..i + 3).any { it in named } }
+        val cand = (pronUpTo until snap.size).toList()
         var fixed = 0
         for (batch in cand.chunked(40)) {
             if (!running) return
@@ -485,7 +483,7 @@ class Engine(
         val list = JSONArray()
         for (k in want) {
             val s = snap[k]
-            list.put(JSONObject().put("idx", k).put("review", k in batch).put("original", s.original).put("translated", s.translated))
+            list.put(JSONObject().put("idx", k).put("review", k in batch).put("original", s.original).put("translated", s.translated).put("speaker_gender", s.gender).put("addressee_gender", s.addressee))
         }
         val table = cs.joinToString("\n") { "- \"${it.name}\": ${if (it.gender == "female") "أنثى (مؤنث)" else "ذكر (مذكر)"}" }
         val prompt = pb.read("prompts/pronoun_fix.txt").replace("§TABLE§", table).replace("§LIST§", list.toString())
@@ -552,6 +550,138 @@ class Engine(
     }
 
     // --- ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز (_translatePromptTemplate) ---
+    // ===== أدوات يدوية من المشغّل (أزرار الشاشة الكاملة في نسخة الـ HTML) =====
+    class Version(val name: String, val subs: List<Sub>)
+    val versions = java.util.concurrent.CopyOnWriteArrayList<Version>()
+    fun saveVersion(name: String) { versions.add(Version(name, subs)); while (versions.size > 12) versions.removeAt(0) }
+    /** يرجّع نص الترجمة (translated) بس من نسخة محفوظة على الجمل المطابقة (نفس البداية والأصل)، والجمل الجديدة بتفضل زي ما هي */
+    fun applyVersion(i: Int): Int {
+        val v = versions.getOrNull(i) ?: return 0
+        var n = 0
+        synchronized(lock) {
+            val cur = subs.toMutableList()
+            for (k in cur.indices) {
+                val m = v.subs.firstOrNull { Math.abs(it.start - cur[k].start) < 0.05 && it.original == cur[k].original } ?: continue
+                if (m.translated != cur[k].translated) { cur[k] = cur[k].copy(translated = m.translated); n++ }
+            }
+            subs = cur
+        }
+        host.changed(); persist(); return n
+    }
+
+    @Volatile var toolBusy: String? = null
+        private set
+
+    /** 🔧 تصحيح الضمائر لكل الجمل (من جدول الشخصيات + جنس الصوت) */
+    fun correctPronounsNow(report: (String) -> Unit, done: (Int) -> Unit) {
+        if (toolBusy != null) { report("في عملية شغالة: " + toolBusy); return }
+        val cs = effectiveChars()
+        if (cs.isEmpty()) { report("مفيش جدول شخصيات — ضيف شخصيات من الإعدادات ← الشخصيات الأول"); done(0); return }
+        toolBusy = "تصحيح الضمائر"
+        Thread {
+            var fixed = 0
+            try {
+                saveVersion("قبل تصحيح الضمائر")
+                val snap = subs
+                val all = snap.indices.toList()
+                val batches = all.chunked(40)
+                batches.forEachIndexed { bi, batch ->
+                    if (!running) return@forEachIndexed
+                    report("🔧 ضمائر ${bi + 1}/${batches.size}")
+                    fixed += try { runPronounCorrection(snap, batch, cs) } catch (e: Exception) { host.log("⚠ ضمائر: " + (e.message ?: "").take(80)); 0 }
+                }
+                if (fixed > 0) { host.changed(); persist() }
+            } finally { toolBusy = null }
+            done(fixed)
+        }.start()
+    }
+
+    /** إعادة صياغة الترجمة الحالية بتعليمة (لهجة أقوى / عائلي / صريح / لهجة لايف) من نقطة معينة لآخر الفيديو */
+    fun rewriteAll(label: String, instruction: String, fromSec: Double, report: (String) -> Unit, done: (Int) -> Unit) {
+        if (toolBusy != null) { report("في عملية شغالة: " + toolBusy); return }
+        toolBusy = label
+        Thread {
+            var changed = 0
+            try {
+                saveVersion("قبل $label")
+                val snap = subs
+                val idx = snap.indices.filter { snap[it].end >= fromSec }
+                val table = effectiveChars().joinToString("\n") { "- \"${it.name}\": ${if (it.gender == "female") "أنثى" else "ذكر"}" }.ifEmpty { "(مفيش)" }
+                val batches = idx.chunked(40)
+                batches.forEachIndexed { bi, batch ->
+                    if (!running) return@forEachIndexed
+                    report("$label ${bi + 1}/${batches.size}")
+                    val list = JSONArray()
+                    for (k in batch) { val s = snap[k]; list.put(JSONObject().put("idx", k).put("original", s.original).put("translated", s.translated).put("speaker_gender", s.gender).put("addressee_gender", s.addressee)) }
+                    val prompt = "أنت محرر ترجمة محترف. اللغة/اللهجة الحالية: ${conf.lang} — الأسلوب: ${conf.style}.\n" +
+                        "المطلوب بالظبط: $instruction\n" +
+                        "قواعد ثابتة: حافظ على المعنى وعلى عدد الجمل وترتيبها (ماتدمجش ولا تقسّم). ماتقلبش ذكر لأنثى ولا العكس: جنس المتكلم = speaker_gender، وجنس المخاطَب = addressee_gender، وجنس الشخصيات المسماة من الجدول:\n$table\n" +
+                        "ماتلمسش الجملة لو مش محتاجة تغيير.\n\nالجمل:\n$list\n\n" +
+                        "أرجع JSON فقط بالجمل اللي اتغيّرت: {\"rewrites\":[{\"idx\":0,\"translated\":\"النص الجديد كامل\"}]}"
+                    try {
+                        val r = bgCall(prompt, 8192, 0.4, true, bi)
+                        val arr = (Parse.json(r.text) ?: return@forEachIndexed).optJSONArray("rewrites") ?: return@forEachIndexed
+                        synchronized(lock) {
+                            val cur = subs.toMutableList()
+                            for (q in 0 until arr.length()) {
+                                val c = arr.optJSONObject(q) ?: continue
+                                val ix = c.optInt("idx", -1); if (ix !in batch) continue
+                                val tr = c.optString("translated").trim(); if (tr.isEmpty()) continue
+                                val t = snap[ix]
+                                val at = cur.indexOfFirst { Math.abs(it.start - t.start) < 0.05 && it.original == t.original }
+                                if (at >= 0 && cur[at].translated != tr) { cur[at] = cur[at].copy(translated = tr); changed++ }
+                            }
+                            subs = cur
+                        }
+                        host.changed()
+                    } catch (e: Exception) { host.log("⚠ $label: " + (e.message ?: "").take(80)) }
+                }
+                if (changed > 0) persist()
+            } finally { toolBusy = null }
+            done(changed)
+        }.start()
+    }
+
+    /** 🧠 دمج الجمل المكررة المتداخلة زمنيًا (محلي بدون Gemini): جملتين متداخلتين ومتشابهتين جدًا = واحدة بأطول وقت */
+    fun removeDuplicates(): Int {
+        var removed = 0
+        synchronized(lock) {
+            val cur = subs.sortedBy { it.start }.toMutableList()
+            fun toks(x: String) = x.replace(Regex("[\\p{P}\\s]+"), " ").trim().split(" ").filter { it.isNotEmpty() }.toSet()
+            var i = 0
+            while (i < cur.size - 1) {
+                val a = cur[i]; val b = cur[i + 1]
+                val ov = minOf(a.end, b.end) - maxOf(a.start, b.start)
+                val ta = toks(a.translated); val tb = toks(b.translated)
+                val inter = ta.intersect(tb).size; val uni = ta.union(tb).size
+                val sim = if (uni == 0) 0.0 else inter.toDouble() / uni
+                if (ov > 0.3 && !(a.overlap && b.overlap && a.gender != b.gender) && (sim >= 0.7 || a.translated.contains(b.translated) || b.translated.contains(a.translated))) {
+                    val keep = if (b.translated.length >= a.translated.length) b else a
+                    cur[i] = keep.copy(start = minOf(a.start, b.start), end = maxOf(a.end, b.end))
+                    cur.removeAt(i + 1); removed++
+                } else i++
+            }
+            if (removed > 0) subs = cur
+        }
+        if (removed > 0) { saveVersion("بعد دمج المكرر"); host.changed(); persist() }
+        return removed
+    }
+
+    /** 📜 ذكّرني: ملخص لكل الأحداث من أول الفيديو لحد المكان الحالي */
+    fun recap(upToSec: Double, report: (String) -> Unit, done: (String) -> Unit) {
+        Thread {
+            try {
+                val snap = subs.filter { it.start <= upToSec }
+                if (snap.isEmpty()) { done("لسه مفيش ترجمة قبل المكان ده"); return@Thread }
+                val stride = if (snap.size > 500) Math.ceil(snap.size / 500.0).toInt() else 1
+                val text = snap.filterIndexed { i, _ -> i % stride == 0 }.joinToString("\n") { it.translated.ifEmpty { it.original } }
+                report("📜 بلخّص…")
+                val r = bgCall("ده حوار فيديو من أوله لحد اللحظة الحالية. لخّص بالعامية المصرية في 6 لـ 10 أسطر قصيرة أهم اللي حصل وإيه الشخصيات وإيه اللي كان بيحصل في آخر مشهد، من غير حرق للي هيجي بعد كده ومن غير مقدمات:\n\n$text", 1500, 0.4, false)
+                done(r.text.trim().ifEmpty { "ملقيتش ملخص" })
+            } catch (e: Exception) { done("⚠ فشل التلخيص: " + (e.message ?: "").take(100)) }
+        }.start()
+    }
+
     private fun maybeTranslateTemplate() {
         if (!conf.autoTemplate) return
         if (pb.caseOf(srcLang, detDone) != "other") return

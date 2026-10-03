@@ -155,6 +155,15 @@ fun main() {
     host2.pos = 365.0     // مقطع جديد (6)
     check("بيكمل من المقطع الجديد بس", waitFor(15000) { calls.any { it.type == "translate" && it.chunkStart == 356.0 } }, calls.filter { it.type == "translate" }.map { it.chunkStart }.toString())
     check("المقاطع 6-8 اتضافت من غير تكرار (3 مقاطع قدّام المشاهد)", waitFor(10000) { e2.subs.size == subsBefore + 15 } && e2.subs.map { it.original }.toSet().size == e2.subs.size, "subs=${e2.subs.size}")
+    println("=== أدوات يدوية: دمج المكرر + النسخ ===")
+    val e3 = Engine(conf(), { FakeSource(1000.0) }, null, FakeHost(), pb)
+    val b0 = e2.subs[0]
+    e3.importSubs(listOf(b0, b0.copy(start = b0.start + 0.1, end = b0.end + 0.5), b0.copy(start = b0.end + 5, end = b0.end + 7, translated = "جملة تانية خالص مختلفة")))
+    check("دمج المكرر بيدمج المتطابقتين المتداخلتين بس", e3.removeDuplicates() == 1 && e3.subs.size == 2, "subs=${e3.subs.size}")
+    e3.saveVersion("قبل")
+    val keep = e3.subs
+    e3.importSubs(keep.map { it.copy(translated = "معدّلة") })
+    check("applyVersion بيرجّع نص الترجمة من النسخة", e3.applyVersion(e3.versions.size - 1) == 2 && e3.subs.map { it.translated } == keep.map { it.translated })
     e2.stop(); t2.join(5000)
     srv.stop(0)
     println(if (fails == 0) "\nكل الاختبارات نجحت" else "\nفشل $fails اختبار")
