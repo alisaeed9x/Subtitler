@@ -194,6 +194,11 @@ class MainActivity : Activity() {
         topRow.addView(ui.circleBtn("🎨") { settingsDlg.show("theme") })
         topRow.addView(ui.circleBtn("⚙️") { settingsDlg.show("chars") })
         topRow.addView(ui.circleBtn("🎛") { settingsDlg.show("fonts") })
+        root.addView(android.widget.ImageView(this).apply {
+            setImageResource(R.drawable.logo); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, ui.dp(20).toFloat()) } }
+            clipToOutline = true
+        }, LinearLayout.LayoutParams(ui.dp(84), ui.dp(84)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, ui.dp(8)) })
         root.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false; layoutDirection = View.LAYOUT_DIRECTION_RTL
             setPadding(ui.dp(13), 0, ui.dp(13), 0); clipToPadding = false; addView(topRow)
@@ -1062,11 +1067,13 @@ class PlayerActivity : Activity(), Host {
         }
     }
 
-    fun makeRetriever(): android.media.MediaMetadataRetriever? = try {
-        val r = android.media.MediaMetadataRetriever(); val u = uri; val l = url
-        if (u != null) r.setDataSource(this, u) else if (l != null && !l.contains(".m3u8", true)) r.setDataSource(l, HashMap(hdr)) else return null
-        r
-    } catch (_: Exception) { null }
+    fun makeRetriever(): android.media.MediaMetadataRetriever? {
+        return try {
+            val r = android.media.MediaMetadataRetriever(); val u = uri; val l = url
+            if (u != null) r.setDataSource(this, u) else if (l != null && !l.contains(".m3u8", true)) r.setDataSource(l, HashMap(hdr)) else return null
+            r
+        } catch (_: Exception) { null }
+    }
 
     fun visualDialog() {
         val d = android.app.Dialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
