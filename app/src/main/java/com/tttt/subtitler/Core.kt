@@ -432,6 +432,16 @@ class Ranges {
     @Synchronized fun list(): List<DoubleArray> = r.map { it.copyOf() }
     @Synchronized fun total(): Double = r.sumOf { it[1] - it[0] }
     @Synchronized fun clear() = r.clear()
+    /** يشيل مجال زمني من المجالات المترجمة (لإعادة الترجمة) */
+    @Synchronized fun remove(s: Double, e: Double) {
+        val m = ArrayList<DoubleArray>()
+        for (x in r) {
+            if (x[1] <= s || x[0] >= e) { m.add(x); continue }
+            if (x[0] < s) m.add(doubleArrayOf(x[0], s))
+            if (x[1] > e) m.add(doubleArrayOf(e, x[1]))
+        }
+        r.clear(); r.addAll(m)
+    }
 }
 
 // ===== سياق الحوار السابق + إزالة التكرار + الدمج + تقسيم الجمل الطويلة (منقولة من الأصل) =====

@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
     <application android:supportsRtl="true" android:label="مترجم الفيديو" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
@@ -16,6 +18,7 @@
         <activity android:name=".PlayerActivity" android:exported="false"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|density"/>
+        <service android:name=".BgService" android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".KeepAliveService" android:exported="false" android:foregroundServiceType="dataSync"/>
     </application>
 </manifest>

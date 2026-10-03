@@ -28,6 +28,20 @@ object Recents {
     /** نفس الفيديو بيتحدّث ويطلع فوق؛ والقايمة محدودة */
     fun upsert(l: List<Recent>, r: Recent, max: Int = 15): List<Recent> = (listOf(r) + l.filter { it.id != r.id }).take(max)
 
+    private val ioLock = Any()
+    /** تحديث تقدم فيديو من الخلفية: بيحافظ على مكان الوقوف القديم ومابيخبّيش باقي الفيديوهات (حد أقصى 300) */
+    fun saveProgress(ctx: android.content.Context, id: String, title: String, url: String, uri: String, durSec: Double, subs: Int, coverSec: Double) {
+        synchronized(ioLock) {
+            try {
+                val f = java.io.File(ctx.filesDir, "recent.json")
+                val old = parse(try { f.readText() } catch (_: Exception) { "" })
+                val prev = old.firstOrNull { it.id == id }
+                val r = Recent(id, title, url, uri, prev?.posSec ?: 0.0, if (durSec > 0) durSec else (prev?.durSec ?: 0.0), subs, coverSec, System.currentTimeMillis())
+                f.writeText(toJson(upsert(old, r, 300)))
+            } catch (_: Exception) {}
+        }
+    }
+
     fun titleOf(videoId: String): String {
         val raw = videoId.removePrefix("f:").removePrefix("u:")
         val name = if (videoId.startsWith("f:")) raw.substringBeforeLast(':') else raw.substringBefore('?').substringAfterLast('/')

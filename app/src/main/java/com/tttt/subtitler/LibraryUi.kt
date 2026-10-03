@@ -33,6 +33,22 @@ class LibraryUi(
     var onLink: () -> Unit = {}
     var onPick: () -> Unit = {}
     var onPull: () -> Unit = {}
+    /** ترجمة في الخلفية: من القايمة (⋮) على الفيديو أو الفولدر */
+    var onBg: (VideoItem) -> Unit = {}
+    var onBgStop: (VideoItem) -> Unit = {}
+    var onBgFolder: (FolderItem) -> Unit = {}
+    var bgJob: (VideoItem) -> BgJob? = { null }
+    fun refreshRows() { (listV.adapter as? BaseAdapter)?.notifyDataSetChanged() }
+    private fun dots(f: (View) -> Unit) = TextView(act).apply {
+        text = "⋮"; textSize = 22f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+        setOnClickListener { f(this) }
+    }
+    private fun popup(anchor: View, items: List<Pair<String, () -> Unit>>) {
+        val pm = PopupMenu(act, anchor)
+        items.forEachIndexed { i, it -> pm.menu.add(0, i, i, it.first) }
+        pm.setOnMenuItemClickListener { m -> items[m.itemId].second(); true }
+        pm.show()
+    }
 
     val root = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setBackgroundColor(th.bg) }
     private var all: List<VideoItem> = emptyList()
@@ -305,13 +321,15 @@ class LibraryUi(
         val nameRow = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; addView(name, LinearLayout.LayoutParams(-2, -2, 1f)); addView(fBadge, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(8) }) }
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(nameRow); addView(info); addView(path) }
         val chev = TextView(act).apply { text = "‹"; textSize = 26f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(8), 0, ui.dp(4), 0) }
+        val fDots = dots { }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(10), ui.dp(8), ui.dp(10)); background = ui.box(th.card, th.border, 14)
             addView(icon, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(12) })
+            addView(fDots)
             addView(chev)
         }
-        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge) }
+        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge, fDots) }
         return wrap
     }
 
@@ -324,11 +342,12 @@ class LibraryUi(
         val nn = f.videos.count { keyOf(it) in newKeys }
         (t[4] as TextView).apply { text = if (nn > 1) "NEW $nn" else "NEW"; visibility = if (nn > 0) View.VISIBLE else View.GONE }
         t[3].setOnClickListener { rootPos = listV.firstVisiblePosition; curFolder = f.key; render(); listV.setSelection(0) }
+        t[5].setOnClickListener { v -> popup(v, listOf("🌙 ترجمة كل فيديوهات الفولدر في الخلفية (${f.videos.size})" to { onBgFolder(f) })) }
     }
     private val FolderItem.count: Int get() = videos.size
 
     // ===== صف الفيديو =====
-    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView)
+    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView, val dots: TextView)
 
     private fun newVideoRow(): View {
         val ph = TextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
@@ -354,12 +373,14 @@ class LibraryUi(
             addView(fill, LinearLayout.LayoutParams(0, -1, 0f)); addView(rest, LinearLayout.LayoutParams(0, -1, 1f)); visibility = View.GONE }
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleRow); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) })
             addView(bar, LinearLayout.LayoutParams(-1, ui.dp(3)).apply { topMargin = ui.dp(5) }) }
+        val vDots = dots { }
         val card = LinearLayout(act).apply {
-            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.box(th.card, th.border, 12)
+            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(8), ui.dp(4), ui.dp(8)); background = ui.box(th.card, th.border, 12)
             addView(thumb, LinearLayout.LayoutParams(ui.dp(128), ui.dp(72)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
+            addView(vDots)
         }
-        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick) }
+        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick, vDots) }
     }
 
     private fun bindVideo(v: View, vi: VideoItem) {
@@ -378,7 +399,18 @@ class LibraryUi(
         bar.visibility = if (frac > 0.01) View.VISIBLE else View.GONE
         (h.fill.layoutParams as LinearLayout.LayoutParams).weight = frac.toFloat(); (h.rest.layoutParams as LinearLayout.LayoutParams).weight = (1.0 - frac).toFloat(); bar.requestLayout()
         h.tick.visibility = if (r != null && r.percent >= 97) View.VISIBLE else View.GONE
+        val bj = bgJob(vi)
+        if (bj != null && bj.active) {
+            parts.add(if (bj.state == "queued") "⏳ في طابور الترجمة بالخلفية" else "🌙 بيترجم في الخلفية ${bj.pct}%" + (BgJobs.fmtRemain(bj.remainSec).let { if (it.isEmpty()) "" else " · باقي $it" }))
+        } else if (bj != null && bj.state == "failed") parts.add("⚠ ترجمة الخلفية وقفت: " + bj.err)
         h.state.text = parts.joinToString(" · "); h.state.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
+        h.dots.setOnClickListener { v ->
+            val running = bj != null && bj.active
+            popup(v, listOf(
+                (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 ترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) },
+                "▶ تشغيل" to { markPlayed(vi); onPlay(vi) }
+            ))
+        }
         h.iv.tag = vi.uri; h.iv.setImageDrawable(null)
         val c = Thumbs.peek(vi)
         if (c != null) h.iv.setImageBitmap(c)

@@ -20,6 +20,9 @@ class SubtitleView(ctx: Context) : View(ctx) {
     var backdrop: SurfaceView? = null
         set(v) { field = v; startBackdrop() }
     private var sub: Sub? = null
+    /** في وضع PiP الترجمة بتتعرض في شريط خارجي، فمنخفيش/نظهرش الـ View ده */
+    var suppressed = false
+        set(v) { field = v; if (v) visibility = GONE else if (sub != null) visibility = VISIBLE; startBackdrop() }
     private var main: StaticLayout? = null
     private var sec: StaticLayout? = null
     private var boxW = 0; private var boxH = 0
@@ -100,7 +103,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
         if (same) return
         sub = s; lines = if (group.size > 1) group else emptyList()
         if (s == null) { main = null; sec = null; animator.cancel(); emoAnim.cancel(); visibility = INVISIBLE; startBackdrop(); return }
-        visibility = VISIBLE; relayout(); startBackdrop()
+        visibility = if (suppressed) GONE else VISIBLE; relayout(); startBackdrop()
         animator.cancel(); animator.duration = style.animMs.toLong()
         animator.interpolator = if (style.anim == "bounce" || style.anim == "drop") OvershootInterpolator(2f) else android.view.animation.DecelerateInterpolator()
         if (style.anim == "default") progress = 1f else animator.start()

@@ -55,6 +55,19 @@ class Engine(
     @Volatile private var lastGapTry = 0L
     private val pool = Pool(conf)
     @Volatile private var running = true
+    /** وقفة: المحرك مايبعتش مقاطع جديدة (مستني اختيار المستخدم: كمّل ولا ترجم من جديد) */
+    @Volatile var paused = false
+    /** ترجمة في الخلفية من غير مشغّل: بيمشي من أول مقطع ناقص وبيخلص لوحده */
+    @Volatile var headless = false
+    /** ترجمة باتشات محددة بس (0-based) — بعد ما تخلص المحرك بيستنى ومابيكمّلش لقدّام */
+    @Volatile var onlyChunks: IntRange? = null
+    /** لو اتحدد: المحرك يبدأ من المقطع ده بدل مكان التشغيل لحد ما المشاهدة توصله */
+    @Volatile private var forcedCursor = -1
+    @Volatile private var finished = false
+    @Volatile private var gapScanClean = false
+    @Volatile var stoppedFlag = false
+        private set
+    var onFinished: ((Boolean) -> Unit)? = null
     @Volatile var fatal: String? = null
         private set
     @Volatile private var source: AudioSource? = null
@@ -104,6 +117,50 @@ class Engine(
         return sb.toString().trimEnd()
     }
     fun coveredSec() = done.total()
+    fun durationSec(): Double = currentDur()
+    fun chunkCount(): Int { val d = currentDur(); if (d <= 0) return 0; var i = 0; while (cStart(i) < d) i++; return i }
+    fun awaitStopped(ms: Long) { val t0 = System.currentTimeMillis(); while (!stoppedFlag && System.currentTimeMillis() - t0 < ms) try { Thread.sleep(50) } catch (_: InterruptedException) { return } }
+
+    class BatchInfo(val idx: Int, val start: Double, val end: Double, val mark: String)
+    /** كل الباتشات بحالتها (✅ خلص · ⏳ بيترجم · ❌ فشل · 🔁 بيعيد · ▫ لسه) — لقايمة إعادة الترجمة */
+    fun batches(): List<BatchInfo> {
+        val d = currentDur(); if (d <= 0) return emptyList()
+        val out = ArrayList<BatchInfo>(); var i = 0
+        while (cStart(i) < d) {
+            val mark = when {
+                i in inflight -> "⏳"
+                (failed[i] ?: 0) >= MAX_FAILS -> "❌"
+                isDone(i, d) -> "✅"
+                (failed[i] ?: 0) > 0 -> "🔁"
+                else -> "▫"
+            }
+            out.add(BatchInfo(i, cStart(i), cEnd(i, d), mark)); i++
+        }
+        return out
+    }
+    fun chunkOfSec(sec: Double): Int { var i = 0; while (cStart(i + 1) <= sec) i++; return i }
+    fun chunkStartSec(i: Int) = cStart(i)
+
+    /** يمسح ترجمة الباتشات من..إلى (شاملة، to < 0 = لحد النهاية) عشان تتترجم من جديد. بيحفظ نسخة قبلها (🗂 ترجمات الفيديو) */
+    fun redo(from: Int, to: Int) {
+        val d = currentDur()
+        val hi = if (to < 0) Int.MAX_VALUE else to
+        val a = cStart(from); val b = if (to < 0) Double.MAX_VALUE else cEnd(to, d)
+        if (subs.isNotEmpty()) saveVersion("قبل إعادة الترجمة من باتش ${from + 1}")
+        synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
+        done.remove(a, b); gapTried.remove(a, b)
+        val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
+        for (i in from..last) { failed.remove(i); gapPass.remove(i) }
+        pool.clear(); lastGapTry = 0L; gapScanClean = false
+        host.changed(); persist()
+    }
+    /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
+    fun redoFrom(i: Int) { redo(i, -1); onlyChunks = null; forcedCursor = i; paused = false }
+    /** باتش ده لوحده وخلاص */
+    fun redoOnly(i: Int) { redo(i, i); onlyChunks = i..i; paused = false }
+    /** من الأول خالص */
+    fun redoAll() { redo(0, -1); onlyChunks = null; forcedCursor = 0; paused = false }
+    fun resumeAuto() { onlyChunks = null; paused = false }
     fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow() }
     fun saveNow() = persist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
@@ -146,11 +203,25 @@ class Engine(
         exec = ex
         if (cap > 1) host.log("⚡ ترجمة متوازية: لحد $cap طلب في نفس الوقت")
         try {
+            if (headless) try { src() } catch (e: Exception) { host.log("⚠ معرفتش أفتح الفيديو: " + (e.message ?: e.toString()).take(120)) }
             while (running) {
                 val d = currentDur()
-                val c = (host.position() / ch).toInt().coerceAtLeast(0)
+                if (headless && d <= 0 && (failed[0] ?: 0) >= MAX_FAILS) { fatal = "معرفتش أفتح الفيديو أو أقرأ مدته"; host.log("⛔ " + fatal); host.status("⛔ " + fatal); running = false; break }
+                if (headless && !anyApplied && failedCount() >= 5) { fatal = "المقاطع بتفشل ورا بعض — راجع المفاتيح والنت"; host.log("⛔ " + fatal); host.status("⛔ " + fatal); running = false; break }
+                if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
+                var c = if (headless) firstUndone(d) else (host.position() / ch).toInt().coerceAtLeast(0)
+                val fc = forcedCursor
+                if (fc >= 0) {
+                    var k = fc
+                    while (!(d > 0 && cStart(k) >= d) && (isDone(k, d) || (failed[k] ?: 0) >= MAX_FAILS)) k++
+                    forcedCursor = k
+                    if (c >= k || (d > 0 && cStart(k) >= d)) forcedCursor = -1 else c = k
+                }
+                val only = onlyChunks
+                val lo = only?.first ?: c
+                val hi = only?.last ?: (c + window - 1)
                 var next = -1
-                for (i in c until c + window) {
+                for (i in lo..hi) {
                     if (d > 0 && cStart(i) >= d) break
                     if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight) continue
                     next = i; break
@@ -162,6 +233,9 @@ class Engine(
                 }
                 if (inflight.isEmpty() && retryGaps()) continue
                 if (gapTick()) continue
+                if (headless && inflight.isEmpty() && gapBusy.get() == 0 && (gapScanClean || !conf.gapFill) && d > 0 && cStart(firstUndone(d)) >= d) {
+                    finished = true; host.status("✅ خلصت الترجمة"); break
+                }
                 idleStatus(d)
                 nap(if (inflight.isEmpty()) 700 else 200)
             }
@@ -169,6 +243,19 @@ class Engine(
             ex.shutdownNow()
             try { source?.close() } catch (_: Exception) {}
             persist()
+            stoppedFlag = true
+            try { onFinished?.invoke(finished && fatal == null) } catch (_: Exception) {}
+        }
+    }
+
+    /** أول مقطع لسه ناقص (الفاشلين بيتخطّوا وبتتعالج في retryGaps) — للترجمة في الخلفية */
+    private fun firstUndone(d: Double): Int {
+        if (d <= 0) return 0
+        var i = 0
+        while (true) {
+            if (d > 0 && cStart(i) >= d) return i
+            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS)) return i
+            i++
         }
     }
 
@@ -777,12 +864,12 @@ class Engine(
         if (now - lastGapScan < Gaps.COOLDOWN_MS) return false
         lastGapScan = now
         if (gapBusy.get() >= Gaps.MAX_PARALLEL) return false
-        val pos = host.position(); val d = currentDur()
+        val d = currentDur(); val pos = if (headless) d else host.position()
         val atEnd = d > 0 && pos >= d - 2
         val elig = Gaps.find(subs, done.list(), Gaps.MIN_SEC).filter {
             !gapTried.covers(it[0], it[1]) && (atEnd || (pos >= it[0] - Gaps.LOOKAHEAD && pos < it[1]))
         }
-        if (elig.isEmpty()) return false
+        if (elig.isEmpty()) { gapScanClean = true; return false }
         var started = false
         for (g in elig) {
             if (gapBusy.get() >= Gaps.MAX_PARALLEL || gapSession.total() >= Gaps.MAX_TOTAL * ch) break
@@ -798,6 +885,7 @@ class Engine(
                 started = true
             } catch (_: RejectedExecutionException) { gapKeys.remove(key); gapBusy.decrementAndGet() }
         }
+        gapScanClean = !started
         return started
     }
 
