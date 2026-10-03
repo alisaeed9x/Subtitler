@@ -232,7 +232,7 @@ class Pool(private val c: Conf) {
     private val until = HashMap<String, Long>()
     var streak = 0
     /** 25% من المفاتيح الأساسية (لو 3 أو أكتر) "مراقبين": لسدّ الفجوات وكاحتياط كوتة (زي الأصل) */
-    private val watchN = if (c.keys.size >= 3) maxOf(1, Math.round(c.keys.size * 0.25).toInt()) else 0
+    private val watchN = 0   // كل المفاتيح أساسية: كل مفتاح بيترجم باتش في نفس الوقت
     val mains: List<String> = c.keys.dropLast(watchN)
     val watchers: List<String> = c.keys.takeLast(watchN)
     /** أقصى عدد طلبات ترجمة متوازية */

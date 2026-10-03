@@ -59,7 +59,7 @@ class MainActivity : Activity() {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
         if (fromPlayer) setTheme(android.R.style.Theme_Translucent_NoTitleBar)
         super.onCreate(b)
-        Cfg.init(this)
+        Cfg.init(this); CrashLog.install(this)
         val th = Themes.byId(Cfg.str("theme", "default"))
         val ui = Ui(this, th)
         window.statusBarColor = th.bg; window.navigationBarColor = th.bg
@@ -322,6 +322,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         // الرجوع من المشغّل أو من إعدادات الإذن: حدّث العرض (تقدم الترجمة) أو أعد الفحص
+        if (!fromPlayer) CrashLog.showIfAny(this)
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
     }
     @Suppress("DEPRECATION")
@@ -402,8 +403,10 @@ class PlayerActivity : Activity(), Host {
     lateinit var visual: VisualMode
     lateinit var visOv: VisualOverlay
     lateinit var st: TextView
-    lateinit var floatBar: LinearLayout
+    lateinit var floatBar: View
     lateinit var batchTv: TextView
+    lateinit var logDrawer: LinearLayout
+    lateinit var logHandle: TextView
     var logOn = true
     lateinit var logTv: TextView
     lateinit var logSv: ScrollView
@@ -489,7 +492,7 @@ class PlayerActivity : Activity(), Host {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        Cfg.init(this); conf = Cfg.snapshot()
+        Cfg.init(this); CrashLog.install(this); conf = Cfg.snapshot()
         th = Themes.byId(Cfg.str("theme", "default")); ui = Ui(this, th)
         window.statusBarColor = th.bg; window.navigationBarColor = th.bg
         speed = Cfg.str("speed", "1").toFloatOrNull() ?: 1f; fit = Cfg.int("fit", 0).coerceIn(0, 2); fsFit = Cfg.int("fs_fit", 2).coerceIn(0, 2); offsetMs = Cfg.str("sub_offset_ms", "0").toLongOrNull() ?: 0L
@@ -516,14 +519,22 @@ class PlayerActivity : Activity(), Host {
             setTextColor(Color.WHITE); textSize = 10f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
             background = GradientDrawable().apply { setColor(0x99000000.toInt()); cornerRadius = ui.dp(8).toFloat() }
             layoutDirection = View.LAYOUT_DIRECTION_RTL; typeface = android.graphics.Typeface.MONOSPACE
-            setOnClickListener { logOn = false; visibility = View.GONE }
+            setOnClickListener { toggleLog() }
         }
-        videoBox.addView(batchTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(8), ui.dp(26), 0, 0) })
-        floatBar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; alpha = 0.88f }
-        floatBar.addView(ui.fsBtn("📋 اللوج") { _ -> logOn = !logOn; batchTv.visibility = if (logOn) View.VISIBLE else View.GONE })
-        floatBar.addView(ui.fsBtn("⏭ الحلقة") { _ -> stepEpisode(1) }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
-        floatBar.addView(ui.fsBtn("⏮ الحلقة") { _ -> stepEpisode(-1) }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
-        floatBar.addView(ui.fsBtn("👁 بصري") { _ -> visualSnap() }.apply { setOnLongClickListener { visualDialog(); true } }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
+        // درج اللوج: اللوج + لسان صغير في نص حافته. الضغط على اللسان بيدخّل اللوج أقصى الشمال ويفرده تاني
+        logHandle = TextView(this).apply {
+            text = "◂"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); alpha = 0.85f
+            background = ui.box(0xCC14171C.toInt(), 0x33FFFFFF, 8); setOnClickListener { toggleLog() }
+        }
+        logDrawer = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL
+            addView(batchTv, LinearLayout.LayoutParams(-2, -2)); addView(logHandle, LinearLayout.LayoutParams(ui.dp(22), ui.dp(46)).apply { marginStart = ui.dp(2) }) }
+        batchTv.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!logOn) logDrawer.translationX = -(batchTv.width + ui.dp(2)).toFloat() }
+        videoBox.addView(logDrawer, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
+        // 👁 بصري: دايرة عايمة فوق دايرة ✦
+        floatBar = ui.fsCircle("👁") { visualSnap() }.apply {
+            textSize = 20f; alpha = 0.88f; translationY = -ui.dp(60).toFloat(); setOnLongClickListener { visualDialog(); true }
+        }
+        videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (كل اللمس بتاع الفيديو بيعدي عليها)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -685,15 +696,16 @@ class PlayerActivity : Activity(), Host {
         }
         fsBarFs = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBar.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)))
+        fsBar.addView(ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }, LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)).apply { marginStart = ui.dp(6) })
         fsBar.addView(fsEl, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
         fsBar.addView(fsProgV, LinearLayout.LayoutParams(0, -2, 1f))
         fsBar.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
+        fsBar.addView(ui.fsCircle("⏭") { stepEpisode(1); showChrome() }, LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)).apply { marginEnd = ui.dp(8) })
         fsBar.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)))
         val chromeFrame = FrameLayout(this).apply { visibility = View.GONE }
         chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })
         chromeFrame.addView(fsBar, FrameLayout.LayoutParams(-1, ui.dp(52), Gravity.BOTTOM).apply { setMargins(ui.dp(14), 0, ui.dp(14), ui.dp(14)) })
         videoBox.addView(chromeFrame, FrameLayout.LayoutParams(-1, -1))
-        videoBox.addView(floatBar, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(10), 0, 0, 0) })
         // زرار ⛶ (.fullscreen-btn): أسفل يسار الفيديو 10dp في الرأسي، 18dp في الشاشة الكاملة
         fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
@@ -701,7 +713,9 @@ class PlayerActivity : Activity(), Host {
         applyChromeFn = {
             val on = fullMode && chromeShown
             chromeFrame.visibility = if (on) View.VISIBLE else View.GONE; if (!on) dismissPop()
-            floatBar.visibility = if ((!fullMode || chromeShown) && !isInPictureInPictureMode) View.VISIBLE else View.GONE
+            val cv = (!fullMode || chromeShown) && !isInPictureInPictureMode
+            floatBar.visibility = if (cv) View.VISIBLE else View.GONE
+            logHandle.visibility = if (cv) View.VISIBLE else View.GONE
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) ui.dp(84) else ui.dp(12); sub.requestLayout()
         }
@@ -951,6 +965,12 @@ class PlayerActivity : Activity(), Host {
         refreshList()
     }
 
+    fun toggleLog() {
+        logOn = !logOn
+        logDrawer.animate().translationX(if (logOn) 0f else -(batchTv.width + ui.dp(2)).toFloat()).setDuration(220).start()
+        logHandle.text = if (logOn) "◂" else "▸"
+    }
+
     /** الحلقة اللي بعدها (+1) أو اللي قبلها (-1) من نفس الفولدر: بيوقف ترجمة الحالية ويبدأ ترجمة الجديدة */
     fun stepEpisode(d: Int) {
         val curU = uri?.toString()
@@ -997,7 +1017,7 @@ class PlayerActivity : Activity(), Host {
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
-        if (::batchTv.isInitialized) { (batchTv.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); batchTv.requestLayout() }
+        if (::logDrawer.isInitialized) { (logDrawer.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); logDrawer.visibility = View.VISIBLE; logDrawer.requestLayout() }
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else 0
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
     }
@@ -1027,12 +1047,12 @@ class PlayerActivity : Activity(), Host {
     override fun onConfigurationChanged(c: Configuration) { super.onConfigurationChanged(c); applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE) }
     override fun onPictureInPictureModeChanged(inPip: Boolean, c: Configuration) {
         super.onPictureInPictureModeChanged(inPip, c)
-        if (inPip) {
+        if (inPip) { try {
             closeSide()
             h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn()
-            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
+            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; logDrawer.visibility = View.GONE; fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
-        } else applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE)
+        } catch (_: Exception) {} } else applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE)
     }
 
     private fun applyFit(sv: SurfaceView, box: View) {

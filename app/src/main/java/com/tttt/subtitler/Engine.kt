@@ -78,6 +78,8 @@ class Engine(
     private val reviews = AtomicInteger(0)
     private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     private val ch get() = conf.chunkSec.toDouble()
+    /** عدد المقاطع قدّام = الأكبر بين الإعداد وعدد الطلبات المتوازية، عشان كل المفاتيح تشتغل مع بعض */
+    private val window get() = maxOf(conf.ahead.coerceAtLeast(1), pool.capacity(conf.parallelPerKey))
 
     // ===== واجهة للـ UI =====
     fun failedCount() = failed.count { it.value >= MAX_FAILS }
@@ -86,7 +88,7 @@ class Engine(
         val d = host.playerDuration()
         val c = (host.position() / ch).toInt().coerceAtLeast(0)
         val sb = StringBuilder()
-        for (i in maxOf(0, c - 1)..c + conf.ahead.coerceAtLeast(1) + 1) {
+        for (i in maxOf(0, c - 1)..c + window + 1) {
             if (d > 0 && cStart(i) >= d) break
             val mark = when {
                 i in inflight -> "⏳"
@@ -122,6 +124,7 @@ class Engine(
             for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
             chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
             srcLang = s.srcLang; detDone = s.detDone; autoCharsAttempts = s.charsTried
+            if (s.detDone) anyApplied = true
             pronUpTo = subs.size
             if (s.chunkSec == conf.chunkSec) bounds.putAll(s.bounds)
             for (r in s.gapTried) gapTried.add(r[0], r[1])
@@ -147,7 +150,7 @@ class Engine(
                 val d = currentDur()
                 val c = (host.position() / ch).toInt().coerceAtLeast(0)
                 var next = -1
-                for (i in c until c + conf.ahead.coerceAtLeast(1)) {
+                for (i in c until c + window) {
                     if (d > 0 && cStart(i) >= d) break
                     if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight) continue
                     next = i; break
