@@ -81,6 +81,26 @@ class Engine(
 
     // ===== واجهة للـ UI =====
     fun failedCount() = failed.count { it.value >= MAX_FAILS }
+    /** حالة الباتشات حوالين مكان التشغيل للوج العايم: سطر لكل باتش (✅ خلص · ⏳ بيترجم · ❌ فشل · ▫ مستني) */
+    fun batchLines(): String {
+        val d = host.playerDuration()
+        val c = (host.position() / ch).toInt().coerceAtLeast(0)
+        val sb = StringBuilder()
+        for (i in maxOf(0, c - 1)..c + conf.ahead.coerceAtLeast(1) + 1) {
+            if (d > 0 && cStart(i) >= d) break
+            val mark = when {
+                i in inflight -> "⏳"
+                (failed[i] ?: 0) >= MAX_FAILS -> "❌"
+                isDone(i, d) -> "✅"
+                (failed[i] ?: 0) > 0 -> "🔁"
+                else -> "▫"
+            }
+            val a = cStart(i).toInt(); val b = cEnd(i, d).toInt()
+            sb.append(if (i == c) "▶ " else "  ").append("باتش ").append(i + 1).append(" ")
+                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).append('\n')
+        }
+        return sb.toString().trimEnd()
+    }
     fun coveredSec() = done.total()
     fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow() }
     fun saveNow() = persist()

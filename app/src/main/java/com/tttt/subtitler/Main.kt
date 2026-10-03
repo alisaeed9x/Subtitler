@@ -395,11 +395,13 @@ class PlayerActivity : Activity(), Host {
     @Volatile var durMs = 0L
     @Volatile var status = ""
     @Volatile var dirty = true
+    private var lastBatch = 0L
     lateinit var player: ExoPlayer
     lateinit var sub: SubtitleView
     lateinit var visual: VisualMode
     lateinit var visOv: VisualOverlay
     lateinit var st: TextView
+    lateinit var batchTv: TextView
     lateinit var logTv: TextView
     lateinit var logSv: ScrollView
     lateinit var engine: Engine
@@ -506,6 +508,14 @@ class PlayerActivity : Activity(), Host {
         sub.backdrop = sv
         st = TextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
         videoBox.addView(st, FrameLayout.LayoutParams(-2, -2, Gravity.TOP))
+        // لوج الباتشات العايم (بيتخفّى بالضغط عليه)
+        batchTv = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 10f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+            background = GradientDrawable().apply { setColor(0x99000000.toInt()); cornerRadius = ui.dp(8).toFloat() }
+            layoutDirection = View.LAYOUT_DIRECTION_RTL; typeface = android.graphics.Typeface.MONOSPACE
+            setOnClickListener { visibility = View.GONE }
+        }
+        videoBox.addView(batchTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(8), ui.dp(26), 0, 0) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (كل اللمس بتاع الفيديو بيعدي عليها)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -876,6 +886,7 @@ class PlayerActivity : Activity(), Host {
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
                 st.text = status
+                if (now - lastBatch > 700) { lastBatch = now; batchTv.text = engine.batchLines() }
                 if (fullMode) fsBadge.set(PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toString() + "%", list.size.toString() + " جملة")
                 if (now - lastMem > 4000) { lastMem = now; if (!fullMode) mem.update(this@PlayerActivity) }
                 counters.text = "جمل ${list.size} · تغطية ${PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0)}% · فجوات ${engine.failedCount()} · كوتة ${Quota.used(conf.model)}/${Models.quotaOf(conf.model)}"
