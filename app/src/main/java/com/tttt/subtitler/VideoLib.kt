@@ -57,6 +57,52 @@ object VideoLib {
         return (a.length - i) - (b.length - j)
     }
 
+    // ===== بحث ذكي: كلمات متعددة بأي ترتيب + أرقام عربية/هندية/كلام (تسعة = 9) + تجاهل التشكيل والهمزات =====
+    private val numWords = mapOf(
+        "صفر" to "0", "واحد" to "1", "واحده" to "1", "وحده" to "1", "اول" to "1", "اثنين" to "2", "اتنين" to "2", "ثنين" to "2",
+        "ثلاثه" to "3", "تلاته" to "3", "ثلاث" to "3", "تلات" to "3", "اربعه" to "4", "اربع" to "4", "خمسه" to "5", "خمس" to "5",
+        "سته" to "6", "ست" to "6", "سبعه" to "7", "سبع" to "7", "ثمانيه" to "8", "تمانيه" to "8", "ثماني" to "8", "تمان" to "8", "تمن" to "8",
+        "تسعه" to "9", "تسع" to "9", "عشره" to "10", "عشر" to "10",
+        "عشرين" to "2", "ثلاثين" to "3", "تلاتين" to "3", "اربعين" to "4", "خمسين" to "5", "ستين" to "6", "سبعين" to "7",
+        "ثمانين" to "8", "تمانين" to "8", "تسعين" to "9",
+        "ميتين" to "2", "مئتين" to "2", "تلتميه" to "3", "ثلاثميه" to "3", "ربعميه" to "4",
+        "اربعميه" to "4", "خمسميه" to "5", "ستميه" to "6", "سبعميه" to "7", "تمنميه" to "8", "ثمانميه" to "8", "تسعميه" to "9", "تسعمايه" to "9"
+    )
+    fun norm(x: String): String {
+        val sb = StringBuilder()
+        for (ch in x.lowercase()) {
+            val c = when (ch) {
+                'أ', 'إ', 'آ', 'ٱ' -> 'ا'
+                'ة' -> 'ه'
+                'ى', 'ئ' -> 'ي'
+                'ؤ' -> 'و'
+                '_', '.', '-', '[', ']', '(', ')' -> ' '
+                else -> ch
+            }
+            if (c in '\u064B'..'\u065F' || c == '\u0640') continue
+            if (c in '٠'..'٩') sb.append('0' + (c - '٠')) else if (c in '۰'..'۹') sb.append('0' + (c - '۰')) else sb.append(c)
+        }
+        return sb.toString()
+    }
+    fun tokens(q: String): List<String> = norm(q).split(' ', ',', '،').map { it.trim() }.filter { it.isNotEmpty() }.map { t0 ->
+        val t = if (t0.length > 3 && t0.startsWith("و") && numWords.containsKey(t0.substring(1))) t0.substring(1) else t0
+        numWords[t] ?: t
+    }.distinct()
+    /** عدد الكلمات اللي اتلاقت في الاسم (القاموس بيتقارن على الاسم + اسم الفولدر). 0 = مفيش تطابق */
+    fun matchScore(v: VideoItem, toks: List<String>): Int {
+        if (toks.isEmpty()) return 0
+        val hay = norm(v.title + " " + v.folderName)
+        return toks.count { hay.contains(it) }
+    }
+    fun search(all: List<VideoItem>, q: String): List<VideoItem> {
+        val toks = tokens(q)
+        if (toks.isEmpty()) return emptyList()
+        val scored = all.map { it to matchScore(it, toks) }.filter { it.second > 0 }
+        val full = scored.filter { it.second == toks.size }
+        val pick = if (full.isNotEmpty()) full else scored   // لو مفيش تطابق كامل اعرض الأقرب (الأكتر كلمات)
+        return pick.sortedWith { a, b -> if (a.second != b.second) b.second - a.second else natural(a.first.name, b.first.name) }.map { it.first }
+    }
+
     fun sortVideos(l: List<VideoItem>, mode: String): List<VideoItem> = when (mode) {
         SORT_NEW -> l.sortedWith(compareByDescending<VideoItem> { it.dateMs }.thenComparator { a, b -> natural(a.name, b.name) })
         SORT_OLD -> l.sortedWith(compareBy<VideoItem> { it.dateMs }.thenComparator { a, b -> natural(a.name, b.name) })

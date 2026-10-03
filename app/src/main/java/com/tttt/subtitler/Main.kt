@@ -519,9 +519,11 @@ class PlayerActivity : Activity(), Host {
             setOnClickListener { logOn = false; visibility = View.GONE }
         }
         videoBox.addView(batchTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(8), ui.dp(26), 0, 0) })
-        floatBar = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; alpha = 0.88f }
+        floatBar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; alpha = 0.88f }
         floatBar.addView(ui.fsBtn("📋 اللوج") { _ -> logOn = !logOn; batchTv.visibility = if (logOn) View.VISIBLE else View.GONE })
-        floatBar.addView(ui.fsBtn("👁 بصري") { _ -> visualDialog() }.apply { setOnLongClickListener { visualSnap(); true } }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) })
+        floatBar.addView(ui.fsBtn("⏭ الحلقة") { _ -> stepEpisode(1) }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
+        floatBar.addView(ui.fsBtn("⏮ الحلقة") { _ -> stepEpisode(-1) }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
+        floatBar.addView(ui.fsBtn("👁 بصري") { _ -> visualSnap() }.apply { setOnLongClickListener { visualDialog(); true } }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(8) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (كل اللمس بتاع الفيديو بيعدي عليها)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -688,10 +690,10 @@ class PlayerActivity : Activity(), Host {
         fsBar.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
         fsBar.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)))
         val chromeFrame = FrameLayout(this).apply { visibility = View.GONE }
-        chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(170), 0) })
+        chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })
         chromeFrame.addView(fsBar, FrameLayout.LayoutParams(-1, ui.dp(52), Gravity.BOTTOM).apply { setMargins(ui.dp(14), 0, ui.dp(14), ui.dp(14)) })
         videoBox.addView(chromeFrame, FrameLayout.LayoutParams(-1, -1))
-        videoBox.addView(floatBar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(10), ui.dp(10), 0) })
+        videoBox.addView(floatBar, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(10), 0, 0, 0) })
         // زرار ⛶ (.fullscreen-btn): أسفل يسار الفيديو 10dp في الرأسي، 18dp في الشاشة الكاملة
         fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
@@ -699,6 +701,7 @@ class PlayerActivity : Activity(), Host {
         applyChromeFn = {
             val on = fullMode && chromeShown
             chromeFrame.visibility = if (on) View.VISIBLE else View.GONE; if (!on) dismissPop()
+            floatBar.visibility = if ((!fullMode || chromeShown) && !isInPictureInPictureMode) View.VISIBLE else View.GONE
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) ui.dp(84) else ui.dp(12); sub.requestLayout()
         }
@@ -948,6 +951,19 @@ class PlayerActivity : Activity(), Host {
         refreshList()
     }
 
+    /** الحلقة اللي بعدها (+1) أو اللي قبلها (-1) من نفس الفولدر: بيوقف ترجمة الحالية ويبدأ ترجمة الجديدة */
+    fun stepEpisode(d: Int) {
+        val curU = uri?.toString()
+        val all = VideoScan.cache
+        if (curU == null || all == null) { say("الفيديو ده مش من مكتبة الجهاز"); return }
+        val me = all.firstOrNull { it.uri == curU } ?: run { say("الفيديو ده مش من مكتبة الجهاز"); return }
+        val sib = VideoLib.sortVideos(all.filter { it.folderKey == me.folderKey }, VideoLib.SORT_NAME)
+        val t = sib.getOrNull(sib.indexOfFirst { it.uri == curU } + d) ?: run { say(if (d > 0) "دي آخر حلقة في الفولدر" else "دي أول حلقة في الفولدر"); return }
+        Cfg.put("lib_last", t.uri); Cfg.put("lib_last_f:" + t.folderKey, t.uri)
+        say("▶ " + t.title)
+        swapVideo(Uri.parse(t.uri))
+    }
+
     /** بدّل الفيديو في نفس الشاشة من غير ما تفتح Activity جديدة */
     fun swapVideo(newUri: Uri) {
         saveRecent()
@@ -981,7 +997,7 @@ class PlayerActivity : Activity(), Host {
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
-        floatBar.visibility = View.VISIBLE
+        if (::batchTv.isInitialized) { (batchTv.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); batchTv.requestLayout() }
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else 0
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
     }
@@ -996,6 +1012,14 @@ class PlayerActivity : Activity(), Host {
             if (vidW > 0 && vidH > 0) pb.setAspectRatio(Rational((vidW.toFloat() / vidH).coerceIn(0.45f, 2.3f).times(1000).toInt(), 1000))
             enterPictureInPictureMode(pb.build())
         } catch (_: Exception) { Toast.makeText(this, "PiP مش مدعوم على الجهاز ده", Toast.LENGTH_SHORT).show() }
+    }
+    private var internalNav = false
+    override fun startActivity(i: Intent?) { internalNav = true; super.startActivity(i) }
+    @Suppress("DEPRECATION")
+    override fun startActivityForResult(i: Intent?, rc: Int) { internalNav = true; super.startActivityForResult(i, rc) }
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (!internalNav && !isFinishing && Build.VERSION.SDK_INT >= 26 && !isInPictureInPictureMode && try { player.isPlaying } catch (_: Exception) { false }) enterPip()
     }
     fun doExport() { startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/x-subrip"; putExtra(Intent.EXTRA_TITLE, "subtitles.srt") }, 7) }
     fun doImport() { startActivityForResult(filePicker("*/*", "اختار ملف SRT", false), 9) }
@@ -1194,15 +1218,11 @@ class PlayerActivity : Activity(), Host {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
         box.addView(ui.text("👁 الوضع البصري", 17f, th.primary, true))
         box.addView(ui.text("بياخد فريم كل ثانيتين قدّام مكان التشغيل ويبعته لـ Gemini، ويعرض النصوص المترجمة في مكانها فوق الفيديو. محتاج مفتاح API وفيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
-        val names = listOf("📸 نصوص المشهد (لافتات وعناوين)", "📝 ترجمة هاردسب موجودة")
-        box.addView(ui.chips(names, { if (visual.mode == "hardsub") names[1] else names[0] }) { visual.mode = if (it == names[1]) "hardsub" else "scene" })
-        val lang = ui.input("لغة الهاردسب (فاضي = كشف تلقائي)", Cfg.str("hardsub_lang", "")).apply { setSingleLine() }
-        box.addView(lang)
+        visual.mode = "scene"
         val st = ui.text(if (visual.running) "الحالة: شغّال — " + visual.status else "الحالة: واقف", 13f, th.text)
         box.addView(st)
         box.addView(ui.button(if (visual.running) "⏹ إيقاف" else "▶ تشغيل", true) {
             if (visual.running) visual.stop() else {
-                visual.hardLang = lang.text.toString().trim(); Cfg.put("hardsub_lang", visual.hardLang)
                 visual.clear(); visual.start(); say("👁 الوضع البصري شغّال")
             }
             d.dismiss()
@@ -1222,7 +1242,7 @@ class PlayerActivity : Activity(), Host {
         startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("tab", tab))
     }
     override fun onResume() {
-        super.onResume()
+        super.onResume(); internalNav = false
         if (Cfg.str("theme", "default") != th.id) { recreate(); return }
         restyleFn()
         if (resumeAfterSettings) { resumeAfterSettings = false; try { player.play() } catch (_: Exception) {} }

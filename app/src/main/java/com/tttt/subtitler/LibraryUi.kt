@@ -14,6 +14,9 @@ import android.view.MotionEvent
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import java.io.File
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.EditText
 
 /**
  * الشاشة الرئيسية: متصفح فيديوهات الجهاز زي MX Player.
@@ -38,6 +41,18 @@ class LibraryUi(
     private var rows: List<Any> = emptyList()
     private var recMap: Map<String, Recent> = emptyMap()
     private var rootPos = 0
+    private var query = ""
+    private val searchEt = EditText(act).apply {
+        hint = "🔍 ابحث باسم الفيديو"; textSize = 14f; setSingleLine(); setTextColor(th.text); setHintTextColor(th.muted)
+        layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8)); background = ui.box(th.card, th.border, 14)
+        imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: Editable?) { val q = e?.toString()?.trim() ?: ""; if (q != query) { query = q; render() } }
+            override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+            override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+        })
+    }
 
     private val backV = TextView(act).apply {
         text = "→"; textSize = 24f; setTextColor(th.primary); gravity = Gravity.CENTER; visibility = View.GONE
@@ -152,6 +167,8 @@ class LibraryUi(
         root.addView(HorizontalScrollView(act).apply { isHorizontalScrollBarEnabled = false; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(8), 0, ui.dp(8), 0); addView(chips) },
             LinearLayout.LayoutParams(-1, -2))
 
+        root.addView(searchEt, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(2)) })
+
         listV.apply {
             divider = null; dividerHeight = 0; setSelector(android.R.color.transparent); isVerticalScrollBarEnabled = false
             setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(16)); clipToPadding = false; cacheColorHint = Color.TRANSPARENT
@@ -235,6 +252,7 @@ class LibraryUi(
 
     /** رجوع من فولدر للقايمة الرئيسية. بترجّع true لو استهلكت الضغطة */
     fun back(): Boolean {
+        if (query.isNotEmpty()) { searchEt.setText(""); return true }
         if (curFolder == null) return false
         curFolder = null; render(); listV.setSelection(rootPos); return true
     }
@@ -252,7 +270,11 @@ class LibraryUi(
         val folders = VideoLib.group(all)
         val folder = if (cf != null) folders.firstOrNull { it.key == cf } else null
         if (cf != null && folder == null) curFolder = null
-        if (folder != null) {
+        if (query.isNotEmpty()) {
+            val hits = VideoLib.search(all, query)
+            rows = hits
+            titleTv.text = "🔍 نتائج البحث"; subTv.text = "${hits.size} فيديو"; backV.visibility = View.GONE
+        } else if (folder != null) {
             rows = VideoLib.sortVideos(folder.videos, sort)
             titleTv.text = "📂 " + folder.name; subTv.text = "${folder.videos.size} فيديو · ${VideoLib.fmtSize(folder.totalSize)}"; backV.visibility = View.VISIBLE
         } else {
@@ -306,7 +328,7 @@ class LibraryUi(
     private val FolderItem.count: Int get() = videos.size
 
     // ===== صف الفيديو =====
-    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView)
+    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView)
 
     private fun newVideoRow(): View {
         val ph = TextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
@@ -314,23 +336,30 @@ class LibraryUi(
         val dur = TextView(act).apply {
             textSize = 10f; setTextColor(Color.WHITE); setPadding(ui.dp(5), ui.dp(1), ui.dp(5), ui.dp(1)); background = ui.box(0xCC000000.toInt(), Color.TRANSPARENT, 4)
         }
+        val tick = TextView(act).apply { text = "✓"; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF3B82F6.toInt()) }; visibility = View.GONE }
         val thumb = FrameLayout(act).apply {
             background = ui.box(0xFF000000.toInt(), th.border, 10); clipToOutline = true
             addView(ph, FrameLayout.LayoutParams(-1, -1)); addView(iv, FrameLayout.LayoutParams(-1, -1))
             addView(dur, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { setMargins(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4)) })
+            addView(tick, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(4), ui.dp(4), 0, 0) })
         }
         val title = ui.text("", 14f, th.text, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
         val meta = ui.text("", 11f, th.muted).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val state = ui.text("", 11f, th.primary).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val vBadge = newBadge()
         val titleRow = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; addView(title, LinearLayout.LayoutParams(0, -2, 1f)); addView(vBadge, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) }) }
-        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleRow); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) }) }
+        val fill = View(act).apply { setBackgroundColor(th.primary) }
+        val rest = View(act)
+        val bar = LinearLayout(act).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; background = ui.box(th.border, Color.TRANSPARENT, 2); clipToOutline = true
+            addView(fill, LinearLayout.LayoutParams(0, -1, 0f)); addView(rest, LinearLayout.LayoutParams(0, -1, 1f)); visibility = View.GONE }
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleRow); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) })
+            addView(bar, LinearLayout.LayoutParams(-1, ui.dp(3)).apply { topMargin = ui.dp(5) }) }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.box(th.card, th.border, 12)
             addView(thumb, LinearLayout.LayoutParams(ui.dp(128), ui.dp(72)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
         }
-        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge) }
+        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick) }
     }
 
     private fun bindVideo(v: View, vi: VideoItem) {
@@ -343,6 +372,12 @@ class LibraryUi(
         val parts = ArrayList<String>()
         if (r != null && r.posSec > 5) parts.add("▶ وقف عند " + PlayerLogic.clock((r.posSec * 1000).toLong()))
         if (r != null && r.subs > 0) parts.add("✓ مترجم ${r.percent}%")
+        val d = if (r != null && r.durSec > 0) r.durSec else vi.durMs / 1000.0
+        val frac = if (r != null && d > 0) (r.posSec / d).coerceIn(0.0, 1.0) else 0.0
+        val bar = h.fill.parent as View
+        bar.visibility = if (frac > 0.01) View.VISIBLE else View.GONE
+        (h.fill.layoutParams as LinearLayout.LayoutParams).weight = frac.toFloat(); (h.rest.layoutParams as LinearLayout.LayoutParams).weight = (1.0 - frac).toFloat(); bar.requestLayout()
+        h.tick.visibility = if (r != null && r.percent >= 97) View.VISIBLE else View.GONE
         h.state.text = parts.joinToString(" · "); h.state.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
         h.iv.tag = vi.uri; h.iv.setImageDrawable(null)
         val c = Thumbs.peek(vi)
