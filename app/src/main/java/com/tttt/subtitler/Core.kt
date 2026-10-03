@@ -158,6 +158,17 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرضهم كل واحد في سطر تحت التاني بلون مختلف.\n"
     }
 
+    /** قفل لغة الإخراج: بيتحط آخر الـ prompt دايمًا (بالعربي) مهما كانت لغة القالب أو لغة الصوت */
+    fun langLock(c: Conf, strict: Boolean): String {
+        val target = if (c.lang == "فصحى") "اللغة العربية الفصحى" else "اللهجة ${c.lang}"
+        var t = "\n\n═══ لغة الإخراج (إلزامي — أهم قاعدة في الرد) ═══\n" +
+            "- 🔴🔴 حقل translated في كل subtitle لازم يتكتب بـ$target وبالحروف العربية فقط. ممنوع تسيب جملة بلغتها الأصلية، وممنوع الإنجليزي، وممنوع تنسخ النص الأصلي في translated — حتى لو الجملة قصيرة أو غناء أو اسم أو كلمة واحدة (الأسماء تتكتب بحروف عربية).\n" +
+            "- حقل original بس هو اللي بيتكتب بلغة الصوت الأصلية (وtranslated_en_pivot للإنجليزي). translated ما بيبقاش أبدًا بلغة الصوت الأصلية ولا بالإنجليزي.\n" +
+            "- لغة الترجمة النهائية ثابتة ($target) مهما كانت لغة التعليمات اللي فوق أو لغة الصوت أو لغة المقاطع اللي قبل كده.\n"
+        if (strict) t += "- ⚠⚠ الرد اللي فات فيه جمل في translated مش بالعربي. راجع كل subtitle قبل ما ترد وتأكد إن كل translated عربي بـ$target.\n"
+        return t
+    }
+
     fun rosterText(chars: List<Chr>, gloss: List<Gloss>): String {
         var out = read("prompts/roster_base.txt")
         if (chars.isNotEmpty()) {
@@ -198,7 +209,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
      * @param translatedFixed نسخة مترجمة من الجزء الثابت (للغات اللي ملهاش قالب جاهز) أو null
      */
     fun build(c: Conf, srcLang: String, detectDone: Boolean, durSec: Double, prev: String,
-              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null): String {
+              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null, strict: Boolean = false): String {
         val case = caseOf(srcLang, detectDone)
         val id = templateId(c, case)
         val raw = read("prompts/$id.txt")
@@ -210,7 +221,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + glossBlock + tailFinal)
+        return (fixed + "\n" + SPLIT_BLOCK + glossBlock + tailFinal + langLock(c, strict))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -357,6 +368,19 @@ object Api {
             return Result(sb.toString(), cand.optString("finishReason", ""))
         } finally { c.disconnect() }
     }
+}
+
+// ===== حارس اللغة: كشف جمل translated اللي مش بالعربي (لغة الأصل / إنجليزي) =====
+object LangGuard {
+    private fun letters(t: String) = t.count { Character.isLetter(it) }
+    private fun arabic(t: String) = t.count { Character.isLetter(it) && Character.UnicodeScript.of(it.code) == Character.UnicodeScript.ARABIC }
+    /** true لو الترجمة المفروض عربي بس أغلب حروفها مش عربي */
+    fun foreign(s: Sub): Boolean {
+        val l = letters(s.translated)
+        if (l < 3) return false
+        return arabic(s.translated) * 100 < l * 50
+    }
+    fun foreignOf(subs: List<Sub>): List<Sub> = subs.filter { foreign(it) }
 }
 
 // ===== تحليل الرد (نفس منطق الإنقاذ الجزئي في الأصل) =====

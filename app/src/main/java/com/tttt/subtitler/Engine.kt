@@ -262,16 +262,23 @@ class Engine(
         val w = p.w; val rawStart = p.rawStart; val rawEnd = p.rawEnd
         val prior = subs
         var key = pool.pick(null, rr.getAndIncrement()) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
-        var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0
+        var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
-            val prompt = buildPrompt(w.durSec, w.startSec)
+            val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0)
             try {
                 val r = Api.generate(conf.model, key, prompt, w.bytes)
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
                 if (r.finish.isNotEmpty() && r.finish != "STOP" && r.finish != "MAX_TOKENS") throw Exception("رد Gemini اتوقف: ${r.finish}")
                 var j: JSONObject? = null
                 if (r.text.isNotBlank()) { j = Parse.json(r.text); if (j == null) throw BadReply("رد Gemini مش JSON صالح") }
-                val fresh = if (j == null) emptyList() else Parse.subs(j, w.startSec, w.durSec)
+                var fresh = if (j == null) emptyList() else Parse.subs(j, w.startSec, w.durSec)
+                // حارس اللغة: لو 30%+ من الجمل translated فيها مش بالعربي → إعادة المحاولة بتشديد، وبعدها إصلاح الباقي نصيًا
+                val off = LangGuard.foreignOf(fresh)
+                if (off.isNotEmpty() && off.size * 10 >= fresh.size * 3 && langBad < 2) {
+                    langBad++; host.log("🌐 المقطع ${i + 1}: ${off.size}/${fresh.size} جملة مش بـ${conf.lang} — إعادة المحاولة")
+                    nap(400); continue
+                }
+                if (off.isNotEmpty()) fresh = fixForeign(fresh)
                 if (fresh.isEmpty() && empties < 1) {
                     empties++
                     pool.pick(key, rr.getAndIncrement())?.let { key = it }
@@ -310,10 +317,36 @@ class Engine(
         if (running) throw Exception("استنفدت المحاولات")
     }
 
-    private fun buildPrompt(durSec: Double, start: Double): String {
+    private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false): String {
         val case = pb.caseOf(srcLang, detDone)
         val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(conf, "other"))] } else null
-        return pb.build(conf, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf)
+        return pb.build(conf, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
+    }
+
+    /** إصلاح الجمل اللي translated بتاعتها مش عربي: ترجمة نصية سريعة من original (وpivot) للهجة المختارة */
+    private fun fixForeign(list: List<Sub>): List<Sub> {
+        val bad = list.indices.filter { LangGuard.foreign(list[it]) }
+        if (bad.isEmpty()) return list
+        return try {
+            val arr = JSONArray()
+            for (k in bad) arr.put(JSONObject().put("idx", k).put("original", list[k].original).put("english", list[k].pivot).put("speaker_gender", list[k].gender).put("addressee_gender", list[k].addressee))
+            val target = if (conf.lang == "فصحى") "العربية الفصحى" else "اللهجة ${conf.lang}"
+            val prompt = "ترجم كل جملة من الجمل دي إلى $target بالحروف العربية فقط (الأسلوب: ${conf.style}). ماتسيبش أي جملة بلغتها الأصلية ولا بالإنجليزي. حافظ على المعنى كامل وعلى جنس المتكلم speaker_gender والمخاطَب addressee_gender.\n\nالجمل:\n$arr\n\n" +
+                "أرجع JSON فقط: {\"rewrites\":[{\"idx\":0,\"translated\":\"...\"}]}"
+            val r = bgCall(prompt, 4096, 0.3, true, 0)
+            val rw = (Parse.json(r.text) ?: return list).optJSONArray("rewrites") ?: return list
+            val out = list.toMutableList(); var n = 0
+            for (q in 0 until rw.length()) {
+                val c = rw.optJSONObject(q) ?: continue
+                val ix = c.optInt("idx", -1); if (ix !in bad) continue
+                val tr = c.optString("translated").trim()
+                if (tr.isEmpty()) continue
+                val ns = out[ix].copy(translated = tr)
+                if (!LangGuard.foreign(ns)) { out[ix] = ns; n++ }
+            }
+            if (n > 0) host.log("🌐 اتصلّحت $n جملة كانت مش بـ${conf.lang}")
+            out
+        } catch (e: Exception) { host.log("⚠ إصلاح اللغة فشل: " + (e.message ?: "").take(80)); list }
     }
 
     private fun tplKey(id: String) = "$srcLang|$id"

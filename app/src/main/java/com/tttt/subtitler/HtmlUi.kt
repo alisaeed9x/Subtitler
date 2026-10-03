@@ -263,7 +263,6 @@ fun Ui.mainBubble(f: () -> Unit): TextView = TextView(ctx).apply {
 fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = false, onClose: () -> Unit = {}): Dialog {
     val d = Dialog(act)
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-    val dm = ctx.resources.displayMetrics
     val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
     views.forEach { body.addView(it) }
     val head = LinearLayout(ctx).apply { gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, 0, 0, dp(8)) }
@@ -274,11 +273,14 @@ fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = 
         setPadding(dp(14), dp(12), dp(14), dp(14)); background = box(th.card, th.border, 18)
     }
     root.addView(head, LinearLayout.LayoutParams(-1, -2))
-    val maxH = (dm.heightPixels * 0.78f).toInt()
+    val maxH = (ctx.resources.displayMetrics.heightPixels * 0.78f).toInt()
+    val holder: View
     if (fixedH) {
+        holder = body
         root.addView(body, LinearLayout.LayoutParams(-1, maxH))
     } else {
         val sv = MaxHeightScroll(ctx, maxH).apply { addView(body) }
+        holder = sv
         root.addView(sv, LinearLayout.LayoutParams(-1, -2))
     }
     d.setContentView(root)
@@ -288,8 +290,47 @@ fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = 
         setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
         setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
+    // الأفقي: النافذة بتتفتح كصفحة كاملة؛ الرأسي: bottom sheet زي الأول (بيتحدد وقت الفتح مش وقت الإنشاء)
+    d.setOnShowListener {
+        val land = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val w = d.window
+        if (land) {
+            root.background = box(th.card, th.card, 0)
+            w?.setBackgroundDrawable(ColorDrawable(th.bg))
+            w?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            if (fixedH) holder.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+        } else {
+            root.background = box(th.card, th.border, 18)
+            w?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            w?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            if (fixedH) holder.layoutParams = LinearLayout.LayoutParams(-1, (ctx.resources.displayMetrics.heightPixels * 0.78f).toInt())
+        }
+    }
     d.setOnDismissListener { onClose() }
     return d
+}
+
+/** الأفقي: أي نافذة (Dialog) بتتفتح كصفحة كاملة بدل نافذة صغيرة. بتتنده قبل d.show() */
+fun Ui.fullPage(d: Dialog) {
+    if (ctx.resources.configuration.orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE) return
+    d.window?.apply {
+        setBackgroundDrawable(ColorDrawable(th.bg))
+        setGravity(Gravity.FILL)
+        setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+    }
+}
+
+/** زرار القايمة الجانبية (الأفقي): أيقونة كبيرة + عنوان، بيتوزع 3 في الصف عن طريق Ui.grid(items, 3) */
+fun Ui.sideBtn(icon: String, label: String, f: () -> Unit): LinearLayout = LinearLayout(ctx).apply {
+    orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+    setPadding(dp(4), dp(8), dp(4), dp(8))
+    background = box(th.surface, th.border, 12)
+    addView(TextView(ctx).apply { text = icon; textSize = 24f; gravity = Gravity.CENTER; includeFontPadding = false })
+    addView(text(label, 11f, th.text, true).apply { gravity = Gravity.CENTER; maxLines = 2; includeFontPadding = false },
+        LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
+    val m = dp(4)
+    layoutParams = LinearLayout.LayoutParams(0, dp(84), 1f).apply { setMargins(m, m, m, m) }
+    setOnClickListener { f() }
 }
 
 /** .fs-subsize-btn: مربع 32dp داكن شفاف بحدود خفيفة (radius 10، 12sp bold) */

@@ -24,7 +24,7 @@ echo "== 1) compile-check للتطبيق كله"
 "$KC" -jvm-target 17 -cp "$AJ" -opt-in=kotlin.RequiresOptIn -d "$OUT/all" "$SRC"/*.kt $(find "$ROOT/dev-tests/stubs" -name '*.kt' -o -name '*.java') 2>&1 | grep -E "error" && { echo "FAIL: compile errors"; exit 1; } || echo "OK"
 
 echo "== 2) اختبارات JVM (المنطق بدون Android: Core/Store/AudioCore/Engine)"
-NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/Trim.kt $SRC/Blur.kt"
+NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt"
 "$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep error && exit 1 || true
 CP="$OUT/app:$TOOLS/jsonout:$STD:$AJ"   # jsonout قبل android.jar عشان org.json الحقيقي يتقدم على الـ stubs
 JOPT="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8"
@@ -51,3 +51,6 @@ java $JOPT -cp "$OUT/t7:$CP" PhaseETestKt | grep -E "^(PASS|FAIL)|الاختبا
 mkdir -p "$OUT/t8"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t8" "$ROOT/dev-tests/BlurTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t8:$CP" BlurTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"
+mkdir -p "$OUT/t9"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t9" "$ROOT/dev-tests/LibraryTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t9:$CP" LibraryTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"

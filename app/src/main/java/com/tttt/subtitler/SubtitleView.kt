@@ -35,7 +35,8 @@ class SubtitleView(ctx: Context) : View(ctx) {
         duration = 700; repeatCount = ValueAnimator.INFINITE
         addUpdateListener { emoT = it.animatedValue as Float; if (emoKind() != "") invalidate() }
     }
-    private fun emoKind() = if (style.plain) "" else (sub?.let { SubStyle.emotionKind(it.emotion) } ?: "")
+    /** تأثيرات الانفعال (اهتزاز/تكبير/خفوت) اتلغت نهائيًا — الترجمة بتظهر ثابتة بغض النظر عن النبرة */
+    private fun emoKind() = ""
     /** متحدثين في نفس الوقت: كل سطر بلونه (ذكر/أنثى/موحّد) */
     private var lines: List<Sub> = emptyList()
     // ===== blur حقيقي للي ورا الصندوق =====
