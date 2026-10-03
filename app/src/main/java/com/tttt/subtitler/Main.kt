@@ -349,7 +349,7 @@ class MainActivity : Activity() {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             if (uri != null) { data = uri; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) } else putExtra("url", u)
             // لو فتحنا الإعدادات من المشغّل واخترنا فيديو جديد: امسح المشغّل القديم بدل ما يفضل تحته
-            if (intent?.getBooleanExtra("from_player", false) == true) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            if (intent?.getBooleanExtra("from_player", false) == true) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         })
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
@@ -450,6 +450,7 @@ class PlayerActivity : Activity(), Host {
     var offsetMs = 0L; var speed = 1f; var fit = 0; var fsFit = 2; var ccOn = true; var fitFsB: TextView? = null
     fun curFit() = if (fullMode) fsFit else fit
     lateinit var svRef: android.view.SurfaceView
+    @Volatile var visNow = 0.0
     var vidW = 0; var vidH = 0
     lateinit var listView: ListView
     lateinit var counters: TextView
@@ -558,7 +559,6 @@ class PlayerActivity : Activity(), Host {
             orientation = LinearLayout.VERTICAL; visibility = View.GONE
             setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)); background = ui.box(0xB814171C.toInt(), 0x2EFFFFFF, 26)
         }
-        menu.addView(roundBtn("👁") { menu.visibility = View.GONE; visualSnap() }.apply { setOnLongClickListener { menu.visibility = View.GONE; visualDialog(); true } })
         menu.addView(roundBtn("📝") { sentDlg.show() })
         menu.addView(roundBtn("🕳") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         menu.addView(roundBtn("📥") { doImport() })
@@ -644,6 +644,7 @@ class PlayerActivity : Activity(), Host {
         val spB = pk("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
         fsSpeedB = spB; gText.addView(spB)
         val ccB = fb("CC") { toggleCc() }
+        tb1.addView(fb("👁 بصري") { visualSnap() }.apply { setOnLongClickListener { visualDialog(); true } })
         ccFsB = ccB; tb1.addView(ccB)
         tb1.addView(fb("A−") { scaleBy(-10) })
         tb1.addView(fb("A+") { scaleBy(10) })
@@ -824,28 +825,10 @@ class PlayerActivity : Activity(), Host {
         applyFull(resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
         videoBox.addOnLayoutChangeListener { _, l, t, r, bt, ol, ot, orr, ob -> if (r - l != orr - ol || bt - t != ob - ot) applyFit(sv, videoBox) }
 
-        val factory = if (uri != null) DefaultMediaSourceFactory(this)
-        else DefaultMediaSourceFactory(DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true))
-        player = ExoPlayer.Builder(this).setMediaSourceFactory(factory).build()
-        player.setVideoSurfaceView(sv)
-        player.setPlaybackSpeed(speed)
-        player.addListener(object : Player.Listener {
-            override fun onVideoSizeChanged(v: VideoSize) { if (v.width > 0 && v.height > 0) { vidW = v.width; vidH = v.height; videoBox.post { applyFit(sv, videoBox) } } }
-            override fun onIsPlayingChanged(p: Boolean) { val t = if (p) "⏸" else "▶"; ctl.play.text = t; fsPlayB.text = t; centerPlay.visibility = if (p) View.GONE else View.VISIBLE }
-        })
-        player.setMediaItem(MediaItem.fromUri(uri ?: Uri.parse(url!!)))
-        player.prepare(); player.playWhenReady = true
+        buildPlayer()
 
         // المحرك + استرجاع التقدم المحفوظ
-        vid = videoId()
-        val store = Store(File(filesDir, "progress"), Store.keyFor(vid))
-        val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
-        engine = Engine(conf, { makeSource() }, store, this, pb)
-        Live.engine = engine
-        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
-        val savedPos = engine.load()
-        if (savedPos > 5.0) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
-        refreshList()
+        initEngine()
         if (Build.VERSION.SDK_INT >= 33) { try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7) } catch (_: Exception) {} }
         KeepAliveService.start(this)
 
@@ -863,7 +846,8 @@ class PlayerActivity : Activity(), Host {
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
-                visOv.showBoxes(visual.boxesAt((cur - offsetMs) / 1000.0))
+                visNow = (cur - offsetMs) / 1000.0
+                visOv.showBoxes(visual.boxesAt(visNow))
                 val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
                 val idx = act.lastOrNull() ?: -1
                 val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
@@ -896,6 +880,50 @@ class PlayerActivity : Activity(), Host {
                 h.postDelayed(this, 200)
             }
         })
+        Thread { engine.run() }.apply { isDaemon = true }.start()
+    }
+
+    private fun buildPlayer() {
+        val sv = svRef; val videoBox = videoBoxRef
+        val factory = if (uri != null) DefaultMediaSourceFactory(this)
+        else DefaultMediaSourceFactory(DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true))
+        player = ExoPlayer.Builder(this).setMediaSourceFactory(factory).build()
+        player.setVideoSurfaceView(sv)
+        player.setPlaybackSpeed(speed)
+        player.addListener(object : Player.Listener {
+            override fun onVideoSizeChanged(v: VideoSize) { if (v.width > 0 && v.height > 0) { vidW = v.width; vidH = v.height; videoBox.post { applyFit(sv, videoBox) } } }
+            override fun onIsPlayingChanged(p: Boolean) { val t = if (p) "⏸" else "▶"; ctl.play.text = t; fsPlayB.text = t; centerPlay.visibility = if (p) View.GONE else View.VISIBLE }
+        })
+        player.setMediaItem(MediaItem.fromUri(uri ?: Uri.parse(url!!)))
+        player.prepare(); player.playWhenReady = true
+    }
+
+    private fun initEngine() {
+        vid = videoId()
+        val store = Store(File(filesDir, "progress"), Store.keyFor(vid))
+        val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
+        engine = Engine(conf, { makeSource() }, store, this, pb)
+        Live.engine = engine
+        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
+        val savedPos = engine.load()
+        if (savedPos > 5.0) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
+        refreshList()
+    }
+
+    /** بدّل الفيديو في نفس الشاشة من غير ما تفتح Activity جديدة */
+    fun swapVideo(newUri: Uri) {
+        saveRecent()
+        try { visual.stop() } catch (_: Exception) {}
+        try { engine.stop() } catch (_: Exception) {}
+        try { engine.saveNow() } catch (_: Exception) {}
+        try { player.release() } catch (_: Exception) {}
+        uri = newUri; url = null; hdr.clear()
+        cur = 0L; durMs = 0L; vidW = 0; vidH = 0; curIdx = -2; curKey = ""; dirty = true
+        synchronized(logBuf) { logBuf.setLength(0) }
+        status = ""; conf = Cfg.snapshot()
+        try { sub.show(null) } catch (_: Exception) {}
+        visOv.showBoxes(emptyList())
+        buildPlayer(); initEngine()
         Thread { engine.run() }.apply { isDaemon = true }.start()
     }
 
@@ -974,7 +1002,7 @@ class PlayerActivity : Activity(), Host {
         super.onActivityResult(r, c, d)
         if (r == 8 && c == RESULT_OK) d?.data?.let { u ->
             try { contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
-            saveRecent(); startActivity(Intent(this, PlayerActivity::class.java).apply { data = u; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }); finish()
+            swapVideo(u)
         }
         if (r == 9 && c == RESULT_OK) d?.data?.let { u ->
             val parsed = try { PlayerLogic.parseSrt(contentResolver.openInputStream(u)?.use { String(it.readBytes(), Charsets.UTF_8) } ?: "") } catch (_: Exception) { emptyList() }
@@ -1100,21 +1128,19 @@ class PlayerActivity : Activity(), Host {
 
     fun visualSnap() {
         if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Toast.makeText(this, "مفيش فيديو شغّال", Toast.LENGTH_SHORT).show(); return }
-        try { player.pause() } catch (_: Exception) {}
-        val pos = (player.currentPosition - offsetMs) / 1000.0
         val curUs = player.currentPosition * 1000
-        Toast.makeText(this, "📸 بلقط الشاشة وبترجم…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "📸 بلقط الشاشة وبترجم… الفيديو مكمّل", Toast.LENGTH_SHORT).show()
         fun fallback() {
             Thread {
                 val r = makeRetriever()
                 val b = try { r?.getFrameAtTime(curUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 try { r?.release() } catch (_: Exception) {}
-                if (b != null) visual.snap(b, pos) else runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }
+                if (b != null) visual.snap(b) { visNow } else runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }
             }.start()
         }
         val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
         try {
-            android.view.PixelCopy.request(svRef, bmp, { res -> if (res == android.view.PixelCopy.SUCCESS) visual.snap(bmp, pos) else fallback() }, Handler(Looper.getMainLooper()))
+            android.view.PixelCopy.request(svRef, bmp, { res -> if (res == android.view.PixelCopy.SUCCESS) visual.snap(bmp) { visNow } else fallback() }, Handler(Looper.getMainLooper()))
         } catch (_: Exception) { fallback() }
     }
 

@@ -68,10 +68,10 @@ class VisualMode(
     fun clear() { frames.clear(); sent = 0 }
 
     /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
-    fun snap(bmp: Bitmap, t: Double) {
-        Thread { try { snapWork(bmp, t) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) } }.also { it.isDaemon = true; it.start() }
+    fun snap(bmp: Bitmap, nowSec: () -> Double) {
+        Thread { try { snapWork(bmp, nowSec) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) } }.also { it.isDaemon = true; it.start() }
     }
-    private fun snapWork(bmp: Bitmap, t: Double) {
+    private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
         val keys = keyList()
         if (keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
         val jpeg = toJpeg(bmp); bmp.recycle()
@@ -82,6 +82,7 @@ class VisualMode(
             try {
                 val res = Api.generateImage(conf.model, key, prompt, jpeg)
                 val boxes = parse(res.text)
+                val t = nowSec()   // الفيديو بيكمّل: النتيجة بتتعرض من لحظة وصولها
                 frames.removeIf { Math.abs(it.t - t) < 0.5 }
                 frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
                 say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
@@ -183,21 +184,22 @@ class VisualOverlay(ctx: Context) : View(ctx) {
         val r = area(); val d = resources.displayMetrics.density
         for (b in boxes) {
             val cx = r.left + b.x * r.width(); val cy = r.top + b.y * r.height()
-            val bw = maxOf(b.w * r.width() * 1.12f, 60f * d); val bh = b.h * r.height()
-            var ts = bh * 0.72f
+            val bw = minOf(maxOf(b.w * r.width() * 1.15f, 80f * d), r.width() * 0.96f); val bh = b.h * r.height()
+            var ts = bh * 0.8f
             tp.color = b.fg
             var lay: StaticLayout
             while (true) {
                 tp.textSize = ts
                 lay = StaticLayout.Builder.obtain(b.translated, 0, b.translated.length, tp, bw.toInt()).setAlignment(Layout.Alignment.ALIGN_CENTER).build()
-                if (lay.height <= bh * 1.7f || ts <= 9f * d) break
+                if (lay.height <= bh * 2.0f || ts <= 15f * d) break
                 ts *= 0.9f
             }
             c.save(); c.rotate(-b.angle, cx, cy)
             val pad = 4f * d
-            val rect = RectF(cx - bw / 2 - pad, cy - lay.height / 2f - pad, cx + bw / 2 + pad, cy + lay.height / 2f + pad)
-            if (b.hasBox || b.opacity > 0) { bgP.color = b.bg; bgP.alpha = (b.opacity * 255 / 100).coerceIn(40, 255); c.drawRoundRect(rect, 6f * d, 6f * d, bgP) }
-            else { bgP.color = Color.BLACK; bgP.alpha = 110; c.drawRoundRect(rect, 6f * d, 6f * d, bgP) }
+            val half = maxOf(bh, lay.height.toFloat()) / 2f
+            val rect = RectF(cx - bw / 2 - pad, cy - half - pad, cx + bw / 2 + pad, cy + half + pad)
+            bgP.color = if (b.hasBox && b.opacity > 0) b.bg else Color.BLACK; bgP.alpha = 245
+            c.drawRoundRect(rect, 6f * d, 6f * d, bgP)
             c.translate(cx - bw / 2, cy - lay.height / 2f); lay.draw(c)
             c.restore()
         }
