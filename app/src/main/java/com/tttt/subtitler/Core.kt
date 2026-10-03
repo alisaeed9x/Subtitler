@@ -133,7 +133,7 @@ object Cfg {
         return Conf(
             main, (keys("backup") + bk).distinct(), str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
             str("lang", "مصري"), str("style", "حرفي"),
-            int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
+            int("chunk", 100).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
             int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true)

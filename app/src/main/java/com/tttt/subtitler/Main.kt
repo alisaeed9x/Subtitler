@@ -74,8 +74,8 @@ class MainActivity : Activity() {
         fun descOf(id: String) = (Models.builtin.firstOrNull { it.id == id }?.desc ?: "موديل يدوي") + " — استهلاك النهارده: " + Quota.used(id) + " / " + Models.quotaOf(id) + " (تقريبي، بيتصفّر 00:00 PT)"
         modelDesc.text = descOf(modelSel)
         val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { model.setText(it); modelSel = it; modelDesc.text = descOf(it) }
-        var chunkSec = Cfg.int("chunk", 60).coerceIn(60, 600)
-        val chunk = ui.slider("طول المقطع", chunkSec / 60, 1, 10, " دقيقة") { chunkSec = it * 60 }
+        var chunkSec = Cfg.int("chunk", 100).coerceIn(10, 600)
+        val chunk = ui.slider("طول المقطع", chunkSec, 10, 600, " ثانية") { chunkSec = it }
         val ahead = ui.input("عدد المقاطع اللي بتترجم قدّام مكان التشغيل", Cfg.str("ahead", "3"))
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
@@ -214,7 +214,7 @@ class MainActivity : Activity() {
             libStarted = true
             if (!VideoScan.hasPermission(this)) { lib.showNoPermission(); return }
             val cached = VideoScan.cache
-            if (cached != null) lib.showVideos(cached) else lib.showScanning()
+            if (cached != null) lib.showVideos(cached) else if (!lib.hasData) lib.showScanning()
             Thread {
                 val res = try { VideoScan.scan(this) } catch (_: Exception) { emptyList<VideoItem>() }
                 runOnUiThread { if (!isDestroyed && !isFinishing) lib.showVideos(res) }
@@ -222,6 +222,7 @@ class MainActivity : Activity() {
         }
         scanFn = { doScan() }
         // ريفريش: يمسح الفولدرات والصور المصغّرة المحفوظة ويفحص التخزين من الأول
+        lib.onPull = { VideoScan.cache = null; doScan() }
         lib.onRefresh = { VideoScan.cache = null; Thumbs.clear(); lib.showScanning(); doScan() }
 
         val frame = FrameLayout(this).apply { setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_LTR }
@@ -401,7 +402,9 @@ class PlayerActivity : Activity(), Host {
     lateinit var visual: VisualMode
     lateinit var visOv: VisualOverlay
     lateinit var st: TextView
+    lateinit var floatBar: LinearLayout
     lateinit var batchTv: TextView
+    var logOn = true
     lateinit var logTv: TextView
     lateinit var logSv: ScrollView
     lateinit var engine: Engine
@@ -508,14 +511,17 @@ class PlayerActivity : Activity(), Host {
         sub.backdrop = sv
         st = TextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
         videoBox.addView(st, FrameLayout.LayoutParams(-2, -2, Gravity.TOP))
-        // لوج الباتشات العايم (بيتخفّى بالضغط عليه)
+        // أزرار عايمة فوق الفيديو: 📋 اللوج (يخفي/يظهر حالة الترجمة) و 👁 بصري
         batchTv = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 10f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
             background = GradientDrawable().apply { setColor(0x99000000.toInt()); cornerRadius = ui.dp(8).toFloat() }
             layoutDirection = View.LAYOUT_DIRECTION_RTL; typeface = android.graphics.Typeface.MONOSPACE
-            setOnClickListener { visibility = View.GONE }
+            setOnClickListener { logOn = false; visibility = View.GONE }
         }
         videoBox.addView(batchTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(8), ui.dp(26), 0, 0) })
+        floatBar = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; alpha = 0.88f }
+        floatBar.addView(ui.fsBtn("📋 اللوج") { _ -> logOn = !logOn; batchTv.visibility = if (logOn) View.VISIBLE else View.GONE })
+        floatBar.addView(ui.fsBtn("👁 بصري") { _ -> visualDialog() }.apply { setOnLongClickListener { visualSnap(); true } }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (كل اللمس بتاع الفيديو بيعدي عليها)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -635,7 +641,6 @@ class PlayerActivity : Activity(), Host {
         val spB = pk("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
         fsSpeedB = spB; gText.addView(spB)
         val ccB = fb("CC") { toggleCc() }
-        tb1.addView(fb("👁 بصري") { visualSnap() }.apply { setOnLongClickListener { visualDialog(); true } })
         ccFsB = ccB; tb1.addView(ccB)
         tb1.addView(fb("A−") { scaleBy(-10) })
         tb1.addView(fb("A+") { scaleBy(10) })
@@ -683,9 +688,10 @@ class PlayerActivity : Activity(), Host {
         fsBar.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(10), 0, ui.dp(10), 0) })
         fsBar.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)))
         val chromeFrame = FrameLayout(this).apply { visibility = View.GONE }
-        chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })
+        chromeFrame.addView(tb, FrameLayout.LayoutParams(-1, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(170), 0) })
         chromeFrame.addView(fsBar, FrameLayout.LayoutParams(-1, ui.dp(52), Gravity.BOTTOM).apply { setMargins(ui.dp(14), 0, ui.dp(14), ui.dp(14)) })
         videoBox.addView(chromeFrame, FrameLayout.LayoutParams(-1, -1))
+        videoBox.addView(floatBar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(10), ui.dp(10), 0) })
         // زرار ⛶ (.fullscreen-btn): أسفل يسار الفيديو 10dp في الرأسي، 18dp في الشاشة الكاملة
         fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
@@ -803,10 +809,8 @@ class PlayerActivity : Activity(), Host {
             mk("🌐", "لهجة لايف") { liveDialectDialog() },
             mk("🔧", "صحّح الضمائر") { pronounsNow() },
             mk("🧠", "دمج مكرر") { val n = engine.removeDuplicates(); Toast.makeText(this, if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة", Toast.LENGTH_SHORT).show(); curIdx = -2 },
-            mk("📜", "ذكّرني") { recapDialog() },
-            mk("👁", "الوضع البصري") { visualDialog() }
+            mk("📜", "ذكّرني") { recapDialog() }
         )
-        val grid = ui.grid(menuItems { i, l, f -> ui.gridBtn(i, l, f) })
         // ---- القايمة الجانبية (أفقي): نفس أزرار اللي تحت المشغل، 3 في الصف وتحتهم صف تاني وهكذا. أي زرار بيفتح صفحة كاملة، والرجوع بيرجّع خطوة ----
         val keepOpen = setOf("الجمل", "اللوجز", "ترجمات الفيديو", "عائلي / صريح", "لهجة لايف", "ذكّرني", "الوضع البصري", "الإعدادات")
         val sideGrid = ui.grid(menuItems { i, l, f -> ui.sideBtn(i, l) { if (l !in keepOpen) closeSide(); f() } }, 3)
@@ -824,7 +828,6 @@ class PlayerActivity : Activity(), Host {
         sideMenuV.addView(sidePanel, FrameLayout.LayoutParams(ui.dp(300), -1, Gravity.RIGHT))
         val extrasCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, ui.dp(2), 0, ui.dp(20)) }
         extrasCol.addView(ctl.root); extrasCol.addView(counters); extrasCol.addView(mem.root, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
-        extrasCol.addView(grid, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(13), ui.dp(10), ui.dp(13), 0) })
         val scroll = ScrollView(this).apply { addView(extrasCol) }
         extras = scroll
         page.addView(videoBox, LinearLayout.LayoutParams(-1, ui.dp(220)))
@@ -978,6 +981,7 @@ class PlayerActivity : Activity(), Host {
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
+        floatBar.visibility = View.VISIBLE
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else 0
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
     }
@@ -1002,7 +1006,7 @@ class PlayerActivity : Activity(), Host {
         if (inPip) {
             closeSide()
             h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn()
-            extras.visibility = View.GONE; st.visibility = View.GONE; fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
+            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
         } else applyFull(c.orientation == Configuration.ORIENTATION_LANDSCAPE)
     }
@@ -1069,7 +1073,6 @@ class PlayerActivity : Activity(), Host {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (sideOpen) { closeSide(); return }
-        if (fullMode) { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT; return }
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
         super.onBackPressed()

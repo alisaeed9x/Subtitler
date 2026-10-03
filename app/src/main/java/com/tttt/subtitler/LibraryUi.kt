@@ -7,6 +7,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.graphics.drawable.GradientDrawable
+import android.view.MotionEvent
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
+import java.io.File
 
 /**
  * الشاشة الرئيسية: متصفح فيديوهات الجهاز زي MX Player.
@@ -22,6 +29,7 @@ class LibraryUi(
     var onSettings: () -> Unit = {}
     var onLink: () -> Unit = {}
     var onPick: () -> Unit = {}
+    var onPull: () -> Unit = {}
 
     val root = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setBackgroundColor(th.bg) }
     private var all: List<VideoItem> = emptyList()
@@ -44,6 +52,82 @@ class LibraryUi(
     private val stateBtn = ui.button("", true) { onGrant() }
     private lateinit var refreshBtn: TextView
 
+    // ===== ريفريش بالسحب + NEW + إشعار + زرار استكمال =====
+    private val knownFile = File(act.filesDir, "known_videos.txt")
+    private val newFile = File(act.filesDir, "new_videos.txt")
+    private var newKeys: MutableSet<String> = try { newFile.readLines().filter { it.isNotEmpty() }.toMutableSet() } catch (_: Exception) { mutableSetOf() }
+    private var userRefresh = false
+    private var refreshing = false
+    private var spinner: ObjectAnimator? = null
+    private val ORANGE = 0xFFFF9F1C.toInt()
+    private fun keyOf(v: VideoItem) = v.folderKey + "|" + v.name + "|" + v.size
+
+    private val ptr = TextView(act).apply {
+        text = "🔄"; textSize = 20f; gravity = Gravity.CENTER; background = ui.box(th.surface, th.border, 22)
+        elevation = ui.dp(6).toFloat(); alpha = 0f; translationY = -ui.dp(50).toFloat()
+    }
+    private val toastTv = TextView(act).apply {
+        textSize = 13f; setTextColor(th.text); setPadding(ui.dp(16), ui.dp(9), ui.dp(16), ui.dp(9))
+        background = ui.box(th.surface, ORANGE, 14); elevation = ui.dp(8).toFloat(); translationY = -ui.dp(100).toFloat()
+    }
+    private val resumeBtn = TextView(act).apply {
+        text = "▶"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; elevation = ui.dp(8).toFloat(); visibility = View.GONE
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF3B82F6.toInt()) }
+    }
+    private fun newBadge() = TextView(act).apply {
+        text = "NEW"; textSize = 10f; setTextColor(0xFF111111.toInt()); setTypeface(typeface, android.graphics.Typeface.BOLD)
+        setPadding(ui.dp(7), ui.dp(1), ui.dp(7), ui.dp(1)); background = ui.box(ORANGE, Color.TRANSPARENT, 10); visibility = View.GONE
+    }
+    private var toastRun: Runnable? = null
+    private fun toastMsg(m: String) {
+        toastTv.text = m; toastRun?.let { toastTv.removeCallbacks(it) }
+        toastTv.animate().translationY(ui.dp(10).toFloat()).setDuration(300).setInterpolator(DecelerateInterpolator()).start()
+        val r = Runnable { toastTv.animate().translationY(-ui.dp(100).toFloat()).setDuration(300).start() }
+        toastRun = r; toastTv.postDelayed(r, 3200)
+    }
+    /** مقارنة القايمة القديمة المحفوظة بالجديدة: بيرجّع عدد الفيديوهات المضافة */
+    private fun diff(list: List<VideoItem>): Int {
+        val keys = list.map { keyOf(it) }
+        var added = 0
+        try {
+            if (knownFile.exists()) {
+                val old = knownFile.readLines().toHashSet()
+                val add = keys.filter { it !in old }
+                added = add.size
+                if (added > 0) { newKeys.addAll(add) }
+            }
+            newKeys.retainAll(keys.toHashSet())
+            knownFile.writeText(keys.joinToString("\n")); newFile.writeText(newKeys.joinToString("\n"))
+        } catch (_: Exception) {}
+        return added
+    }
+    private fun endPull() {
+        spinner?.cancel(); spinner = null; refreshing = false
+        listV.animate().translationY(0f).setDuration(250).start()
+        ptr.animate().alpha(0f).translationY(-ui.dp(50).toFloat()).setDuration(250).start()
+    }
+    private fun dropAnim() {
+        listV.post {
+            for (i in 0 until listV.childCount) {
+                val c = listV.getChildAt(i)
+                c.alpha = 0f; c.translationY = -ui.dp(28).toFloat()
+                c.animate().alpha(1f).translationY(0f).setStartDelay(i * 45L).setDuration(380).setInterpolator(DecelerateInterpolator()).start()
+            }
+        }
+    }
+    private fun markPlayed(v: VideoItem) {
+        if (newKeys.remove(keyOf(v))) try { newFile.writeText(newKeys.joinToString("\n")) } catch (_: Exception) {}
+        Cfg.put("lib_last", v.uri); Cfg.put("lib_last_f:" + v.folderKey, v.uri)
+    }
+    private fun updateResume() {
+        val cf = curFolder
+        val target = if (cf == null) Cfg.str("lib_last") else Cfg.str("lib_last_f:$cf")
+        val v = if (target.isEmpty()) null else all.firstOrNull { it.uri == target && (cf == null || it.folderKey == cf) }
+        if (v == null) { resumeBtn.visibility = View.GONE; return }
+        resumeBtn.visibility = View.VISIBLE
+        resumeBtn.setOnClickListener { markPlayed(v); onPlay(v) }
+    }
+
     private fun sortKey() = Cfg.str("lib_sort", VideoLib.SORT_NAME)
 
     private fun hbtn(t: String, f: () -> Unit): TextView = ui.circleBtn(t, false, f).apply {
@@ -59,7 +143,7 @@ class LibraryUi(
         head.addView(hbtn("🔗") { onLink() })
         head.addView(hbtn("📂") { onPick() })
         head.addView(hbtn("⚙️") { onSettings() })
-        refreshBtn = hbtn("🔄") { refreshBtn.animate().rotationBy(360f).setDuration(600).start(); onRefresh() }
+        refreshBtn = hbtn("🔄") { refreshBtn.animate().rotationBy(360f).setDuration(600).start(); userRefresh = true; onRefresh() }
         head.addView(refreshBtn)
         root.addView(head, LinearLayout.LayoutParams(-1, -2))
 
@@ -90,13 +174,63 @@ class LibraryUi(
         stateBox.addView(stateBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(12) })
         val body = FrameLayout(act)
         body.addView(listV, FrameLayout.LayoutParams(-1, -1)); body.addView(stateBox, FrameLayout.LayoutParams(-1, -1))
+        body.addView(ptr, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        body.addView(toastTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        body.addView(resumeBtn, FrameLayout.LayoutParams(ui.dp(58), ui.dp(58), Gravity.BOTTOM or Gravity.LEFT).apply { setMargins(ui.dp(20), 0, 0, ui.dp(24)) })
+        // سحب لتحت من أول القايمة = ريفريش
+        var y0 = 0f; var pulling = false; var pd = 0f
+        val thr = ui.dp(60).toFloat(); val cap = ui.dp(95).toFloat()
+        listV.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { y0 = e.rawY; pulling = false; false }
+                MotionEvent.ACTION_MOVE -> {
+                    if (refreshing) return@setOnTouchListener false
+                    val dy = e.rawY - y0
+                    val atTop = listV.firstVisiblePosition == 0 && (listV.childCount == 0 || listV.getChildAt(0).top >= listV.paddingTop)
+                    if (!pulling && dy > ui.dp(10) && atTop) {
+                        pulling = true; y0 = e.rawY
+                        val c = MotionEvent.obtain(e); c.action = MotionEvent.ACTION_CANCEL; listV.onTouchEvent(c); c.recycle()
+                    }
+                    if (pulling) {
+                        pd = ((e.rawY - y0) * 0.5f).coerceIn(0f, cap)
+                        listV.translationY = pd; ptr.translationY = pd - ui.dp(50)
+                        ptr.alpha = (pd / ui.dp(40)).coerceIn(0f, 1f); ptr.rotation = pd * 4f
+                        true
+                    } else false
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (pulling) {
+                        pulling = false
+                        if (pd >= thr && e.actionMasked == MotionEvent.ACTION_UP) {
+                            refreshing = true; userRefresh = true
+                            listV.animate().translationY(ui.dp(56).toFloat()).setDuration(150).start()
+                            ptr.animate().translationY(ui.dp(6).toFloat()).alpha(1f).setDuration(150).start()
+                            spinner = ObjectAnimator.ofFloat(ptr, "rotation", ptr.rotation, ptr.rotation + 360f).apply {
+                                duration = 700; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator(); start()
+                            }
+                            onPull()
+                            ptr.postDelayed({ if (refreshing) { userRefresh = false; endPull() } }, 20000)
+                        } else endPull()
+                        true
+                    } else false
+                }
+                else -> false
+            }
+        }
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
     // ===== الحالات =====
     fun showScanning() { mode = "scan"; render() }
     fun showNoPermission() { mode = "perm"; render() }
-    fun showVideos(list: List<VideoItem>) { all = list; mode = "ready"; render() }
+    fun showVideos(list: List<VideoItem>) {
+        val added = diff(list)
+        all = list; mode = "ready"; render()
+        if (userRefresh) {
+            userRefresh = false; endPull(); dropAnim()
+            toastMsg(if (added > 0) "✨ تم إضافة $added فيديو جديد" else "✅ مفيش فيديوهات جديدة")
+        } else if (added > 0) { toastMsg("✨ تم إضافة $added فيديو جديد"); dropAnim() }
+    }
     val hasData: Boolean get() = mode == "ready" && all.isNotEmpty()
 
     /** رجوع من فولدر للقايمة الرئيسية. بترجّع true لو استهلكت الضغطة */
@@ -106,6 +240,7 @@ class LibraryUi(
     }
 
     fun render() {
+        resumeBtn.visibility = View.GONE
         recMap = try { recents() } catch (_: Exception) { emptyMap() }
         val sort = sortKey()
         when (mode) {
@@ -126,6 +261,7 @@ class LibraryUi(
         }
         stateBox.visibility = View.GONE; listV.visibility = View.VISIBLE
         (listV.adapter as BaseAdapter).notifyDataSetChanged()
+        updateResume()
     }
 
     private fun setState(busy: Boolean, msg: String, btn: String?) {
@@ -143,7 +279,9 @@ class LibraryUi(
         val name = ui.text("", 15f, th.text, true).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val info = ui.text("", 12f, th.primary)
         val path = ui.text("", 10f, th.muted).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.MIDDLE }
-        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(name); addView(info); addView(path) }
+        val fBadge = newBadge()
+        val nameRow = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; addView(name, LinearLayout.LayoutParams(-2, -2, 1f)); addView(fBadge, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(8) }) }
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(nameRow); addView(info); addView(path) }
         val chev = TextView(act).apply { text = "‹"; textSize = 26f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(8), 0, ui.dp(4), 0) }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(10), ui.dp(8), ui.dp(10)); background = ui.box(th.card, th.border, 14)
@@ -151,7 +289,7 @@ class LibraryUi(
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(12) })
             addView(chev)
         }
-        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card) }
+        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge) }
         return wrap
     }
 
@@ -161,12 +299,14 @@ class LibraryUi(
         (t[0] as TextView).text = f.name
         (t[1] as TextView).text = "${f.count} فيديو · ${VideoLib.fmtSize(f.totalSize)}"
         (t[2] as TextView).text = f.path
+        val nn = f.videos.count { keyOf(it) in newKeys }
+        (t[4] as TextView).apply { text = if (nn > 1) "NEW $nn" else "NEW"; visibility = if (nn > 0) View.VISIBLE else View.GONE }
         t[3].setOnClickListener { rootPos = listV.firstVisiblePosition; curFolder = f.key; render(); listV.setSelection(0) }
     }
     private val FolderItem.count: Int get() = videos.size
 
     // ===== صف الفيديو =====
-    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View)
+    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView)
 
     private fun newVideoRow(): View {
         val ph = TextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
@@ -182,18 +322,21 @@ class LibraryUi(
         val title = ui.text("", 14f, th.text, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
         val meta = ui.text("", 11f, th.muted).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val state = ui.text("", 11f, th.primary).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
-        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(title); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) }) }
+        val vBadge = newBadge()
+        val titleRow = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; addView(title, LinearLayout.LayoutParams(0, -2, 1f)); addView(vBadge, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) }) }
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleRow); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) }) }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.box(th.card, th.border, 12)
             addView(thumb, LinearLayout.LayoutParams(ui.dp(128), ui.dp(72)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
         }
-        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card) }
+        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge) }
     }
 
     private fun bindVideo(v: View, vi: VideoItem) {
         val h = v.tag as VH
         h.title.text = vi.title
+        h.badge.visibility = if (keyOf(vi) in newKeys) View.VISIBLE else View.GONE
         h.dur.text = VideoLib.fmtDur(vi.durMs); h.dur.visibility = if (vi.durMs > 0) View.VISIBLE else View.GONE
         h.meta.text = listOf(VideoLib.fmtSize(vi.size), vi.ext.uppercase(), VideoLib.fmtDate(vi.dateMs)).filter { it.isNotEmpty() }.joinToString(" · ")
         val r = recMap[vi.videoId]
@@ -205,6 +348,6 @@ class LibraryUi(
         val c = Thumbs.peek(vi)
         if (c != null) h.iv.setImageBitmap(c)
         else Thumbs.load(act, vi) { b -> if (b != null && h.iv.tag == vi.uri) h.iv.setImageBitmap(b) }
-        h.card.setOnClickListener { onPlay(vi) }
+        h.card.setOnClickListener { markPlayed(vi); onPlay(vi) }
     }
 }
