@@ -194,11 +194,6 @@ class MainActivity : Activity() {
         topRow.addView(ui.circleBtn("🎨") { settingsDlg.show("theme") })
         topRow.addView(ui.circleBtn("⚙️") { settingsDlg.show("chars") })
         topRow.addView(ui.circleBtn("🎛") { settingsDlg.show("fonts") })
-        root.addView(android.widget.ImageView(this).apply {
-            setImageResource(R.drawable.logo); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-            outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, ui.dp(20).toFloat()) } }
-            clipToOutline = true
-        }, LinearLayout.LayoutParams(ui.dp(84), ui.dp(84)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, ui.dp(8)) })
         root.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false; layoutDirection = View.LAYOUT_DIRECTION_RTL
             setPadding(ui.dp(13), 0, ui.dp(13), 0); clipToPadding = false; addView(topRow)
@@ -288,6 +283,7 @@ class MainActivity : Activity() {
             return
         }
         setContentView(frame)
+        if (!fromPlayer) frame.post { ensureKeys { refreshChip() } }
         if (intent?.action == Intent.ACTION_SEND) {
             val t = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
             Regex("https?://\\S+").find(t)?.let { link.setText(it.value); play(it.value, null) }
@@ -347,6 +343,9 @@ class MainActivity : Activity() {
     fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
     fun play(u: String, uri: Uri?) {
         if (u.isBlank() && uri == null) return
+        ensureKeys { startPlayerNow(u, uri) }
+    }
+    fun startPlayerNow(u: String, uri: Uri?) {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             if (uri != null) { data = uri; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) } else putExtra("url", u)
             // لو فتحنا الإعدادات من المشغّل واخترنا فيديو جديد: امسح المشغّل القديم بدل ما يفضل تحته
@@ -410,7 +409,8 @@ class BrowserActivity : Activity() {
         found.text = "🎬 لقيت فيديو — اضغط للترجمة"
         found.visibility = View.VISIBLE
     }
-    fun openPlayer() {
+    fun openPlayer() = ensureKeys { openPlayerNow() }
+    fun openPlayerNow() {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             putExtra("url", foundUrl); putExtra("ref", wv.url ?: "")
             putExtra("cookie", CookieManager.getInstance().getCookie(foundUrl) ?: "")
@@ -606,48 +606,65 @@ class PlayerActivity : Activity(), Host {
 
         ctl = ui.controls()
         // صفّين ثابتين من اليمين (نفس البداية ونفس الارتفاع 32dp، والمسافة بينهم 6dp = هامش 3+3)
-        fun tbRow() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
-        val row1 = tbRow(); val row2 = tbRow()
-        row1.addView(fb("A−") { scaleBy(-10) })
-        row1.addView(fb("A+") { scaleBy(10) })
-        row1.addView(fb("🔤 " + fontLabel()) { v ->
+        var popup: android.widget.PopupWindow? = null; var popupOwner: View? = null
+        fun dismissPop() { try { popup?.dismiss() } catch (_: Exception) {}; popup = null; popupOwner = null }
+        fun after(keep: Boolean) { if (!keep) dismissPop(); showChrome(); if (popup != null) h.removeCallbacks(hideChrome) }
+        fun pk(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); after(true) }.apply { minimumWidth = ui.dp(150) }
+        fun pd(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); after(false) }.apply { minimumWidth = ui.dp(150) }
+        fun hRow() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
+        fun gCol() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12) }
+        val gText = gCol(); val gTime = gCol(); val gAi = gCol(); val gTool = gCol()
+        val rA = hRow(); val rT = hRow()
+        gText.addView(rA); gTime.addView(rT)
+        val tb = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        fun grp(label: String, col: LinearLayout): TextView = ui.fsBtn("$label ▾") { v ->
+            val had = popupOwner === v; dismissPop()
+            if (!had) {
+                (col.parent as? android.view.ViewGroup)?.removeView(col)
+                val pw = android.widget.PopupWindow(col, -2, -2, false)
+                pw.isOutsideTouchable = true; pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+                pw.showAsDropDown(v, 0, ui.dp(2)); popup = pw; popupOwner = v
+            }
+            showChrome(); if (popup != null) h.removeCallbacks(hideChrome)
+        }
+        rA.addView(pk("A−") { scaleBy(-10) }.apply { minimumWidth = ui.dp(70) })
+        rA.addView(pk("A+") { scaleBy(10) }.apply { minimumWidth = ui.dp(70) })
+        gText.addView(pk("🔤 " + fontLabel()) { v ->
             val fs = SubStyle.fonts; val cf = curStyle().font
             val n = fs[(fs.indexOfFirst { it.id == cf } + 1) % fs.size]
             Cfg.put("sub_font", n.id); restyle(); v.text = "🔤 " + n.label
         })
-        row1.addView(fb("✨ " + entLabel()) { v ->
+        gText.addView(pk("✨ " + entLabel()) { v ->
             val es = SubStyle.entrances; val ca = curStyle().anim
             val n = es[(es.indexOfFirst { it.id == ca } + 1) % es.size]
             Cfg.put("sub_anim", n.id); restyle(); v.text = "✨ " + n.label
         })
-        row1.addView(fb("⬛ " + PlayerLogic.fitNames[fit]) { v ->
+        gText.addView(pk("⬛ " + PlayerLogic.fitNames[fit]) { v ->
             fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply()
             v.text = "⬛ " + PlayerLogic.fitNames[fit]; applyFit(sv, videoBox)
         })
-        val spB = fb("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
-        fsSpeedB = spB; row1.addView(spB)
+        val spB = pk("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
+        fsSpeedB = spB; gTime.addView(spB)
         val ccB = fb("CC") { toggleCc() }
-        ccFsB = ccB; row2.addView(ccB)
-        row2.addView(fb("−") { setOff(-500) })
-        val offB = fb(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
-        offFsB = offB; row2.addView(offB)
-        row2.addView(fb("+") { setOff(500) })
-        row2.addView(fb("📤") { doExport() })
-        row2.addView(fb("🔁") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
-        row2.addView(fb("⧉") { enterPip() })
-        row2.addView(fb("⚙️ الإعدادات") { openSettings() })
-        val row3 = tbRow(); val row4 = tbRow()
-        row3.addView(fb("🗂 ترجمات") { versionsDialog() })
-        row3.addView(fb("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
-        row3.addView(fb("😐 عائلي/صريح") { familyDialog() })
-        row3.addView(fb("🌐 لهجة لايف") { liveDialectDialog() })
-        row4.addView(fb("🔧 ضمائر") { pronounsNow() })
-        row4.addView(fb("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Toast.makeText(this, if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة", Toast.LENGTH_SHORT).show(); curIdx = -2 })
-        row4.addView(fb("📜 ذكّرني") { recapDialog() })
-        row4.addView(fb("👁 بصري") { visualDialog() })
-        val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        tb.addView(row1, LinearLayout.LayoutParams(-2, -2)); tb.addView(row2, LinearLayout.LayoutParams(-2, -2))
-        tb.addView(row3, LinearLayout.LayoutParams(-2, -2)); tb.addView(row4, LinearLayout.LayoutParams(-2, -2))
+        ccFsB = ccB; tb.addView(ccB)
+        rT.addView(pk("−") { setOff(-500) }.apply { minimumWidth = ui.dp(48) })
+        val offB = pk(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
+        offFsB = offB; offB.minimumWidth = ui.dp(60); rT.addView(offB)
+        rT.addView(pk("+") { setOff(500) }.apply { minimumWidth = ui.dp(48) })
+        gTool.addView(pd("📤 تصدير SRT") { doExport() })
+        gTool.addView(pd("🔁 سد الفجوات") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
+        gTool.addView(pd("⧉ نافذة صغيرة") { enterPip() })
+        gTool.addView(pd("⚙️ الإعدادات") { openSettings() })
+
+        gTool.addView(pd("🗂 ترجمات") { versionsDialog() })
+        gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
+        gAi.addView(pd("😐 عائلي/صريح") { familyDialog() })
+        gAi.addView(pd("🌐 لهجة لايف") { liveDialectDialog() })
+        gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
+        gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Toast.makeText(this, if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة", Toast.LENGTH_SHORT).show(); curIdx = -2 })
+        gTool.addView(pd("📜 ذكّرني") { recapDialog() })
+        gTool.addView(pd("👁 بصري") { visualDialog() })
+        tb.addView(grp("🔤 النص", gText)); tb.addView(grp("⏱ التوقيت", gTime)); tb.addView(grp("✨ لهجة", gAi)); tb.addView(grp("🧰 أدوات", gTool))
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFF17130A.toInt())
@@ -677,7 +694,7 @@ class PlayerActivity : Activity(), Host {
         videoBox.addView(fsBtnV, fsBtnLp)
         applyChromeFn = {
             val on = fullMode && chromeShown
-            chromeFrame.visibility = if (on) View.VISIBLE else View.GONE
+            chromeFrame.visibility = if (on) View.VISIBLE else View.GONE; if (!on) dismissPop()
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) ui.dp(84) else ui.dp(12); sub.requestLayout()
         }
@@ -688,7 +705,7 @@ class PlayerActivity : Activity(), Host {
         var briF = window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it }
         var scrollLogged = false
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; return true }
+            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; dismissPop(); return true }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (!fullMode) { log("👆 ضغطة: تشغيل/إيقاف"); togglePlay() }
                 else {
