@@ -87,7 +87,7 @@ object KeyVault {
     /** بيرجّع المفاتيح لو لازم، وبعدين يراقب أي تغيير ويحفظ نسخة جديدة تلقائيًا */
     fun attach(ctx: Context) {
         val app = ctx.applicationContext
-        Thread { restore(app); save(app) }.also { it.isDaemon = true }.run()
+        Thread { restore(app); save(app) }.also { it.isDaemon = true }.start()
         if (listener != null) return
         val l = SharedPreferences.OnSharedPreferenceChangeListener { _, k ->
             if (k in FIELDS) { h.removeCallbacksAndMessages(null); h.postDelayed({ Thread { save(app) }.also { it.isDaemon = true }.start() }, 1500) }

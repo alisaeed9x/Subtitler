@@ -152,7 +152,16 @@ class Engine(
         return out
     }
     /** الباتشات اللي ما اترجمتش (❌) أو رجعت ناقصة (⚠) وملهاش طلب شغال دلوقتي */
-    fun problems(): List<BatchInfo> = batches().filter { it.mark == "❌" || it.mark == "⚠" }
+    fun problems(): List<BatchInfo> {
+        // بتتنادي من الواجهة كل ~0.7ث: ما نلفّش على كل باتشات الفيديو ونعدّ الجمل لكل واحد — بس على الباتشات الفاشلة/الناقصة
+        val idx = java.util.TreeSet<Int>()
+        for ((k, v) in failed) if (v >= MAX_FAILS) idx.add(k)
+        idx.addAll(incomplete)
+        if (idx.isEmpty()) return emptyList()
+        val d = currentDur(); if (d <= 0) return emptyList()
+        return idx.filter { it !in inflight && cStart(it) < d }
+            .map { BatchInfo(it, cStart(it), cEnd(it, d), if ((failed[it] ?: 0) >= MAX_FAILS) "❌" else "⚠", 0) }
+    }
     /** إعادة ترجمة باتش واحد على المفاتيح الاحتياطية */
     fun retryOnBackup(i: Int) {
         if (!inflight.add(i)) return
@@ -367,8 +376,11 @@ class Engine(
     fun subCount(i: Int, d: Double): Int { val a = cStart(i) - 0.001; val b = cEnd(i, d) - 0.001; return subs.count { it.start >= a && it.start < b } }
     private fun isDone(i: Int, d: Double): Boolean = done.covers(cStart(i), cEnd(i, d))
 
+    @Volatile private var durCache = 0.0
     private fun currentDur(): Double {
+        if (durCache > 0) return durCache
         val a = try { source?.durationSec() ?: 0.0 } catch (_: Exception) { 0.0 }
+        if (a > 0) durCache = a
         return if (a > 0) a else host.playerDuration()
     }
 

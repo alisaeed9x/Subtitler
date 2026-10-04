@@ -108,7 +108,7 @@ class FileSource(
 ) : AudioSource {
     private var ex: MediaExtractor? = null
     private var fmt: MediaFormat? = null
-    private var durUs = 0L
+    @Volatile private var durUs = 0L
     @Volatile private var preRollUs = 0L
     override fun setPreRoll(sec: Double) { preRollUs = (sec * 1_000_000).toLong() }
 
@@ -124,7 +124,12 @@ class FileSource(
         } catch (t: Throwable) { try { e.release() } catch (_: Exception) {}; throw t }
     }
 
-    @Synchronized override fun durationSec(): Double {
+    /** من غير قفل لو المدة معروفة: الواجهة بتسأل عليها كل ثانية، وwav() ماسك القفل طول فك الصوت */
+    override fun durationSec(): Double {
+        val d = durUs; if (d > 0) return d / 1_000_000.0
+        return durationSlow()
+    }
+    @Synchronized private fun durationSlow(): Double {
         if (ex == null) try { open() } catch (_: Exception) { return 0.0 }
         return durUs / 1_000_000.0
     }

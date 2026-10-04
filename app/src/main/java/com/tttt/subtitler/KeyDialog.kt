@@ -75,10 +75,19 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
 }
 
 /** لو مفيش أي مفتاح Gemini متسجّل: نافذة منبثقة تطلب المفتاح (+ لإضافة شريط مفتاح جديد). بعد الحفظ أو "بعدين" بينفّذ onDone */
+private fun hasAnyKeyNow() = Cfg.keys("keys").isNotEmpty() || Cfg.keys("backup").isNotEmpty() || Cfg.keys("extra").isNotEmpty()
 fun Activity.ensureKeys(onDone: () -> Unit) {
     Cfg.init(this)
-    KeyVault.restore(this, "kv_full"); KeyVault.save(this)   // بعد ما الصلاحيات تتمنح: استرجاع من النسخة المخفية لو متثبّت من جديد
-    if (Cfg.keys("keys").isNotEmpty() || Cfg.keys("backup").isNotEmpty() || Cfg.keys("extra").isNotEmpty()) { onDone(); return }
+    if (hasAnyKeyNow()) { onDone(); return }
+    // مفيش مفاتيح: دوّر على النسخة المخفية بعد ما الصلاحيات تتمنح (تثبيت جديد) — على خيط خلفي عشان قراءة التخزين ما توقفش الواجهة
+    val app = applicationContext
+    Thread {
+        try { KeyVault.restore(app, "kv_full"); KeyVault.save(app) } catch (_: Throwable) {}
+        runOnUiThread { if (!isFinishing && !isDestroyed) ensureKeysUi(onDone) }
+    }.apply { isDaemon = true }.start()
+}
+private fun Activity.ensureKeysUi(onDone: () -> Unit) {
+    if (hasAnyKeyNow()) { onDone(); return }
     val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
     val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var finished = false
