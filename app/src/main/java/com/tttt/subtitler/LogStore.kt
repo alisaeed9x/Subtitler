@@ -58,8 +58,14 @@ object LogStore {
 
     private fun tail(f: File, max: Int): String = try { if (f.exists()) f.readText(Charsets.UTF_8).let { if (it.length > max) it.takeLast(max) else it } else "" } catch (_: Exception) { "" }
 
-    fun currentText(max: Int = 150_000): String = synchronized(lock) { tail(File(dir ?: return "", "session_log.txt"), max) }
-    fun prevText(max: Int = 80_000): String = tail(File(dir ?: return "", "prev_log.txt"), max)
+    fun currentText(max: Int = 150_000): String {
+        val d = dir ?: return ""
+        return synchronized(lock) { tail(File(d, "session_log.txt"), max) }
+    }
+    fun prevText(max: Int = 80_000): String {
+        val d = dir ?: return ""
+        return tail(File(d, "prev_log.txt"), max)
+    }
     fun lastLines(text: String, n: Int): String = text.trimEnd().lines().takeLast(n).joinToString("\n")
     fun crashText(): String = dir?.let { d -> tail(File(d, "last_crash.txt"), 20_000).ifBlank { tail(File(d, "last_crash_seen.txt"), 20_000) } } ?: ""
 

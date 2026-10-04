@@ -27,6 +27,7 @@ fun Activity.clipboardKey(): String? = try {
 fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     val th = Themes.byId(Cfg.str("theme", "default")); val ui = Ui(this, th)
     val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    var auto = false
     val box = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
         setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16)); background = ui.box(th.card, th.border, 18)
@@ -62,7 +63,6 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     box.addView(pill("📋 الصق من الكليبورد", th.surface, th.text) { paste() }, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { topMargin = ui.dp(6) })
     box.addView(pill("إغلاق", th.surface, th.muted) { d.dismiss() }, LinearLayout.LayoutParams(-1, ui.dp(40)).apply { topMargin = ui.dp(6) })
     // أول ما ترجع من المتصفح والمفتاح منسوخ: يتحط تلقائي
-    var auto = false
     d.window?.decorView?.viewTreeObserver?.addOnWindowFocusChangeListener { f -> if (f && auto && clipboardKey() != null) { auto = false; paste() } }
     d.setContentView(ScrollView(this).apply { addView(box) })
     d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
