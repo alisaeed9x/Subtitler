@@ -371,6 +371,40 @@ object Api {
         } finally { c.disconnect() }
     }
 
+    class ModelRow(val id: String, val display: String)
+
+    /** كل الموديلات اللي المفتاح ده يقدر يستخدمها في generateContent (بيعدّي على كل الصفحات) */
+    fun listModels(key: String): List<ModelRow> {
+        val out = ArrayList<ModelRow>()
+        var token = ""
+        var pages = 0
+        while (pages++ < 10) {
+            val u = "$base/models?pageSize=200" + (if (token.isNotEmpty()) "&pageToken=" + java.net.URLEncoder.encode(token, "UTF-8") else "")
+            val c = URL(u).openConnection() as HttpURLConnection
+            try {
+                c.requestMethod = "GET"; c.connectTimeout = 20000; c.readTimeout = 30000
+                c.setRequestProperty("x-goog-api-key", key)
+                val code = c.responseCode
+                val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                if (code >= 300) throw ApiErr(code, try { JSONObject(txt).getJSONObject("error").getString("message") } catch (_: Exception) { "HTTP $code" })
+                val j = JSONObject(txt)
+                val arr = j.optJSONArray("models")
+                if (arr != null) for (i in 0 until arr.length()) {
+                    val m = arr.optJSONObject(i) ?: continue
+                    val id = m.optString("name").removePrefix("models/")
+                    if (id.isEmpty()) continue
+                    val methods = m.optJSONArray("supportedGenerationMethods")
+                    var gen = false
+                    if (methods != null) for (k in 0 until methods.length()) if (methods.optString(k) == "generateContent") gen = true
+                    if (gen) out.add(ModelRow(id, m.optString("displayName")))
+                }
+                token = j.optString("nextPageToken", "")
+            } finally { c.disconnect() }
+            if (token.isEmpty()) break
+        }
+        return out.distinctBy { it.id }.sortedBy { it.id }
+    }
+
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
                  maxTokens: Int = 8192, temp: Double = 0.1, json: Boolean = true): Result {
         Quota.hit(model); Stats.req(model, key)
@@ -468,7 +502,7 @@ object Parse {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
         val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
             .filter { it.end > it.start && it.original.isNotEmpty() }
-        val ok = all.filter { it.start < off + maxEnd + 1.0 }
+        val ok = all.filter { it.start < off + maxEnd + 1.0 }.map { if (it.end > off + maxEnd + 0.3) it.copy(end = off + maxEnd) else it }.filter { it.end > it.start }
         if (ok.isEmpty() && all.isNotEmpty() && off > 1.0) {
             // الموديل ساعات بيرجّع أوقات مطلقة (من أول الفيديو) بدل نسبية لبداية المقطع → الجمل كانت بتتشال كلها والباتش يطلع ✅ فاضي
             val abs = all.map { it.copy(start = it.start - off, end = it.end - off) }
@@ -533,7 +567,8 @@ object Subs {
                 val overlaps = cur.start < prev.end - 0.15 && cur.end > prev.start - 0.15
                 val similar = norm(cur.original) == norm(prev.original) ||
                     (cur.translated.isNotEmpty() && prev.translated.isNotEmpty() && norm(cur.translated) == norm(prev.translated))
-                if (overlaps && similar && cur.faint == prev.faint) { res[res.size - back] = cur; merged = true; break }
+                val sameSpot = cur.chunk != prev.chunk || Math.abs(cur.start - prev.start) < 1.5
+                if (overlaps && similar && sameSpot && cur.faint == prev.faint) { res[res.size - back] = cur; merged = true; break }
                 back++
             }
             if (!merged) res.add(cur)
@@ -614,4 +649,14 @@ object Subs {
         return if (res.isEmpty()) listOf(sub) else res
     }
     fun splitAll(l: List<Sub>): List<Sub> = l.flatMap { splitLong(it) }
+
+    /** الموديل ساعات بيدّي جملة قصيرة مدة طويلة جدًا (18ث لسطر غنائي) فتفضل ظاهرة والمتكلم سكت — بنقصّرها على قد كلامها */
+    fun maxDurFor(s: Sub): Double {
+        val w = maxOf(words(s.translated), words(s.original))
+        return maxOf(3.0, w * 0.7 + 1.5)
+    }
+    fun capPace(s: Sub): Sub {
+        val m = maxDurFor(s)
+        return if (s.end - s.start > m + 0.3) s.copy(end = s.start + m) else s
+    }
 }

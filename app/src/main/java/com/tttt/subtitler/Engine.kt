@@ -38,6 +38,8 @@ class Engine(
         const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
         const val CHAR_MIN_LINES = 12
         const val PRON_MIN_LINES = 20
+        const val HOLE_MIN = 5.0         // أقل ثغرة صوتية من غير ترجمة نعيد طلبها (ثواني)
+        const val HOLE_MAX = 4           // أقصى عدد ثغرات بنسدّها لكل مقطع
     }
 
     private val lock = Any()
@@ -250,7 +252,7 @@ class Engine(
         synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
         done.remove(a, b); gapTried.remove(a, b)
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
-        for (i in from..last) { failed.remove(i); gapPass.remove(i) }
+        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i) }
         pool.clear(); lastGapTry = 0L; gapScanClean = false
         host.changed(); persist()
     }
@@ -530,6 +532,7 @@ class Engine(
                 if (fresh.isEmpty() && !w.silent) { partial = true; host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة") }
                 pool.good(key)
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
+                try { holeFill(i, rawStart, rawEnd, w, key) } catch (e: Exception) { host.log("⚠ سدّ الثغرات في المقطع ${i + 1} فشل: " + (e.message ?: "").take(80)) }
                 if (partial) { incomplete.add(i); host.log("⚠ باتش ${i + 1} رجع ناقص — تقدر تعيده من علامة التحذير") }
                 return
             } catch (e: BadReply) {
@@ -605,7 +608,13 @@ class Engine(
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
         }
         if (j != null) applyPrevCorrections(j)
-        val tagged = Subs.splitAll(fresh).map { it.copy(chunk = i) }
+        val spansAbs = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) }
+        var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i) }
+        if (spansAbs != null) {
+            val n0 = tagged.size
+            tagged = tagged.mapNotNull { Speech.fit(it, spansAbs) }
+            if (tagged.size < n0) host.log("🔕 المقطع ${i + 1}: اتشالت ${n0 - tagged.size} جملة كانت فوق صمت تام")
+        }
         synchronized(lock) {
             val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) }
             subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
@@ -1055,6 +1064,49 @@ class Engine(
         return started
     }
 
+    private val holeTried = ConcurrentHashMap.newKeySet<Int>()
+
+    /**
+     * بعد ما المقطع يتطبّق: نقيس الصوت الفعلي ونشوف فيه كلام/غنا مسموع (>= HOLE_MIN ثانية) من غير ولا جملة فوقه.
+     * الموديل بيرجّع جزء من المقطع وبيفوّت الباقي (خصوصًا الكورس المتكرر) — فبنعيد طلب الجزء الناقص بس
+     * على أجزاء صغيرة (<= 20ث) وبسياق الجمل اللي قبله. مرة واحدة لكل مقطع.
+     */
+    private fun holeFill(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, key0: String) {
+        val spans = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) } ?: return
+        if (!holeTried.add(i)) return
+        val holes = Speech.holes(spans, subs, maxOf(rawStart, w.startSec), minOf(rawEnd, w.startSec + w.durSec), HOLE_MIN).take(HOLE_MAX)
+        if (holes.isEmpty()) return
+        host.log("🧩 المقطع ${i + 1}: ${holes.size} ثغرة فيها صوت من غير ترجمة — بعيد طلبها")
+        var key = key0
+        for (h in holes) {
+            for (pt in Gaps.parts(maxOf(0.0, h[0] - 0.5), h[1] + 0.5, 20.0)) {
+                if (!running) return
+                val w2 = src().wav(pt[0], pt[1]) ?: continue
+                if (w2.silent) continue
+                var tries = 0; var got = false
+                while (running && !got && tries++ < 3) {
+                    try {
+                        val r = Api.generate(conf.model, key, buildPrompt(w2.durSec, w2.startSec), w2.bytes)
+                        val j = if (r.text.isBlank()) null else Parse.json(r.text)
+                        var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w2.startSec, w2.durSec)).map { Subs.capPace(it) }
+                        if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
+                        val sp2 = Speech.activeSpans(w2.bytes)?.let { Speech.absolute(it, w2.startSec) }
+                        if (sp2 != null) base = base.mapNotNull { Speech.fit(it, sp2) }
+                        base = base.filter { val m = (it.start + it.end) / 2; m >= h[0] - 0.5 && m <= h[1] + 0.5 }.map { it.copy(chunk = i) }
+                        if (base.isEmpty()) { key = pool.pick(key, rr.getAndIncrement()) ?: key; continue }
+                        synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + base)).sortedBy { it.start } }
+                        pool.good(key); got = true
+                        host.changed(); persist()
+                        host.log("✅ ثغرة ${"%.0f".format(java.util.Locale.US, pt[0])}ث→${"%.0f".format(java.util.Locale.US, pt[1])}ث: اتضاف ${base.size} جملة")
+                    } catch (e: ApiErr) {
+                        if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else { host.log("⚠ ثغرة: " + (e.message ?: "").take(80)); return }
+                        key = pool.pick(key, rr.getAndIncrement()) ?: return
+                    } catch (e: IOException) { host.log("📶 ثغرة: مشكلة اتصال"); return }
+                }
+            }
+        }
+    }
+
     private fun fillGap(a: Double, b: Double, key0: String) {
         val w = src().wav(a, b) ?: return
         if (w.silent) { host.log("🔇 الفجوة ${a.toInt()}ث صامتة — اتخطّيت"); return }
@@ -1063,7 +1115,7 @@ class Engine(
             try {
                 val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec), w.bytes)
                 val j = if (r.text.isBlank()) null else Parse.json(r.text)
-                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec))
+                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).map { Subs.capPace(it) }
                 if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
                 val marked = base.map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
                 if (marked.isEmpty()) {

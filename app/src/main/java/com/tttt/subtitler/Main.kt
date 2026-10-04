@@ -161,8 +161,32 @@ class MainActivity : Activity() {
         val modelDesc = ui.text("", 12f, th.muted)
         fun descOf(id: String) = (Models.builtin.firstOrNull { it.id == id }?.desc ?: "موديل يدوي") + " — استهلاك النهارده: " + Quota.used(id) + " / " + Models.quotaOf(id) + " (تقريبي، بيتصفّر 00:00 PT)"
         modelDesc.text = descOf(modelSel)
-        val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { model.setText(it); modelSel = it; modelDesc.text = descOf(it) }
-        var chunkSec = Cfg.int("chunk", 100).coerceIn(10, 600)
+        lateinit var applyModel: (String) -> Unit
+        val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { applyModel(it) }
+        val fetchModelsBtn = ui.button("🔄 جلب كل الموديلات من جوجل واختيار واحد") {
+            val k = (keys.text.toString() + "\n" + extra.text.toString() + "\n" + backup.text.toString()).lines().map { it.trim() }.firstOrNull { it.length > 10 }
+            if (k == null) { Toast.makeText(this, "ضيف مفتاح API الأول", Toast.LENGTH_SHORT).show(); return@button }
+            Toast.makeText(this, "⏳ بجيب الموديلات…", Toast.LENGTH_SHORT).show()
+            Thread {
+                try {
+                    val rows = Api.listModels(k)
+                    // الأحدث/الأهم فوق: gemini أولًا
+                    val sorted = rows.sortedWith(compareBy({ !it.id.startsWith("gemini") }, { it.id }))
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (sorted.isEmpty()) { Toast.makeText(this, "مفيش موديلات رجعت", Toast.LENGTH_LONG).show(); return@runOnUiThread }
+                        val cur = model.text.toString().trim()
+                        val labels = sorted.map { (if (it.id == cur) "✓ " else "") + it.id + (if (it.display.isNotEmpty() && it.display != it.id) "\n" + it.display else "") }.toTypedArray()
+                        android.app.AlertDialog.Builder(this).setTitle("اختار الموديل (${sorted.size})")
+                            .setItems(labels) { _, which -> applyModel(sorted[which].id) }
+                            .setNegativeButton("إلغاء", null).show()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { Toast.makeText(this, "⚠ فشل جلب الموديلات: " + (e.message ?: "").take(120), Toast.LENGTH_LONG).show() }
+                }
+            }.start()
+        }
+        var chunkSec = Cfg.int("chunk", 45).coerceIn(10, 600)
         val chunk = ui.slider("طول المقطع", chunkSec, 10, 600, " ثانية") { chunkSec = it }
         val ahead = ui.input("عدد المقاطع اللي بتترجم قدّام مكان التشغيل", Cfg.str("ahead", "3"))
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
@@ -264,6 +288,11 @@ class MainActivity : Activity() {
             keyPctTv.text = (Quota.used(mid) * 100 / q).toString() + "%"
             modelChipTv.text = "▾ " + mid.removePrefix("gemini-") + " ●"
         }
+        applyModel = { id ->
+            model.setText(id); modelSel = id; modelDesc.text = descOf(id)
+            Cfg.p.edit().putString("model", id).apply()   // يتحفظ فورًا
+            refreshChip()
+        }
         val sp = styleParts(ui, th)
         var settingsDlg0: TabbedDialog? = null; var qui0: QueueUi? = null
         val lk = LockUi(this, ui, th); lockUi = lk
@@ -289,7 +318,7 @@ class MainActivity : Activity() {
                 ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it })), false, "لهجة الترجمة وأسلوبها"),
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
-                ui.section("🤖 الموديل", true, modelChips, model, modelDesc),
+                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
@@ -1667,7 +1696,7 @@ class PlayerActivity : Activity(), Host {
         engine = Engine(conf, { makeSource() }, store, this, pb)
         engine.convDialect = Cfg.str("conv_dialect", "")
         Live.engine = engine
-        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
+        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
         val savedPos = engine.load()
         if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
         refreshList()
@@ -2016,19 +2045,18 @@ class PlayerActivity : Activity(), Host {
         if (visBusy) { Toast.makeText(this, "👁 لسه بترجم اللقطة اللي فاتت…", Toast.LENGTH_SHORT).show(); return }
         visBusy = true
         val tok = ++visTok
-        h.postDelayed({ if (visBusy && visTok == tok) { visBusy = false; Toast.makeText(this, "👁 اللقطة اتأخرت — جرّب تاني", Toast.LENGTH_SHORT).show() } }, 60_000)
+        h.postDelayed({ if (visBusy && visTok == tok) { visBusy = false;  } }, 60_000)
         val wasPlaying = try { player.playWhenReady } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         val curUs = player.currentPosition * 1000
         val t0 = (player.currentPosition - offsetMs) / 1000.0
-        Toast.makeText(this, "📸 وقفت الفيديو وبترجم اللقطة…", Toast.LENGTH_SHORT).show()
-        val done = { runOnUiThread { visBusy = false; if (wasPlaying && !isFinishing && !isDestroyed) try { player.play() } catch (_: Exception) {} } }
+                val done = { runOnUiThread { visBusy = false; if (wasPlaying && !isFinishing && !isDestroyed) try { player.play() } catch (_: Exception) {} } }
         fun fallback() {
             Thread {
                 val r = makeRetriever()
                 val b = try { r?.getFrameAtTime(curUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 try { r?.release() } catch (_: Exception) {}
-                if (b != null) visual.snap(b, { t0 }, done) else { runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }; done() }
+                if (b != null) visual.snap(b, { t0 }, done) else { done() }
             }.start()
         }
         val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
@@ -2049,7 +2077,7 @@ class PlayerActivity : Activity(), Host {
         box.addView(st)
         box.addView(ui.button(if (visual.running) "⏹ إيقاف" else "▶ تشغيل", true) {
             if (visual.running) visual.stop() else {
-                visual.clear(); visual.start(); say("👁 الوضع البصري شغّال")
+                visual.clear(); visual.start()
             }
             d.dismiss()
         })
