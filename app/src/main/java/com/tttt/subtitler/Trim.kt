@@ -61,11 +61,11 @@ object Silence {
 
 /** كشف الفجوات: مناطق اتترجمت (done) بس مفيهاش جمل لمدة طويلة */
 object Gaps {
-    const val MIN_SEC = 12.0
+    const val MIN_SEC = 8.0
     const val LOOKAHEAD = 8.0
     const val COOLDOWN_MS = 3000L
     const val MAX_PARALLEL = 3
-    const val MAX_TOTAL = 60
+    const val MAX_TOTAL = 120
 
     /** كل فجوة [start,end] أطول من minSec جوه المناطق اللي اتترجمت */
     fun find(subs: List<Sub>, done: List<DoubleArray>, minSec: Double = MIN_SEC): List<DoubleArray> {

@@ -57,6 +57,8 @@ class Engine(
     @Volatile private var running = true
     /** وقفة: المحرك مايبعتش مقاطع جديدة (مستني اختيار المستخدم: كمّل ولا ترجم من جديد) */
     @Volatile var paused = false
+    /** لما الباتشات حوالين مكان التشغيل تخلص: كمّل ترجمة باقي الفيديو (قدّام ثم من الأول) بدل ما تقف */
+    @Volatile var keepGoing = true
     /** ترجمة في الخلفية من غير مشغّل: بيمشي من أول مقطع ناقص وبيخلص لوحده */
     @Volatile var headless = false
     /** ترجمة باتشات محددة بس (0-based) — بعد ما تخلص المحرك بيستنى ومابيكمّلش لقدّام */
@@ -112,7 +114,7 @@ class Engine(
             }
             val a = cStart(i).toInt(); val b = cEnd(i, d).toInt()
             sb.append(if (i == c) "▶ " else "  ").append("باتش ").append(i + 1).append(" ")
-                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).append('\n')
+                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
         }
         return sb.toString().trimEnd()
     }
@@ -121,7 +123,7 @@ class Engine(
     fun chunkCount(): Int { val d = currentDur(); if (d <= 0) return 0; var i = 0; while (cStart(i) < d) i++; return i }
     fun awaitStopped(ms: Long) { val t0 = System.currentTimeMillis(); while (!stoppedFlag && System.currentTimeMillis() - t0 < ms) try { Thread.sleep(50) } catch (_: InterruptedException) { return } }
 
-    class BatchInfo(val idx: Int, val start: Double, val end: Double, val mark: String)
+    class BatchInfo(val idx: Int, val start: Double, val end: Double, val mark: String, val count: Int = 0)
     /** كل الباتشات بحالتها (✅ خلص · ⏳ بيترجم · ❌ فشل · 🔁 بيعيد · ▫ لسه) — لقايمة إعادة الترجمة */
     fun batches(): List<BatchInfo> {
         val d = currentDur(); if (d <= 0) return emptyList()
@@ -134,7 +136,7 @@ class Engine(
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
             }
-            out.add(BatchInfo(i, cStart(i), cEnd(i, d), mark)); i++
+            out.add(BatchInfo(i, cStart(i), cEnd(i, d), mark, subCount(i, d))); i++
         }
         return out
     }
@@ -226,14 +228,17 @@ class Engine(
                     if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight) continue
                     next = i; break
                 }
+                if (next < 0 && only == null && keepGoing && d > 0) next = nextUndone(c + window, d)
+                if (next < 0 && only == null && keepGoing && d > 0) next = nextUndone(0, d)
                 if (next >= 0) {
                     // أول مقطع لوحده (عشان نعرف لغة الفيديو ونختار القالب الصح)، وبعدين بالتوازي
                     if (inflight.size >= cap || (!anyApplied && inflight.isNotEmpty())) { gapTick(); nap(150); continue }
                     dispatch(next, ex); continue
                 }
                 if (inflight.isEmpty() && retryGaps()) continue
-                if (gapTick()) continue
-                if (headless && inflight.isEmpty() && gapBusy.get() == 0 && (gapScanClean || !conf.gapFill) && d > 0 && cStart(firstUndone(d)) >= d) {
+                if (inflight.isEmpty() && repairForeignTick()) continue
+                if (gapTick(headless || keepGoing)) continue
+                if (headless && inflight.isEmpty() && gapBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
                     finished = true; host.status("✅ خلصت الترجمة"); break
                 }
                 idleStatus(d)
@@ -248,6 +253,16 @@ class Engine(
         }
     }
 
+    /** أول مقطع ناقص من i وطالع (بيتخطّى المخلّص والفاشل والشغّال دلوقتي) أو -1 */
+    private fun nextUndone(from: Int, d: Double): Int {
+        var i = maxOf(0, from)
+        while (cStart(i) < d) {
+            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight)) return i
+            i++
+        }
+        return -1
+    }
+
     /** أول مقطع لسه ناقص (الفاشلين بيتخطّوا وبتتعالج في retryGaps) — للترجمة في الخلفية */
     private fun firstUndone(d: Double): Int {
         if (d <= 0) return 0
@@ -259,6 +274,8 @@ class Engine(
         }
     }
 
+    /** عدد الجمل اللي رجعت لباتش (بالوقت مش بالـ tag عشان يشتغل بعد التحميل من الملف) */
+    fun subCount(i: Int, d: Double): Int { val a = cStart(i) - 0.001; val b = cEnd(i, d) - 0.001; return subs.count { it.start >= a && it.start < b } }
     private fun isDone(i: Int, d: Double): Boolean = done.covers(cStart(i), cEnd(i, d))
 
     private fun currentDur(): Double {
@@ -389,11 +406,13 @@ class Engine(
                     nap(400); continue
                 }
                 if (off.isNotEmpty()) fresh = fixForeign(fresh)
-                if (fresh.isEmpty() && empties < 1) {
+                if (fresh.isEmpty() && empties < (if (w.silent) 1 else 3)) {
                     empties++
+                    if (!w.silent) host.log("⚠ المقطع ${i + 1} رجع من غير جمل رغم وجود صوت — إعادة محاولة ($empties/3)")
                     pool.pick(key, rr.getAndIncrement())?.let { key = it }
                     nap(400); continue
                 }
+                if (fresh.isEmpty() && !w.silent) host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة")
                 pool.good(key)
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
                 return
@@ -479,6 +498,7 @@ class Engine(
         failed.remove(i)
         anyApplied = true
         host.changed()
+        Stats.addSec(rawEnd - rawStart)
         host.log("✅ المقطع ${i + 1}: ${fresh.size} جملة — الإجمالي ${subs.size}")
         persist()
         afterChunk(w, fresh, prior)
@@ -856,9 +876,38 @@ class Engine(
         persist()
     }
 
+    // ===== إصلاح الجمل اللي فضلت بلغتها الأصلية (بتتفحص كل الجمل بعد كل مقطع، حتى القديمة المحفوظة) =====
+    private val fixTries = ConcurrentHashMap<String, Int>()
+    @Volatile private var lastFix = 0L
+    private fun fixKey(s: Sub) = "${s.start}|${s.original}"
+    private fun hasRepairable(): Boolean = synchronized(lock) { subs.any { LangGuard.foreign(it) && (fixTries[fixKey(it)] ?: 0) < 3 } }
+    private fun repairForeignTick(): Boolean {
+        if (!running) return false
+        val now = System.currentTimeMillis()
+        if (now - lastFix < 12_000) return false
+        val bad = synchronized(lock) { subs.filter { LangGuard.foreign(it) && (fixTries[fixKey(it)] ?: 0) < 3 } }.take(30)
+        if (bad.isEmpty()) return false
+        lastFix = now
+        bad.forEach { fixTries.merge(fixKey(it), 1, Int::plus) }
+        host.log("🌐 بصلّح ${bad.size} جملة لسه مش بـ${conf.lang}…")
+        val fixed = fixForeign(bad)
+        val map = HashMap<String, Sub>()
+        bad.indices.forEach {
+            if (fixed[it].translated != bad[it].translated) {
+                val wrapped = bad[it].translated.startsWith("«") && !fixed[it].translated.startsWith("«")
+                map[fixKey(bad[it])] = if (wrapped) fixed[it].copy(translated = "«" + fixed[it].translated + "»") else fixed[it]
+            }
+        }
+        if (map.isNotEmpty()) {
+            synchronized(lock) { subs = subs.map { map[fixKey(it)] ?: it } }
+            host.changed(); persist()
+        }
+        return true
+    }
+
     // ===== سدّ الفجوات تلقائيًا أثناء المشاهدة (autoGapFill) =====
     /** مناطق اتترجمت بس مفيهاش جمل لمدة طويلة، قريبة من مكان التشغيل: بتتبعت بمفاتيح المراقبين/الاحتياطي وبتتعلّم بـ «» */
-    private fun gapTick(): Boolean {
+    private fun gapTick(all: Boolean = false): Boolean {
         if (!conf.gapFill || !running) return false
         val now = System.currentTimeMillis()
         if (now - lastGapScan < Gaps.COOLDOWN_MS) return false
@@ -867,9 +916,9 @@ class Engine(
         val d = currentDur(); val pos = if (headless) d else host.position()
         val atEnd = d > 0 && pos >= d - 2
         val elig = Gaps.find(subs, done.list(), Gaps.MIN_SEC).filter {
-            !gapTried.covers(it[0], it[1]) && (atEnd || (pos >= it[0] - Gaps.LOOKAHEAD && pos < it[1]))
+            !gapTried.covers(it[0], it[1]) && (atEnd || all || (pos >= it[0] - Gaps.LOOKAHEAD && pos < it[1]))
         }
-        if (elig.isEmpty()) { gapScanClean = true; return false }
+        if (elig.isEmpty()) { if (all || atEnd) gapScanClean = true; return false }
         var started = false
         for (g in elig) {
             if (gapBusy.get() >= Gaps.MAX_PARALLEL || gapSession.total() >= Gaps.MAX_TOTAL * ch) break
@@ -885,7 +934,7 @@ class Engine(
                 started = true
             } catch (_: RejectedExecutionException) { gapKeys.remove(key); gapBusy.decrementAndGet() }
         }
-        gapScanClean = !started
+        if (all || atEnd) gapScanClean = !started
         return started
     }
 
@@ -896,10 +945,14 @@ class Engine(
         while (running && tries++ < 3) {
             try {
                 val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec), w.bytes)
-                if (r.text.isBlank()) return
-                val j = Parse.json(r.text) ?: return
-                val marked = Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
-                if (marked.isEmpty()) return
+                val j = if (r.text.isBlank()) null else Parse.json(r.text)
+                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec))
+                if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
+                val marked = base.map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
+                if (marked.isEmpty()) {
+                    if (tries < 3) { gapKeys.remove(key); key = pool.gapKey(gapKeys, rr.getAndIncrement()) ?: key; gapKeys.add(key); continue }
+                    host.log("… فجوة ${a.toInt()}ث: الموديل مرجّعش جمل (3 محاولات)"); return
+                }
                 synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + marked)).sortedBy { it.start } }
                 pool.good(key); host.changed(); persist()
                 host.log("✅ فجوة ${a.toInt()}ث: اتسدّ ${marked.size} جملة")

@@ -45,11 +45,12 @@ data class SubStyle(
 
         /** ألوان سطور المتحدثين المتداخلين: لون الجنس أولًا، ولو اتكرر لون ياخد السطر لون تاني من الباليت عشان كل متحدث يبان لوحده */
         fun lineColors(subs: List<Sub>): List<Int> {
-            val pal = listOf(MALE, FEMALE, PLACE, 0xFFB9F6CA.toInt(), 0xFFFFAB91.toInt())
+            // ألوان إضافية (من غير لون الجنس التاني) لو متحدثين من نفس الجنس: كل سطر لونه مختلف دايمًا
+            val extra = listOf(0xFF80DEEA.toInt(), 0xFFB9F6CA.toInt(), 0xFFFFAB91.toInt(), 0xFFCE93D8.toInt())
             val used = HashSet<Int>(); val out = ArrayList<Int>()
             for (x in subs) {
                 var c = if (x.gender == "female") FEMALE else MALE
-                if (c in used) c = pal.firstOrNull { it !in used } ?: c
+                if (c in used) c = extra.firstOrNull { it !in used && it != MALE && it != FEMALE } ?: c
                 used.add(c); out.add(c)
             }
             return out

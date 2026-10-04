@@ -42,6 +42,22 @@ object Recents {
         }
     }
 
+    /** فيديو اتسمّى من جديد: نفس التقدم بمعرّف واسم جديدين */
+    fun rename(ctx: android.content.Context, oldId: String, newId: String, newTitle: String) {
+        synchronized(ioLock) {
+            try {
+                val f = java.io.File(ctx.filesDir, "recent.json")
+                val l = parse(try { f.readText() } catch (_: Exception) { "" }).map { if (it.id == oldId) Recent(newId, newTitle, it.url, it.uri, it.posSec, it.durSec, it.subs, it.coverSec, it.ts) else it }
+                f.writeText(toJson(l))
+            } catch (_: Exception) {}
+        }
+    }
+    fun drop(ctx: android.content.Context, id: String) {
+        synchronized(ioLock) {
+            try { val f = java.io.File(ctx.filesDir, "recent.json"); f.writeText(toJson(remove(parse(try { f.readText() } catch (_: Exception) { "" }), id))) } catch (_: Exception) {}
+        }
+    }
+
     fun titleOf(videoId: String): String {
         val raw = videoId.removePrefix("f:").removePrefix("u:")
         val name = if (videoId.startsWith("f:")) raw.substringBeforeLast(':') else raw.substringBefore('?').substringAfterLast('/')

@@ -97,6 +97,8 @@ object Cfg {
         p = c.getSharedPreferences("p", 0)
         Quota.load = { p.getString("quota", "") ?: "" }
         Quota.save = { p.edit().putString("quota", it).apply() }
+        Stats.load = { p.getString("stats", "") ?: "" }
+        Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
     }
     /** هجرة لمرة واحدة: القيم النصية القديمة ("1" / "60") بتتحوّل لـ Boolean / Int. أسماء المفاتيح ما اتغيرتش. */
@@ -296,7 +298,7 @@ object Api {
      */
     /** طلب generateContent بصورة JPEG + نص (للوضع البصري) */
     fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 1500, temp: Double = 0.0): Result {
-        Quota.hit(model)
+        Quota.hit(model); Stats.req(model, key)
         val b64 = java.util.Base64.getEncoder().encodeToString(jpeg)
         val body = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}},{\"text\":" + JSONObject.quote(prompt) + "}]}]," +
             "\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp,\"responseMimeType\":\"application/json\"},\"safetySettings\":[$SAFETY]}"
@@ -319,7 +321,7 @@ object Api {
 
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
                  maxTokens: Int = 8192, temp: Double = 0.1, json: Boolean = true): Result {
-        Quota.hit(model)
+        Quota.hit(model); Stats.req(model, key)
         val enc = java.util.Base64.getEncoder()
         val head = "{\"contents\":[{\"parts\":[" + (if (wav != null) "{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"" else "")
         val mid = if (wav != null) "\"}}," else ""
@@ -492,7 +494,16 @@ object Subs {
                 res[res.size - 1] = prev.copy(end = cur.end, original = "${prev.original} ${cur.original}".trim(), translated = "${prev.translated} ${cur.translated}".trim())
             } else res.add(cur)
         }
-        return res
+        // جملة قصيرة جدًا (< 0.6ث) ملزوقة في اللي قبلها ونفس المتحدث: بتتدمج بدل ما تظهر وتختفي في لحظة
+        val out = ArrayList<Sub>()
+        for (s in res) {
+            val p = out.lastOrNull()
+            if (p != null && s.end - s.start < 0.6 && s.start - p.end >= -0.05 && s.start - p.end <= 0.35 && p.gender == s.gender && p.addressee == s.addressee &&
+                p.isSong == s.isSong && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
+                out[out.size - 1] = p.copy(end = s.end, original = "${p.original} ${s.original}".trim(), translated = "${p.translated} ${s.translated}".trim())
+            } else out.add(s)
+        }
+        return out
     }
 
     private fun splitN(text: String, n: Int): List<String> {
@@ -505,25 +516,39 @@ object Subs {
         while (parts.size < n) parts.add("")
         return parts
     }
+    const val MIN_PART_SEC = 1.0
+    /** تقسيم الجملة الطويلة لأجزاء: عدد الأجزاء مايزيدش عن اللي وقت الجملة يسمح بيه (كل جزء ≥ 1ث)، والجزء مابيبقاش فاضي أبدًا
+     *  (القديم كان بيحط الجملة كلها في الجزء الفاضي، فتظهر لحظة وتختفي) */
     fun splitLong(sub: Sub, maxWords: Int = 14): List<Sub> {
         val ow = words(sub.original); val tw = words(sub.translated)
-        val wc = maxOf(ow, tw)
-        if (wc <= maxWords) return listOf(sub)
-        val n = maxOf(2, Math.ceil(wc.toDouble() / maxWords).toInt())
-        val op = splitN(sub.original, n); val tp = splitN(sub.translated, n)
-        val weights = (0 until n).map { maxOf(1, (tp.getOrNull(it)?.takeIf { s -> s.isNotEmpty() } ?: op.getOrNull(it) ?: "").length) }
-        val tot = weights.sum().toDouble()
+        val basis = if (sub.translated.isBlank()) ow else tw
+        if (basis <= maxWords) return listOf(sub)
         val dur = maxOf(0.01, sub.end - sub.start)
+        var n = maxOf(2, Math.ceil(basis.toDouble() / maxWords).toInt())
+        n = minOf(n, maxOf(1, Math.floor(dur / MIN_PART_SEC).toInt()), basis)
+        if (n <= 1) return listOf(sub)
+        val op = splitN(sub.original, n); val tp = splitN(sub.translated, n)
+        val weights = (0 until n).map { maxOf(1, (tp.getOrNull(it)?.takeIf { s -> s.isNotEmpty() } ?: op.getOrNull(it) ?: "").length).toDouble() }
+        val tot = weights.sum()
+        val sh = weights.map { it / tot * dur }.toMutableList()
+        val minS = minOf(MIN_PART_SEC, dur / n)
+        val low = sh.indices.filter { sh[it] < minS }
+        if (low.isNotEmpty()) {
+            val rest = sh.indices.filter { it !in low }
+            if (rest.isNotEmpty()) {
+                val restTot = rest.sumOf { sh[it] }; val avail = dur - low.size * minS
+                for (k in rest) sh[k] = if (restTot > 0) sh[k] / restTot * avail else avail / rest.size
+            }
+            for (k in low) sh[k] = minS
+        }
         val res = ArrayList<Sub>()
         var cursor = sub.start
         for (i in 0 until n) {
             val o = op.getOrNull(i) ?: ""; val t = tp.getOrNull(i) ?: ""
             if (o.isEmpty() && t.isEmpty()) continue
-            val share = weights[i] / tot * dur
-            val s0 = cursor
-            val e0 = if (i == n - 1) sub.end else minOf(sub.end, cursor + share)
+            val e0 = if (i == n - 1) sub.end else minOf(sub.end, cursor + sh[i])
+            res.add(sub.copy(start = cursor, end = e0, original = o.ifEmpty { sub.original }, translated = t))
             cursor = e0
-            res.add(sub.copy(start = s0, end = e0, original = o.ifEmpty { sub.original }, translated = t.ifEmpty { sub.translated }))
         }
         return if (res.isEmpty()) listOf(sub) else res
     }

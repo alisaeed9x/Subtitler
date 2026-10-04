@@ -25,7 +25,9 @@ class BgJob(val vid: String, val title: String, val uri: String?, val url: Strin
     @Volatile var dur = 0.0
     @Volatile var remainSec = -1L
     @Volatile var err = ""
+    @Volatile var srt = ""
     @Volatile var stopReq = false
+    @Volatile var paused = false
     @Volatile var engine: Engine? = null
     val active: Boolean get() = state == "queued" || state == "running"
 }
@@ -71,6 +73,13 @@ object BgJobs {
         if (j.state == "queued") j.state = "stopped"
         notifyChange()
     }
+    fun pause(vid: String) { find(vid)?.let { if (it.active) { it.paused = true; it.engine?.paused = true; notifyChange() } } }
+    fun resume(ctx: Context, vid: String) { find(vid)?.let { if (it.active) { it.paused = false; it.engine?.paused = false; BgService.start(ctx.applicationContext); notifyChange() } } }
+    /** شيل الفيديو من الطابور (لو شغّال بيتوقف والتقدم بيتحفظ) */
+    fun remove(j: BgJob) { if (j.active) { j.stopReq = true; if (j.state == "queued") j.state = "stopped" }; jobs.remove(j); notifyChange() }
+    fun moveUp(j: BgJob) { val i = jobs.indexOf(j); if (i > 0) { val p = jobs[i - 1]; jobs[i - 1] = j; jobs[i] = p; notifyChange() } }
+    fun retry(ctx: Context, j: BgJob): Boolean { jobs.remove(j); return enqueue(ctx, BgJob(j.vid, j.title, j.uri, j.url, j.hdr)) }
+    fun clearFinished() { jobs.removeAll { !it.active }; notifyChange() }
     fun stopAll() { jobs.filter { it.active }.forEach { it.stopReq = true; if (it.state == "queued") it.state = "stopped" }; notifyChange() }
 
     /** وقف ترجمة فيديو في الخلفية وانتظار حفظ التقدم (لما المستخدم يفتحه في المشغّل) */
@@ -118,6 +127,7 @@ class BgService : Service() {
         val stop = PendingIntent.getService(this, 1, Intent(this, BgService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val b = Notification.Builder(this, CH).setSmallIcon(android.R.drawable.stat_sys_download).setContentIntent(openApp()).setOngoing(true).setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "⏹ إيقاف", stop).build())
+        if (job != null && job.paused) return b.setContentTitle("⏸ ترجمة الخلفية متوقفة مؤقتًا — ${job.pct}%").setContentText(job.title).setProgress(100, job.pct, false).build()
         if (job == null) return b.setContentTitle("🌙 ترجمة في الخلفية").setContentText("بجهّز…").setProgress(0, 0, true).build()
         val q = BgJobs.queuedCount()
         val rem = BgJobs.fmtRemain(job.remainSec)
@@ -147,7 +157,7 @@ class BgService : Service() {
         try {
             while (true) {
                 val job = synchronized(lock) {
-                    val j = BgJobs.jobs.firstOrNull { it.state == "queued" }
+                    val j = BgJobs.jobs.firstOrNull { it.state == "queued" && !it.paused }
                     if (j == null) { workerAlive = false; stopId = lastStartId }
                     j
                 } ?: break
@@ -193,6 +203,7 @@ class BgService : Service() {
         val runner = Thread { engine.run() }.apply { isDaemon = true; start() }
         while (runner.isAlive) {
             if (job.stopReq) { engine.stop(); break }
+            engine.paused = job.paused
             try { Thread.sleep(1000) } catch (_: InterruptedException) {}
             val d = engine.durationSec(); if (d > 0) job.dur = d
             job.covered = engine.coveredSec()
@@ -209,7 +220,7 @@ class BgService : Service() {
         Recents.saveProgress(app, job.vid, job.title, job.url ?: "", job.uri ?: "", job.dur, engine.subs.size, job.covered)
         when {
             job.stopReq -> job.state = "stopped"
-            ok -> { job.state = "done"; job.pct = 100; val nf = engine.failedCount(); job.err = if (nf > 0) "فيها $nf مقطع فاشل — افتح الفيديو وادوس سد الفجوات" else "" }
+            ok -> { job.state = "done"; job.pct = 100; try { SrtWriter.save(app, job.uri, engine.subs, Cfg.str("sub_offset_ms:" + job.vid, "0").toLongOrNull() ?: 0L)?.let { job.srt = it } } catch (_: Exception) {}; val nf = engine.failedCount(); job.err = if (nf > 0) "فيها $nf مقطع فاشل — افتح الفيديو وادوس سد الفجوات" else "" }
             else -> { job.state = "failed"; job.err = engine.fatal ?: "الترجمة وقفت قبل ما تخلص" }
         }
         job.engine = null

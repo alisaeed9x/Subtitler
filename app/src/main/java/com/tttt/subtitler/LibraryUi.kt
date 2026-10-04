@@ -37,8 +37,19 @@ class LibraryUi(
     var onBg: (VideoItem) -> Unit = {}
     var onBgStop: (VideoItem) -> Unit = {}
     var onBgFolder: (FolderItem) -> Unit = {}
+    var onQueue: () -> Unit = {}
+    private lateinit var queueBtn: TextView
+    var onRename: (VideoItem) -> Unit = {}
+    var onMove: (VideoItem) -> Unit = {}
+    var onDetails: (VideoItem) -> Unit = {}
+    var onShare: (VideoItem) -> Unit = {}
+    var onDelete: (VideoItem) -> Unit = {}
+    fun allFolders(): List<FolderItem> = VideoLib.group(all)
     var bgJob: (VideoItem) -> BgJob? = { null }
-    fun refreshRows() { (listV.adapter as? BaseAdapter)?.notifyDataSetChanged() }
+    fun refreshRows() {
+        (listV.adapter as? BaseAdapter)?.notifyDataSetChanged()
+        if (::queueBtn.isInitialized) { val n = BgJobs.jobs.count { it.active }; queueBtn.text = if (n > 0) "📋$n" else "📋"; queueBtn.textSize = if (n > 0) 13f else 17f }
+    }
     private fun dots(f: (View) -> Unit) = TextView(act).apply {
         text = "⋮"; textSize = 22f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
         setOnClickListener { f(this) }
@@ -171,6 +182,8 @@ class LibraryUi(
         head.addView(backV)
         val tcol = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleTv); addView(subTv) }
         head.addView(tcol, LinearLayout.LayoutParams(0, -2, 1f))
+        queueBtn = hbtn("📋") { onQueue() }
+        head.addView(queueBtn)
         head.addView(hbtn("🔗") { onLink() })
         head.addView(hbtn("📂") { onPick() })
         head.addView(hbtn("⚙️") { onSettings() })
@@ -408,7 +421,12 @@ class LibraryUi(
             val running = bj != null && bj.active
             popup(v, listOf(
                 (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 ترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) },
-                "▶ تشغيل" to { markPlayed(vi); onPlay(vi) }
+                "▶ تشغيل" to { markPlayed(vi); onPlay(vi) },
+                "✏ إعادة تسمية" to { onRename(vi) },
+                "📁 نقل" to { onMove(vi) },
+                "ℹ تفاصيل" to { onDetails(vi) },
+                "📤 مشاركة" to { onShare(vi) },
+                "🗑 حذف" to { onDelete(vi) }
             ))
         }
         h.iv.tag = vi.uri; h.iv.setImageDrawable(null)

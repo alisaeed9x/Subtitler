@@ -58,6 +58,21 @@ object PlayerLogic {
         if (buf.isNotEmpty()) { if (out.isEmpty()) out.add(buf) else out[out.lastIndex] = out.last() + " " + buf }
         return if (out.isEmpty()) listOf(text) else out
     }
+    private fun partWeight(t: String, byChars: Boolean) = if (byChars) maxOf(1, t.count { c -> !c.isWhitespace() }) else maxOf(1, t.trim().split(Regex("\\s+")).size)
+    /** أي جزء وقته (بالتناسب) أقل من minMs بيتدمج في اللي جنبه — عشان مفيش جزء يظهر جزء من الثانية ويختفي */
+    fun adaptParts(parts: List<String>, durMs: Long, byChars: Boolean, minMs: Long = 1000L): List<String> {
+        if (parts.size <= 1) return parts
+        val p = parts.toMutableList(); val w = parts.map { partWeight(it, byChars) }.toMutableList()
+        while (p.size > 1) {
+            val total = w.sum().toDouble()
+            var mi = 0; for (i in p.indices) if (w[i] < w[mi]) mi = i
+            if (durMs * w[mi] / total >= minMs) break
+            val nb = when { mi == 0 -> 1; mi == p.lastIndex -> mi - 1; else -> if (w[mi - 1] <= w[mi + 1]) mi - 1 else mi + 1 }
+            val a = minOf(mi, nb); val b = maxOf(mi, nb)
+            p[a] = p[a] + " " + p[b]; w[a] = w[a] + w[b]; p.removeAt(b); w.removeAt(b)
+        }
+        return p
+    }
     /** أي جزء يظهر دلوقتي: التوقيت موزّع على مدة الجملة بالتناسب مع عدد كلمات كل جزء (البداية والنهاية الأصليتين ما بيتغيروش) */
     fun partIndex(startMs: Long, endMs: Long, t: Long, parts: List<String>, byChars: Boolean = false): Int {
         if (parts.size <= 1) return 0
@@ -78,11 +93,11 @@ object PlayerLogic {
     private val AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
     fun arNum(n: Int) = n.toString().map { AR_DIGITS[it - '0'] }.joinToString("")
 
-    /** جملة واحدة للعرض: لو أكتر من متحدث بيتكلموا مع بعض بتتجمّع مرقّمة (١) ... ٢) ... */
+    /** جملة واحدة للعرض: لو أكتر من متحدث بيتكلموا مع بعض بتتجمّع كل واحد في سطر وقبله شرطة (- ) */
     fun combine(subs: List<Sub>): Sub? {
         if (subs.isEmpty()) return null
         if (subs.size == 1) return subs[0]
-        fun line(i: Int, t: String) = arNum(i + 1) + ") " + t
+        fun line(i: Int, t: String) = "- " + t
         val tr = subs.mapIndexed { i, x -> line(i, x.translated.ifBlank { x.original }) }.joinToString("\n")
         val og = subs.mapIndexed { i, x -> line(i, x.original) }.joinToString("\n")
         val pv = if (subs.all { it.pivot.isNotBlank() }) subs.mapIndexed { i, x -> line(i, x.pivot) }.joinToString("\n") else ""

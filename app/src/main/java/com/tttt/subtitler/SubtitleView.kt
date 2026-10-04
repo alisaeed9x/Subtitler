@@ -144,7 +144,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
             lines.forEachIndexed { i, x ->
                 if (i > 0) sb.append('\n')
                 val st0 = sb.length
-                sb.append(PlayerLogic.arNum(i + 1)).append(") ").append(x.translated.ifBlank { x.original })
+                sb.append("- ").append(x.translated.ifBlank { x.original })
                 ranges.add(st0 until sb.length)
             }
             sb.toString()
@@ -180,6 +180,8 @@ class SubtitleView(ctx: Context) : View(ctx) {
         boxH = ((main?.height ?: 0) + (sec?.let { it.height + 6 * d } ?: 0f) + PAD_T + PAD_B).toInt()
         if (measuredHeight != totalH()) requestLayout()
     }
+    /** عرض صندوق الترجمة الفعلي (للـ hit-test بتاع سحب التزامن) */
+    fun boxWidthPx() = boxW
     private fun maxLine(l: StaticLayout?): Float { var m = 0f; if (l != null) for (i in 0 until l.lineCount) m = maxOf(m, l.getLineWidth(i)); return m }
 
     private fun totalH() = boxH + (4 * d + 2 * ex()).toInt()
