@@ -905,7 +905,7 @@ class PlayerActivity : Activity(), Host {
             if (i == curC) curRow = row
         }
         val content = findViewById<ViewGroup>(android.R.id.content)
-        val maxH = (content.height * 0.42).toInt().coerceAtLeast(ui.dp(110))
+        val maxH = (content.height * 0.26).toInt().coerceAtLeast(ui.dp(84))
         val sv = ScrollView(this).apply { addView(list) }
         col.addView(sv, LinearLayout.LayoutParams(-1, maxH))
         col.addView(selTv)
@@ -914,9 +914,12 @@ class PlayerActivity : Activity(), Host {
         btns.addView(ui.button("☝ ده بس") { val i = sel; go("🔄 بترجم باتش ${i + 1} لوحده…") { engine.redoOnly(i) } }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(btns)
         paint()
-        val w = minOf(ui.dp(330), content.width - ui.dp(24)).coerceAtLeast(ui.dp(220))
-        content.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.CENTER))
-        batchPanel = col
+        val w = minOf(ui.dp(250), content.width - ui.dp(24)).coerceAtLeast(ui.dp(200))
+        // شفافة بتغطي الشاشة: أي ضغطة بره القايمة بتقفلها، والفيديو باين وراها. القايمة صغيرة على الحافة (مش نص الشاشة)
+        val scrim = FrameLayout(this).apply { isClickable = true; setOnClickListener { closeBatchPanel() } }
+        scrim.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, ui.dp(8), ui.dp(8), ui.dp(8)) })
+        content.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+        batchPanel = scrim
         curRow?.let { r -> sv.post { sv.scrollTo(0, (r.top - ui.dp(40)).coerceAtLeast(0)) } }
     }
 
@@ -1013,7 +1016,7 @@ class PlayerActivity : Activity(), Host {
             if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
                 ends[j] - starts[j] <= 4000 && ends[j + 1] - starts[j + 1] in 600..5000) ends[j] = ends[j + 1]
         }
-        adapter.notifyDataSetChanged()
+        if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
     }
 
     override fun onCreate(b: Bundle?) {
@@ -1211,7 +1214,6 @@ class PlayerActivity : Activity(), Host {
         ccFsB = ccB; tb1.addView(ccB)
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
-        tb1.addView(ui.fsCircle("↻") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
         tb1.addView(fb("A−") { scaleBy(-10) })
         tb1.addView(fb("A+") { scaleBy(10) })
         val fitB = fb("⬛ " + PlayerLogic.fitNames[curFit()]) { v ->
@@ -1269,6 +1271,7 @@ class PlayerActivity : Activity(), Host {
         btnRow.addView(mid, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         fsBarFs = ui.fsCircle("⛶") { cycleFitNow(); showChrome() }
+        rightB.addView(ui.fsCircle("↻") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // بورتريت/لاندسكيب في الشريط السفلي مع ⛶ و ⧉
         rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
         rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
         btnRow.addView(rightB, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
@@ -1308,8 +1311,15 @@ class PlayerActivity : Activity(), Host {
         var volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         var briF = window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it }
         var scrollLogged = false
+        var hScrub = false; var scrubBase = 0L; var scrubTarget = 0L; var fast2x = false
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; dismissPop(); dismissStrip(); return true }
+            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; hScrub = false; scrubBase = player.currentPosition; dismissPop(); dismissStrip(); return true }
+            override fun onLongPress(e: MotionEvent) {
+                if (hScrub || fast2x) return
+                fast2x = true; try { player.setPlaybackSpeed(2f) } catch (_: Exception) {}
+                log("👆 ضغطة مطولة: 2×")
+                giShow("2× ⏩", Gravity.CENTER)
+            }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (!fullMode) { log("👆 ضغطة: تشغيل/إيقاف"); togglePlay() }
                 else {
@@ -1329,7 +1339,18 @@ class PlayerActivity : Activity(), Host {
                 return true
             }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-                if (e1 == null || Math.abs(dy) < Math.abs(dx)) return false
+                if (fast2x) return true
+                if (e1 == null) return false
+                // سحب أفقي في الفيديو = تقديم/ترجيع (عرض الشاشة كله ≈ 90 ثانية)، والتنفيذ لما ترفع صباعك
+                if (hScrub || !scrollLogged && Math.abs(e2.x - e1.x) > ui.dp(16) && Math.abs(e2.x - e1.x) > Math.abs(e2.y - e1.y) * 1.2f) {
+                    if (!hScrub) { hScrub = true; scrubBase = player.currentPosition; log("↔ سحب أفقي: تقديم/ترجيع") }
+                    val span = if (durMs > 0) minOf(durMs.toDouble(), 90000.0) else 90000.0
+                    scrubTarget = (scrubBase + (e2.x - e1.x) / videoBox.width.coerceAtLeast(1) * span).toLong().coerceIn(0L, if (durMs > 0) durMs else Long.MAX_VALUE)
+                    val dl = (scrubTarget - scrubBase) / 1000
+                    giShow(PlayerLogic.clock(scrubTarget) + "  (" + (if (dl >= 0) "+" else "") + dl + "ث)", Gravity.CENTER)
+                    return true
+                }
+                if (Math.abs(dy) < Math.abs(dx)) return false
                 val d = dy / videoBox.height.coerceAtLeast(1) * 1.3f
                 if (!scrollLogged) { scrollLogged = true; log(if (e1.x > videoBox.width / 2f) "↕ سحب: الصوت" else "↕ سحب: السطوع") }
                 if (e1.x > videoBox.width / 2f) {
@@ -1357,6 +1378,10 @@ class PlayerActivity : Activity(), Host {
             if (uiLocked) {
                 if (ev.actionMasked == MotionEvent.ACTION_UP && ev.eventTime - ev.downTime < 300) { lockOv.visibility = View.VISIBLE; h.removeCallbacks(hideLockOv); h.postDelayed(hideLockOv, 2500) }
                 return@setOnTouchListener true
+            }
+            if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+                if (fast2x) { fast2x = false; try { player.setPlaybackSpeed(speed) } catch (_: Exception) {}; gi.visibility = View.GONE }
+                if (hScrub) { hScrub = false; if (ev.actionMasked == MotionEvent.ACTION_UP && !syncing) { player.seekTo(scrubTarget); showChrome() } }
             }
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { syncing = false; syncCand = hitSub(ev.x, ev.y); sx = ev.x; syncStart = offsetMs }
@@ -1421,6 +1446,7 @@ class PlayerActivity : Activity(), Host {
         }
         counters = ui.text("", 10f, th.muted).apply { setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(2)) }
         sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(listView), true)
+        sentDlg.setOnShowListener { adapter.notifyDataSetChanged() }
         val logCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         fun logChip(t: String, f: () -> Unit) = TextView(this).apply {
             text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
@@ -1554,7 +1580,7 @@ class PlayerActivity : Activity(), Host {
                     }
                     sub.show(shown, gs)
                     if (pipNow()) pipOv?.set(if (shown == null) "" else sub.style.mainText(shown))
-                    adapter.notifyDataSetChanged()
+                    if (sentDlg.isShowing) adapter.notifyDataSetChanged()
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
                 st.text = status
@@ -1989,6 +2015,8 @@ class PlayerActivity : Activity(), Host {
         if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Toast.makeText(this, "مفيش فيديو شغّال", Toast.LENGTH_SHORT).show(); return }
         if (visBusy) { Toast.makeText(this, "👁 لسه بترجم اللقطة اللي فاتت…", Toast.LENGTH_SHORT).show(); return }
         visBusy = true
+        val tok = ++visTok
+        h.postDelayed({ if (visBusy && visTok == tok) { visBusy = false; Toast.makeText(this, "👁 اللقطة اتأخرت — جرّب تاني", Toast.LENGTH_SHORT).show() } }, 60_000)
         val wasPlaying = try { player.playWhenReady } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         val curUs = player.currentPosition * 1000
@@ -2009,6 +2037,7 @@ class PlayerActivity : Activity(), Host {
         } catch (_: Exception) { fallback() }
     }
     private var visBusy = false
+    private var visTok = 0
 
     fun visualDialog() {
         val d = android.app.Dialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)

@@ -349,7 +349,7 @@ object Api {
      * طلب generateContent. الصوت (wav) بيتبعت stream على دفعات (من غير ما نبني نص base64 كبير في الرام).
      */
     /** طلب generateContent بصورة JPEG + نص (للوضع البصري) */
-    fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 1500, temp: Double = 0.0): Result {
+    fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 6000, temp: Double = 0.0): Result {
         Quota.hit(model); Stats.req(model, key)
         val b64 = java.util.Base64.getEncoder().encodeToString(jpeg)
         val body = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}},{\"text\":" + JSONObject.quote(prompt) + "}]}]," +
@@ -466,8 +466,16 @@ object Parse {
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
-            .filter { it.end > it.start && it.original.isNotEmpty() && it.start < off + maxEnd + 1.0 }
+        val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
+            .filter { it.end > it.start && it.original.isNotEmpty() }
+        val ok = all.filter { it.start < off + maxEnd + 1.0 }
+        if (ok.isEmpty() && all.isNotEmpty() && off > 1.0) {
+            // الموديل ساعات بيرجّع أوقات مطلقة (من أول الفيديو) بدل نسبية لبداية المقطع → الجمل كانت بتتشال كلها والباتش يطلع ✅ فاضي
+            val abs = all.map { it.copy(start = it.start - off, end = it.end - off) }
+                .filter { it.start >= off - 2.0 && it.start < off + maxEnd + 1.0 }
+            if (abs.isNotEmpty()) return abs
+        }
+        return ok
     }
 }
 

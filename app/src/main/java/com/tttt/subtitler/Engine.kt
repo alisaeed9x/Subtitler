@@ -100,6 +100,8 @@ class Engine(
     @Volatile private var lastConvFail = 0L
     /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
     private val incomplete = ConcurrentHashMap.newKeySet<Int>()
+    /** باتشات المستخدم طلب إعادتها بالإيد: نتخطّى فلتر الصمت (VAD) عليها عشان ماتتعلّمش «خلصت» من غير ما تتبعت */
+    private val forceVad = ConcurrentHashMap.newKeySet<Int>()
     private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     private val ch get() = conf.chunkSec.toDouble()
     /** عدد المقاطع قدّام = الأكبر بين الإعداد وعدد الطلبات المتوازية، عشان كل المفاتيح تشتغل مع بعض */
@@ -118,13 +120,13 @@ class Engine(
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
                 i in incomplete -> "⚠"
-                isDone(i, d) -> "✅"
+                isDone(i, d) -> if (subCount(i, d) == 0) "🔇" else "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
             }
             val a = cStart(i).toInt(); val b = cEnd(i, d).toInt()
             sb.append(if (i == c) "▶ " else "  ").append("باتش ").append(i + 1).append(" ")
-                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
+                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁" || mark == "🔇") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
         }
         return sb.toString().trimEnd()
     }
@@ -143,7 +145,7 @@ class Engine(
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
                 i in incomplete -> "⚠"
-                isDone(i, d) -> "✅"
+                isDone(i, d) -> if (subCount(i, d) == 0) "🔇" else "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
             }
@@ -169,9 +171,9 @@ class Engine(
         Thread {
             try {
                 incomplete.remove(i); failed.remove(i)
-                val p = prepare(i)
-                if (p != null) send(i, p, true)
-                host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة")
+                val p = prepare(i, true)
+                if (p != null) { send(i, p, true); host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة") }
+                else host.log("⚠ باتش ${i + 1}: مفيش صوت اتفك — جرّب تاني بعد شوية")
             } catch (e: Exception) {
                 failed[i] = MAX_FAILS
                 host.log("⚠ إعادة باتش ${i + 1} فشلت: " + (e.message ?: e.toString()).take(160))
@@ -255,12 +257,12 @@ class Engine(
     /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
     fun redoFrom(i: Int) { redo(i, -1); onlyChunks = null; forcedCursor = i; paused = false }
     /** باتش ده لوحده وخلاص */
-    fun redoOnly(i: Int) { redo(i, i); onlyChunks = i..i; paused = false }
+    fun redoOnly(i: Int) { redo(i, i); forceVad.add(i); onlyChunks = i..i; paused = false }
     /** من الأول خالص */
     fun redoAll() { redo(0, -1); onlyChunks = null; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
-    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow() }
-    fun saveNow() = persist()
+    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    fun saveNow() = doPersist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
     fun retryFailed() {
@@ -345,7 +347,7 @@ class Engine(
         } finally {
             ex.shutdownNow()
             try { source?.close() } catch (_: Exception) {}
-            persist()
+            doPersist()
             stoppedFlag = true
             try { onFinished?.invoke(finished && fatal == null) } catch (_: Exception) {}
         }
@@ -457,7 +459,7 @@ class Engine(
     private fun translateChunk(i: Int) { prepare(i)?.let { send(i, it) } }
 
     /** يفك الصوت (ويقصّر المقطع لأقرب لحظة صمت). null = مفيش حاجة تتبعت (صامت / مفيش صوت). */
-    private fun prepare(i: Int): Prep? {
+    private fun prepare(i: Int, force: Boolean = false): Prep? {
         val d = currentDur()
         val rawStart = cStart(i)
         var rawEnd = cEnd(i, d)
@@ -466,9 +468,18 @@ class Engine(
         val t0 = System.currentTimeMillis()
         val s0 = src()
         var w = s0.wav(start, rawEnd)
-        if (w == null) { host.log("… المقطع ${i + 1} مفيهوش صوت"); done.add(rawStart, rawEnd); persist(); return null }
+        // فك الصوت ساعات بيرجع null مؤقتًا (المصدر لسه بيفتح / شبكة) — نعيد قبل ما نعتبر المقطع من غير صوت
+        var retry = 0
+        while (w == null && running && retry++ < 2) { host.log("… المقطع ${i + 1}: الصوت لسه ما طلعش — محاولة ${retry + 1}/3"); nap(700); w = s0.wav(start, rawEnd) }
+        if (w == null) {
+            host.log("… المقطع ${i + 1} مفيهوش صوت")
+            // لو ده مش آخر ذيل الفيديو يبقى غالبًا فشل فك مش صمت حقيقي: نعلّمه ⚠ عشان يتعاد بدل ما يبان ✅ فاضي
+            if (d <= 0 || (rawEnd - rawStart > 5.0 && rawStart < d - 3.0)) { incomplete.add(i); host.log("⚠ باتش ${i + 1}: مقدرتش أفك صوته — أعده من علامة التحذير") }
+            done.add(rawStart, rawEnd); persist(); return null
+        }
         host.log("🎧 صوت المقطع ${i + 1}: ${w.bytes.size / 1024}KB في ${System.currentTimeMillis() - t0}ms")
-        if (conf.vad && w.silent) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى"); done.add(rawStart, rawEnd); persist(); return null }
+        val forced = force || forceVad.remove(i)
+        if (conf.vad && w.silent && !forced) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى (لو غلط: «☝ ده بس» بيبعته غصب)"); done.add(rawStart, rawEnd); persist(); return null }
         val last = d > 0 && rawEnd >= d - 0.01
         val firstTime = prepared.add(i)
         if (conf.silenceTrim && !last && firstTime && !bounds.containsKey(i + 1) && !prepared.contains(i + 1)) {
@@ -1071,7 +1082,16 @@ class Engine(
     }
 
     // ===== الحفظ =====
+    /** حفظ مؤجّل: بيجمّع كل طلبات الحفظ في 3 ثواني في كتابة واحدة على خيط لوحده (بدل ما كل باتش يكتب الملف كله). الحفظ الإجباري (إغلاق/نهاية) بيروح لـ doPersist مباشرة */
+    private val persistPending = AtomicBoolean(false)
+    private val persistEx = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r).also { it.isDaemon = true; it.name = "persist" } }
     private fun persist() {
+        if (store == null) return
+        if (!persistPending.compareAndSet(false, true)) return
+        try { persistEx.schedule({ persistPending.set(false); try { doPersist() } catch (_: Exception) {} }, 3, java.util.concurrent.TimeUnit.SECONDS) }
+        catch (_: RejectedExecutionException) { persistPending.set(false); doPersist() }
+    }
+    private fun doPersist() {
         val st = store ?: return
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }

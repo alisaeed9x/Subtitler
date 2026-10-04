@@ -29,7 +29,7 @@ class VisualMode(
         const val STEP = 2.0            // ثانية بين كل فريم والتاني
         const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
         const val WAIT_429 = 30_000L
-        const val SNAP_DUR = 6.0        // ثواني عرض نتيجة اللقطة
+        const val SNAP_DUR = 8.0        // ثواني عرض نتيجة اللقطة
 
         const val PROMPT_SCENE = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك فريم واحد من فيديو.\n" +
             "🔍 افحص الصورة بأقصى دقة ممكنة — النصوص أحياناً صغيرة ويسهل تفويتها.\n" +
@@ -81,16 +81,22 @@ class VisualMode(
         val prompt = if (mode == "hardsub") PROMPT_HARDSUB.replace("§DIALECT§", "بلهجة ${conf.lang} وأسلوب ${conf.style}")
             .replace("§LANG§", if (hardLang.isBlank()) "لغة الهاردسب: اكتشفها تلقائيًا من السطر المحروق." else "لغة الهاردسب في هذا الفيديو هي: \"$hardLang\" — اقرأ فقط الأسطر المكتوبة بيها.") else PROMPT_SCENE
         var last = ""
-        for (round in 0 until 2) for (key in keys) {
+        var attempts = 0; var emptyTries = 0
+        loop@ for (round in 0 until 3) for (key in keys) {
+            if (attempts++ >= 6) break@loop
             try {
                 val res = Api.generateImage(conf.model, key, prompt, jpeg)
-                val boxes = parse(res.text)
-                val t = nowSec()   // الفيديو بيكمّل: النتيجة بتتعرض من لحظة وصولها
+                val boxes = parseOrNull(res.text)
+                if (boxes == null) { last = "رد Gemini مش مفهوم"; say("👁 الرد مش واضح — بحاول تاني"); Thread.sleep(400); continue }
+                // رد فاضي مرة واحدة ممكن يكون عشوائية من الموديل — نعيد مرة قبل ما نقول «مفيش نصوص»
+                if (boxes.isEmpty() && emptyTries++ < 1) { say("👁 مفيش نصوص — محاولة تانية للتأكد"); Thread.sleep(300); continue }
+                val t = nowSec()   // الفيديو واقف: النتيجة بتتعرض من لحظة اللقطة
                 frames.removeIf { Math.abs(it.t - t) < 0.5 }
                 frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
                 say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
                 changed(); return
             } catch (e: ApiErr) { last = e.message ?: ""; say("👁 خطأ ${e.code} على …${key.takeLast(4)}"); if (e.code == 429) Thread.sleep(1500) }
+            catch (e: java.io.IOException) { last = e.message ?: "مشكلة اتصال"; say("👁 مشكلة اتصال — بحاول تاني"); Thread.sleep(800) }
         }
         say("👁 فشل: " + last.take(110))
     }
@@ -151,21 +157,32 @@ class VisualMode(
 
     private fun col(h: String?, def: Int): Int = try { Color.parseColor((h ?: "").trim()) } catch (_: Exception) { def }
 
-    private fun parse(txt: String): List<VisBox> {
-        val j = Parse.json(txt) ?: return emptyList()
+    private fun parse(txt: String): List<VisBox> = parseOrNull(txt) ?: emptyList()
+
+    /** Gemini ساعات بيرجّع الإحداثيات 0-100 أو 0-1000 بدل 0-1 — بنرجّعها لنسبة صحيحة عشان النص مايطلعش بره الفيديو */
+    private fun frac(v: Double, def: Double): Float {
+        if (v.isNaN()) return def.toFloat()
+        val n = when { v > 1.5 && v <= 100.0 -> v / 100.0; v > 100.0 -> v / 1000.0; else -> v }
+        return n.coerceIn(0.0, 1.0).toFloat()
+    }
+
+    /** null = الرد مش JSON مفهوم (يتعاد)، قائمة فاضية = JSON سليم من غير نصوص */
+    private fun parseOrNull(txt: String): List<VisBox>? {
+        val j = Parse.json(txt) ?: return null
         val out = ArrayList<VisBox>()
         j.optJSONArray("texts")?.let { a -> for (i in 0 until a.length()) {
             val o = a.optJSONObject(i) ?: continue
             val tr = o.optString("translated").trim(); val og = o.optString("original").trim()
             if (tr.isEmpty() || og.isEmpty()) continue
-            out.add(VisBox(o.optDouble("x", 0.5).toFloat(), o.optDouble("y", 0.5).toFloat(), o.optDouble("w", 0.15).toFloat().coerceIn(0.03f, 1f), o.optDouble("h", 0.04).toFloat().coerceIn(0.02f, 0.5f),
-                o.optDouble("angle", 0.0).toFloat(), og, tr, col(o.optString("bg_hex"), Color.BLACK), col(o.optString("text_hex"), Color.WHITE), o.optInt("opacity_pct", 80).coerceIn(0, 100), o.optBoolean("has_box")))
+            out.add(VisBox(frac(o.optDouble("x", 0.5), 0.5), frac(o.optDouble("y", 0.5), 0.5),
+                frac(o.optDouble("w", 0.15), 0.15).coerceIn(0.03f, 1f), frac(o.optDouble("h", 0.04), 0.04).coerceIn(0.02f, 0.5f),
+                o.optDouble("angle", 0.0).toFloat().coerceIn(-45f, 45f), og, tr, col(o.optString("bg_hex"), Color.BLACK), col(o.optString("text_hex"), Color.WHITE), o.optInt("opacity_pct", 80).coerceIn(0, 100), o.optBoolean("has_box")))
         } }
         j.optJSONArray("lines")?.let { a -> for (i in 0 until a.length()) {
             val o = a.optJSONObject(i) ?: continue
             val tr = o.optString("translated").trim(); val og = o.optString("original").trim()
             if (tr.isEmpty() || og.isEmpty()) continue
-            val y = o.optDouble("y", 0.88).toFloat().coerceIn(0.05f, 0.97f); val h = o.optDouble("h", 0.09).toFloat().coerceIn(0.05f, 0.3f)
+            val y = frac(o.optDouble("y", 0.88), 0.88).coerceIn(0.05f, 0.97f); val h = frac(o.optDouble("h", 0.09), 0.09).coerceIn(0.05f, 0.3f)
             out.add(VisBox(0.5f, y, 0.9f, h, 0f, og, tr, Color.BLACK, Color.WHITE, 90, true))
         } }
         return out
@@ -186,29 +203,54 @@ class VisualOverlay(ctx: Context) : View(ctx) {
     private val bgP = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
     fun showBoxes(b: List<VisBox>) { if (b !== boxes && !(b.isEmpty() && boxes.isEmpty())) { boxes = b; invalidate() } }
+    private fun lum(c: Int) = (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)) / 255f
+
     override fun onDraw(c: Canvas) {
         if (boxes.isEmpty()) return
         val r = area(); val d = resources.displayMetrics.density
-        for (b in boxes) {
-            val cx = r.left + b.x * r.width(); val cy = r.top + b.y * r.height()
-            val bw = minOf(maxOf(b.w * r.width() * 1.15f, 80f * d), r.width() * 0.96f); val bh = b.h * r.height()
-            var ts = bh * 0.8f
-            tp.color = b.fg
-            var lay: StaticLayout
-            while (true) {
-                tp.textSize = ts
-                lay = StaticLayout.Builder.obtain(b.translated, 0, b.translated.length, tp, bw.toInt()).setAlignment(Layout.Alignment.ALIGN_CENTER).build()
-                if (lay.height <= bh * 2.0f || ts <= 15f * d) break
-                ts *= 0.9f
-            }
-            c.save(); c.rotate(-b.angle, cx, cy)
-            val pad = 4f * d
-            val half = maxOf(bh, lay.height.toFloat()) / 2f
-            val rect = RectF(cx - bw / 2 - pad, cy - half - pad, cx + bw / 2 + pad, cy + half + pad)
-            bgP.color = if (b.hasBox && b.opacity > 0) b.bg else Color.BLACK; bgP.alpha = 245
-            c.drawRoundRect(rect, 6f * d, 6f * d, bgP)
-            c.translate(cx - bw / 2, cy - lay.height / 2f); lay.draw(c)
-            c.restore()
+        if (r.width() < 20f || r.height() < 20f) return
+        for (b in boxes) drawBox(c, r, d, b)
+    }
+
+    /** بيرسم النص جوه حدود الفيديو دايمًا: الخط بيصغر والمربع بيتزحزح لحد ما المستطيل (بعد الميل) يبقى كله جوه الفيديو */
+    private fun drawBox(c: Canvas, r: RectF, d: Float, b: VisBox) {
+        val rad = Math.toRadians(b.angle.toDouble())
+        val ca = Math.abs(Math.cos(rad)).toFloat(); val sa = Math.abs(Math.sin(rad)).toFloat()
+        val margin = 4f * d; val pad = 4f * d
+        val maxW = r.width() - 2 * margin; val maxH = r.height() - 2 * margin
+        var bw = minOf(maxOf(b.w * r.width() * 1.1f, 70f * d), maxW * 0.95f)
+        val bhT = maxOf(b.h * r.height(), 14f * d)
+        var ts = minOf(bhT * 0.8f, r.height() * 0.12f).coerceAtLeast(9f * d)
+        tp.color = b.fg
+        var lay: StaticLayout
+        var boxH: Float; var bbW: Float; var bbH: Float
+        while (true) {
+            tp.textSize = ts
+            lay = StaticLayout.Builder.obtain(b.translated, 0, b.translated.length, tp, bw.toInt().coerceAtLeast(1)).setAlignment(Layout.Alignment.ALIGN_CENTER).build()
+            boxH = maxOf(bhT, lay.height.toFloat())
+            val rw = bw + 2 * pad; val rh = boxH + 2 * pad
+            bbW = rw * ca + rh * sa; bbH = rw * sa + rh * ca
+            val fits = bbW <= maxW && bbH <= maxH && lay.height <= bhT * 1.25f
+            if (fits || ts <= 9f * d) break
+            ts *= 0.9f
         }
+        // آخر حارس: لو لسه أكبر من الفيديو بعد أصغر خط، نصغّر الرسمة كلها
+        val sc = minOf(1f, maxW / bbW, maxH / bbH)
+        val sW = bbW * sc; val sH = bbH * sc
+        val cx = (r.left + b.x * r.width()).coerceIn(r.left + margin + sW / 2, r.right - margin - sW / 2)
+        val cy = (r.top + b.y * r.height()).coerceIn(r.top + margin + sH / 2, r.bottom - margin - sH / 2)
+        // ألوان: خلفية تغطي الأصلي + تباين كافي للنص
+        val hasFill = b.opacity > 0
+        val bg = if (hasFill) b.bg else Color.BLACK
+        val alpha = if (hasFill) maxOf(b.opacity * 255 / 100, 225) else 175
+        var fg = b.fg
+        if (Math.abs(lum(fg) - lum(bg)) < 0.4f) fg = if (lum(bg) > 0.5f) Color.BLACK else Color.WHITE
+        tp.color = fg; bgP.color = bg; bgP.alpha = alpha
+        // لازم نعيد بناء الـ layout بعد تغيير اللون مش مطلوب (اللون بيتقري وقت draw)
+        c.save(); c.translate(cx, cy); c.rotate(-b.angle); c.scale(sc, sc)
+        val rect = RectF(-bw / 2 - pad, -boxH / 2 - pad, bw / 2 + pad, boxH / 2 + pad)
+        c.drawRoundRect(rect, 6f * d, 6f * d, bgP)
+        c.translate(-bw / 2, -lay.height / 2f); lay.draw(c)
+        c.restore()
     }
 }
