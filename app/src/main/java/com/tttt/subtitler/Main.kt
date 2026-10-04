@@ -689,6 +689,7 @@ class PlayerActivity : Activity(), Host {
     }
 
     // ===== حفظ SRT تلقائي جنب الفيديو لما الترجمة تخلص (أو لما تعدّل التزامن بعدها) =====
+    var offFsB: TextView? = null
     private var lastSrtN = -1
     private var lastSrtOff = Long.MIN_VALUE
     private val srtRun = Runnable { srtCheck() }
@@ -866,7 +867,6 @@ class PlayerActivity : Activity(), Host {
         fun fb(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); showChrome() }
         var fsSpeedB: TextView? = null
         var ccFsB: TextView? = null
-        var offFsB: TextView? = null
         fun cycleSpeed() {
             speed = PlayerLogic.nextSpeed(speed); player.setPlaybackSpeed(speed)
             Cfg.p.edit().putString("speed", speed.toString()).apply()
