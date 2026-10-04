@@ -182,7 +182,7 @@ class BgService : Service() {
         val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
         var savedPos = 0.0
         val host = object : Host {
-            override fun log(s: String) {}
+            override fun log(s: String) { LogStore.add("🌙[خلفية] " + s) }
             override fun status(s: String) {}
             override fun changed() {}
             override fun position() = savedPos

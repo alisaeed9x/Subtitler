@@ -68,8 +68,11 @@ class VisualMode(
     fun clear() { frames.clear(); sent = 0 }
 
     /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
-    fun snap(bmp: Bitmap, nowSec: () -> Double) {
-        Thread { try { snapWork(bmp, nowSec) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) } }.also { it.isDaemon = true; it.start() }
+    fun snap(bmp: Bitmap, nowSec: () -> Double, onDone: () -> Unit = {}) {
+        Thread {
+            try { snapWork(bmp, nowSec) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) }
+            finally { try { onDone() } catch (_: Exception) {} }
+        }.also { it.isDaemon = true; it.start() }
     }
     private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
         val keys = keyList()

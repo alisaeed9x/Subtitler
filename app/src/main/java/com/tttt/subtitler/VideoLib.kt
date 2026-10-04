@@ -29,6 +29,8 @@ class FolderItem(val key: String, val name: String, val path: String, val videos
 object VideoLib {
     /** صيغ الفيديو المدعومة (MKV منها) */
     val EXTS = setOf("mp4", "mkv", "webm", "avi", "mov", "m4v", "3gp", "3g2", "ts", "m2ts", "mts", "flv", "wmv", "mpg", "mpeg", "ogv", "vob", "asf", "divx")
+    /** أقل من 1 ميجا = غالبًا ملف تالف/فاضي — يتخفي إلا لو gif */
+    fun tooSmall(size: Long, name: String): Boolean = size < 1_048_576L && name.substringAfterLast('.', "").lowercase() != "gif"
     fun isVideoName(n: String): Boolean = n.substringAfterLast('.', "").lowercase() in EXTS
 
     const val SORT_NAME = "name"; const val SORT_NEW = "new"; const val SORT_OLD = "old"; const val SORT_SIZE = "size"

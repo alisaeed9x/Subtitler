@@ -14,6 +14,62 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
+private val KEY_RE = Regex("AIza[0-9A-Za-z_\\-]{30,}")
+
+/** أول مفتاح Gemini (AIza…) موجود في الكليبورد، أو null */
+fun Activity.clipboardKey(): String? = try {
+    val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
+    KEY_RE.find(t)?.value
+} catch (_: Exception) { null }
+
+/** شاشة «إزاي أجيب مفتاح Gemini؟»: خطوات + زرار يفتح Google AI Studio + زرار يلصق المفتاح من الكليبورد */
+fun Activity.showKeyGuide(onKey: (String) -> Unit) {
+    val th = Themes.byId(Cfg.str("theme", "default")); val ui = Ui(this, th)
+    val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val box = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+        setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16)); background = ui.box(th.card, th.border, 18)
+    }
+    box.addView(ui.text("❓ إزاي أجيب مفتاح Gemini؟", 17f, th.primary, true))
+    box.addView(ui.text("المفتاح بيتعمل من موقع جوجل نفسه، ببلاش، وبياخد دقيقة:", 12f, th.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
+    val steps = listOf(
+        "١) دوس «🌐 افتح صفحة المفتاح هنا» تحت وسجّل دخول بحساب جوجل بتاعك.",
+        "٢) لو طلب منك توافق على الشروط، وافق.",
+        "٣) دوس على Create API key (لو سألك عن مشروع، اختار «مشروع جديد» أو أي مشروع موجود).",
+        "٤) دوس على أيقونة النسخ جنب المفتاح (اللي بيبدأ بـ AIza) — البرنامج هيلقطه ويحفظه لوحده وتقفل الصفحة.",
+        "لو جوجل رفضت تسجيل الدخول جوه البرنامج، دوس «Chrome» فوق في الصفحة (أو الزرار اللي تحت) وانسخ المفتاح من هناك وارجع."
+    )
+    for (s in steps) box.addView(ui.text(s, 13f, th.text).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)) })
+    box.addView(ui.text("• كل مفتاح ليه حد استخدام يومي مجاني. لو عايز ترجمة أسرع أو أكتر، اعمل أكتر من مفتاح (من حسابات/مشاريع مختلفة) وضيفهم كلهم.\n• ماتشاركش مفتاحك مع حد.\n• لو الحساب تبع مدرسة أو شركة ممكن يمنع إنشاء المفاتيح — جرّب حساب شخصي.", 11f, th.muted).apply { setPadding(0, ui.dp(8), 0, ui.dp(4)) })
+    fun pill(t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(this).apply {
+        text = t; textSize = 14f; setTextColor(fg); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
+        background = ui.box(bg, th.border, 12); setOnClickListener { f() }
+    }
+    fun paste() {
+        val k = clipboardKey()
+        if (k == null) Toast.makeText(this, "مفيش مفتاح (بيبدأ بـ AIza) في الكليبورد — انسخه الأول", Toast.LENGTH_LONG).show()
+        else { onKey(k); Toast.makeText(this, "✓ اتحط المفتاح", Toast.LENGTH_SHORT).show(); d.dismiss() }
+    }
+    box.addView(pill("🌐 افتح صفحة المفتاح هنا (جوه البرنامج)", th.primary, Color.BLACK) {
+        d.dismiss(); showKeyBrowser(onKey)
+    }, LinearLayout.LayoutParams(-1, ui.dp(46)).apply { topMargin = ui.dp(8) })
+    box.addView(pill("افتح في Chrome", th.surface, th.text) {
+        auto = true
+        try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(KEY_PAGE_URL))) }
+        catch (_: Exception) { Toast.makeText(this, "مفيش متصفح — افتح aistudio.google.com/apikey يدويًا", Toast.LENGTH_LONG).show() }
+    }, LinearLayout.LayoutParams(-1, ui.dp(42)).apply { topMargin = ui.dp(6) })
+    box.addView(pill("📋 الصق من الكليبورد", th.surface, th.text) { paste() }, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { topMargin = ui.dp(6) })
+    box.addView(pill("إغلاق", th.surface, th.muted) { d.dismiss() }, LinearLayout.LayoutParams(-1, ui.dp(40)).apply { topMargin = ui.dp(6) })
+    // أول ما ترجع من المتصفح والمفتاح منسوخ: يتحط تلقائي
+    var auto = false
+    d.window?.decorView?.viewTreeObserver?.addOnWindowFocusChangeListener { f -> if (f && auto && clipboardKey() != null) { auto = false; paste() } }
+    d.setContentView(ScrollView(this).apply { addView(box) })
+    d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+    d.show()
+    d.window?.setLayout((resources.displayMetrics.widthPixels * 0.92f).toInt(), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+}
+
 /** لو مفيش أي مفتاح Gemini متسجّل: نافذة منبثقة تطلب المفتاح (+ لإضافة شريط مفتاح جديد). بعد الحفظ أو "بعدين" بينفّذ onDone */
 fun Activity.ensureKeys(onDone: () -> Unit) {
     Cfg.init(this)
@@ -45,6 +101,12 @@ fun Activity.ensureKeys(onDone: () -> Unit) {
     }
     box.addView(ui.text("🔑 ضيف مفتاح Gemini", 17f, th.primary, true))
     box.addView(ui.text("محتاج مفتاح واحد على الأقل عشان الترجمة تشتغل. تقدر تزوّد مفاتيح تانية بزرار +.", 12f, th.muted).apply { setPadding(0, ui.dp(4), 0, ui.dp(8)) })
+    box.addView(pill("❓ معييش مفتاح — إزاي أجيبه؟", th.surface, th.primary) {
+        showKeyGuide { k ->
+            val all = (fields.map { it.text.toString().trim() }.filter { it.length > 10 } + k).distinct()
+            Cfg.p.edit().putString("keys", all.joinToString("\n")).apply(); d.dismiss()
+        }
+    }, LinearLayout.LayoutParams(-1, ui.dp(42)).apply { bottomMargin = ui.dp(4) })
     addField()
     box.addView(col)
     box.addView(pill("＋  مفتاح تاني", th.surface, th.text) { addField() }, LinearLayout.LayoutParams(-1, ui.dp(40)).apply { topMargin = ui.dp(4) })

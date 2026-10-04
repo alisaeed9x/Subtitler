@@ -240,7 +240,13 @@ class MainActivity : Activity() {
             TabDef("general", "🌐 اللهجة والأسلوب", listOf<View>(
                 ui.text("اللهجة", 13f, th.muted), ui.chips(langs, { lang }) { lang = it },
                 ui.text("أسلوب الترجمة", 13f, th.muted), ui.chips(styles, { style }) { style = it })),
-            TabDef("keys", "🔑 المفاتيح", listOf<View>(ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() }, keysUi, backupUi, extraUi, ui.text("أوضاع المفاتيح (الأساسية + الإضافية):", 13f, th.muted), modesBox, modesBtn)),
+            TabDef("keys", "🔑 المفاتيح", listOf<View>(ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
+                showKeyGuide { k ->
+                    val cur = keys.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
+                    if (k !in cur) { keys.setText((cur + k).joinToString("\n")); keyLoaders.forEach { it() } }
+                    Cfg.p.edit().putString("keys", keys.text.toString()).apply()
+                }
+            }, ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() }, keysUi, backupUi, extraUi, ui.text("أوضاع المفاتيح (الأساسية + الإضافية):", 13f, th.muted), modesBox, modesBtn)),
             TabDef("model", "🤖 الموديل", listOf<View>(modelChips, model, modelDesc)),
             TabDef("engine", "⏱ المحرك", listOf<View>(chunk, parallelRow, ahead, atrack) + flagViews),
             TabDef("theme", "🎨 المظهر", listOf<View>(themeChips))
@@ -259,7 +265,7 @@ class MainActivity : Activity() {
 
         // ===== الشاشة الرئيسية: متصفح فيديوهات الجهاز (فولدرات ← فيديوهات بصور مصغّرة) زي MX Player =====
         val lib = LibraryUi(this, ui, th, { Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }).associateBy { it.id } }) { v ->
-            save(); play("", Uri.parse(v.uri), v.landscape)
+            save(); playChecked(v)
         }
         libUi = lib
         // ===== ترجمة في الخلفية: من ⋮ على الفيديو/الفولدر =====
@@ -437,14 +443,34 @@ class MainActivity : Activity() {
 
     fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
     /** landscape: الفيديو من الجهاز بيفتح لاندسكيب مباشرة (زي MX) إلا لو معروف إنه طولي */
-    fun play(u: String, uri: Uri?, landscape: Boolean = uri != null) {
+    fun play(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false) {
         if (u.isBlank() && uri == null) return
-        ensureKeys { startPlayerNow(u, uri, landscape) }
+        ensureKeys { startPlayerNow(u, uri, landscape, fresh) }
     }
-    fun startPlayerNow(u: String, uri: Uri?, landscape: Boolean = uri != null) {
+    /** قبل ما تدخل الفيديو: لو له ترجمة محفوظة (ومش بيترجم في الخلفية دلوقتي) اسأل: كمّل ولا ابدأ من الأول وجديد */
+    fun playChecked(v: VideoItem) {
+        if (BgJobs.isActive(v.videoId)) { play("", Uri.parse(v.uri), v.landscape); return }
+        Thread {
+            var subsN = 0; var covered = 0.0
+            try {
+                val sv = Store(File(filesDir, "progress"), Store.keyFor(v.videoId)).load()
+                if (sv != null) { subsN = sv.subs.size; covered = sv.done.fold(0.0) { a, r -> a + (r[1] - r[0]) } }
+            } catch (_: Throwable) {}
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (subsN == 0 && covered <= 0.0) { play("", Uri.parse(v.uri), v.landscape); return@runOnUiThread }
+                android.app.AlertDialog.Builder(this).setTitle("📼 فيه ترجمة محفوظة")
+                    .setMessage("${(covered / 60).toInt()} دقيقة · $subsN جملة")
+                    .setPositiveButton("▶ كمّل") { _, _ -> play("", Uri.parse(v.uri), v.landscape) }
+                    .setNegativeButton("🔁 ابدأ من الأول وجديد") { _, _ -> play("", Uri.parse(v.uri), v.landscape, true) }
+                    .setNeutralButton("إلغاء", null).show()
+            }
+        }.apply { isDaemon = true }.start()
+    }
+    fun startPlayerNow(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false) {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             if (uri != null) { data = uri; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) } else putExtra("url", u)
-            putExtra("landscape", landscape)
+            putExtra("landscape", landscape); putExtra("fresh", fresh)
             // لو فتحنا الإعدادات من المشغّل واخترنا فيديو جديد: امسح المشغّل القديم بدل ما يفضل تحته
             if (intent?.getBooleanExtra("from_player", false) == true) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         })
@@ -616,53 +642,83 @@ class PlayerActivity : Activity(), Host {
         val lp = resumeCard.layoutParams as FrameLayout.LayoutParams
         lp.topMargin = ui.dp(if (fullMode) 96 else 6); resumeCard.layoutParams = lp
     }
-    /** فيه ترجمة محفوظة؟ — المحرك بيقف لحد ما المستخدم يختار: يكمّل على الحالية ولا يترجم من جديد */
+    /** الاختيار (كمّل / من الأول) بيتعمل قبل دخول الفيديو من المكتبة — هنا الترجمة بتكمّل تلقائي من غير كارت ولا وقفة */
     private fun maybePrompt(wasBg: Boolean) {
-        val has = engine.subs.isNotEmpty() || engine.coveredSec() > 0
         engine.keepGoing = Cfg.bool("keepgoing", true)
-        resumePending = has
-        if (has) {
-            val mins = (engine.coveredSec() / 60).toInt()
-            resumeTv.text = (if (wasBg) "🌙 كان بيترجم في الخلفية — كمّلت الترجمة هنا تلقائي\n" else "📼 فيه ترجمة محفوظة\n") + "($mins دقيقة · ${engine.subs.size} جملة)"
-            h.removeCallbacks(hideCard); h.postDelayed(hideCard, 10000)
-        }
-        applyCard()
+        engine.paused = false
+        resumePending = false; applyCard()
+        if (wasBg) say("🌙 كان بيترجم في الخلفية — كمّلت الترجمة هنا")
     }
     private val hideCard = Runnable { resumePending = false; applyCard() }
     private fun fmtMS(sec: Double): String { val s = sec.toInt(); return "%d:%02d".format(s / 60, s % 60) }
 
-    /** قايمة الباتشات: لكل باتش «ابدأ من هنا وكمّل» أو «ترجم الباتش ده لوحده» + «من الأول خالص» */
+    private var batchPanel: View? = null
+    lateinit var batchBtn: View
+    fun closeBatchPanel() {
+        batchPanel?.let { p -> try { (p.parent as? ViewGroup)?.removeView(p) } catch (_: Exception) {} }
+        batchPanel = null
+    }
+    /** زرار 🔄 العايم: لوحة صغيرة فوق الفيديو — «من الأول خالص» + باتشات الفيديو (📍 يوديك للباتش) + «ابدأ من هنا» / «ده بس» */
     fun batchDialog() {
+        if (batchPanel != null) { closeBatchPanel(); return }
         val bl = engine.batches()
         if (bl.isEmpty()) { Toast.makeText(this, "مدة الفيديو لسه مش معروفة — استنى ثانية وجرّب تاني", Toast.LENGTH_SHORT).show(); return }
-        lateinit var dlg: android.app.Dialog
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(12)) }
-        col.addView(ui.text("النسخة الحالية بتتحفظ تلقائي في 🗂 ترجمات الفيديو قبل ما يتمسح أي حاجة. الباتش = مقطع الترجمة (${conf.chunkSec} ثانية تقريبًا).", 11f, th.muted))
-        fun act(label: String, then: () -> Unit) { dlg.dismiss(); then(); Toast.makeText(this, label, Toast.LENGTH_SHORT).show(); resumePending = false; applyCard(); dirty = true; curIdx = -2 }
-        col.addView(ui.button("🔁 ترجم الفيديو كله من الأول", true) { act("🔄 بترجم من الأول…") { engine.redoAll(); player.seekTo(0) } })
-        if (engine.onlyChunks != null) col.addView(ui.button("▶ رجّع الترجمة التلقائية (كمّل لقدّام)") { act("▶ الترجمة التلقائية شغّالة") { engine.resumeAuto() } })
         val curC = try { engine.chunkOfSec(player.currentPosition / 1000.0) } catch (_: Exception) { 0 }
+        var sel = curC
+        val rows = ArrayList<Pair<Int, LinearLayout>>()
+        val selTv = ui.text("", 12f, th.primary, true)
+        // الشغل التقيل (مسح + حفظ على القرص) بعيد عن الـ UI thread — ده اللي كان بيهنّج ويقفل البرنامج
+        fun go(label: String, work: () -> Unit) {
+            closeBatchPanel(); resumePending = false; applyCard()
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+            engine.paused = true
+            Thread {
+                try { work() } catch (e: Throwable) { log("⚠ " + (e.message ?: e.toString()).take(120)); engine.paused = false }
+                dirty = true; curIdx = -2
+            }.apply { isDaemon = true }.start()
+        }
+        fun paint() {
+            rows.forEach { (i, r) -> r.background = ui.box(if (i == sel) (th.primary and 0x00FFFFFF) or 0x33000000 else th.card, th.border, 8) }
+            selTv.text = "المختار: باتش ${sel + 1}  (${fmtMS(bl[sel.coerceIn(0, bl.size - 1)].start)})"
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(10)); background = ui.box(0xF2101418.toInt(), 0x33FFFFFF, 14); elevation = ui.dp(10).toFloat()
+            isClickable = true
+        }
+        val head = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(ui.text("🔄 ترجم باتش معين", 14f, Color.WHITE, true), LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.WHITE); setPadding(ui.dp(10), ui.dp(2), ui.dp(4), ui.dp(2)); setOnClickListener { closeBatchPanel() } })
+        col.addView(head)
+        col.addView(ui.button("🔁 ترجم من الأول خالص", true) { player.seekTo(0); go("🔄 بترجم من الأول…") { engine.redoAll() } })
+        col.addView(ui.text("📍 دوس على الباتش يوديك له، وبعدين اختار ابدأ", 11f, th.muted))
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
         var curRow: View? = null
         for (b in bl) {
-            val tv = ui.text("باتش ${b.idx + 1}  ·  ${fmtMS(b.start)}–${fmtMS(b.end)}  ${b.mark}" + (if (b.count > 0) "  ${b.count} جملة" else "") + (if (b.idx == curC) "  ◀ هنا" else ""), 13f, if (b.idx == curC) th.primary else th.text, b.idx == curC)
-            fun chip(t: String, f: () -> Unit) = TextView(this).apply {
-                text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
-                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) }; setOnClickListener { f() }
-            }
+            val i = b.idx
             val row = LinearLayout(this).apply {
-                layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(6), ui.dp(6), ui.dp(6))
-                background = ui.box(if (b.idx == curC) (th.primary and 0x00FFFFFF) or 0x22000000 else th.card, th.border, 8)
-                addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
-                addView(chip("▶ من هنا") { act("🔄 بترجم من باتش ${b.idx + 1} وبعده…") { engine.redoFrom(b.idx); player.seekTo((engine.chunkStartSec(b.idx) * 1000).toLong()) } })
-                addView(chip("☝ ده بس") { act("🔄 بترجم باتش ${b.idx + 1} لوحده…") { engine.redoOnly(b.idx); player.seekTo((engine.chunkStartSec(b.idx) * 1000).toLong()) } })
+                layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(7), ui.dp(8), ui.dp(7))
+                addView(TextView(this@PlayerActivity).apply { text = "📍"; textSize = 16f; setPadding(0, 0, ui.dp(8), 0) })
+                addView(ui.text("باتش ${i + 1} · ${fmtMS(b.start)}–${fmtMS(b.end)} ${b.mark}" + (if (b.count > 0) " · ${b.count} جملة" else "") + (if (i == curC) "  ◀ هنا" else ""), 12f, th.text, i == curC), LinearLayout.LayoutParams(0, -2, 1f))
+                setOnClickListener { sel = i; try { player.seekTo((engine.chunkStartSec(i) * 1000).toLong()) } catch (_: Exception) {}; paint() }
             }
-            col.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4) })
-            if (b.idx == curC) curRow = row
+            rows.add(i to row); list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(3) })
+            if (i == curC) curRow = row
         }
-        val sv = ScrollView(this).apply { addView(col) }
-        dlg = ui.sheet(this, "🔄 إعادة الترجمة بالباتش", listOf<View>(sv), true)
-        dlg.show()
-        curRow?.let { r -> sv.post { sv.scrollTo(0, (r.top - ui.dp(60)).coerceAtLeast(0)) } }
+        val content = findViewById<ViewGroup>(android.R.id.content)
+        val maxH = (content.height * 0.42).toInt().coerceAtLeast(ui.dp(110))
+        val sv = ScrollView(this).apply { addView(list) }
+        col.addView(sv, LinearLayout.LayoutParams(-1, maxH))
+        col.addView(selTv)
+        val btns = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        btns.addView(ui.button("▶ ابدأ من الباتش ده") { val i = sel; go("🔄 بترجم من باتش ${i + 1} وبعده…") { engine.redoFrom(i) } }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
+        btns.addView(ui.button("☝ ده بس") { val i = sel; go("🔄 بترجم باتش ${i + 1} لوحده…") { engine.redoOnly(i) } }, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(btns)
+        paint()
+        val w = minOf(ui.dp(330), content.width - ui.dp(24)).coerceAtLeast(ui.dp(220))
+        content.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.CENTER))
+        batchPanel = col
+        curRow?.let { r -> sv.post { sv.scrollTo(0, (r.top - ui.dp(40)).coerceAtLeast(0)) } }
     }
 
     /** يوقف المشغّل خالص، يسلّم الترجمة لخدمة الخلفية (إشعار بالتقدم والوقت المتبقي) ويطلع بره التطبيق من غير ما يقفله */
@@ -736,7 +792,12 @@ class PlayerActivity : Activity(), Host {
             logBuf.append(fmtMs(cur)).append("  ").append(s).append('\n')
             if (logBuf.length > 30000) logBuf.delete(0, 10000)
         }
+        LogStore.add(fmtMs(cur) + "  " + s)
     }
+    private var lastBeat = 0L
+    private var logMode = 0
+    override fun onTrimMemory(level: Int) { super.onTrimMemory(level); LogStore.add("⚠ onTrimMemory level=$level · ${LogStore.heapLine()}") }
+    override fun onLowMemory() { super.onLowMemory(); LogStore.add("⚠ onLowMemory · ${LogStore.heapLine()}") }
     override fun status(s: String) { status = s }
     override fun changed() { dirty = true; srtSoon() }
     override fun position() = cur / 1000.0
@@ -802,9 +863,12 @@ class PlayerActivity : Activity(), Host {
         videoBox.addView(logDrawer, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
         // 👁 بصري: دايرة عايمة فوق دايرة ✦
         floatBar = ui.fsCircle("👁") { visualSnap() }.apply {
-            textSize = 20f; alpha = 0.88f; translationY = -ui.dp(60).toFloat(); setOnLongClickListener { visualDialog(); true }
+            textSize = 20f; alpha = 0.95f; setOnLongClickListener { visualDialog(); true }
         }
         videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
+        // 🔄 ترجم باتش معين: دايرة عايمة فوق 👁
+        batchBtn = ui.fsCircle("🔄") { batchDialog() }.apply { textSize = 20f; alpha = 0.88f; translationY = -ui.dp(60).toFloat() }
+        videoBox.addView(batchBtn, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
 
         // زرار التشغيل الأوسط (بيظهر وقت الإيقاف) + شارة النسبة (شاشة كاملة) + فلاش السيك/الصوت/السطوع
         centerPlay = TextView(this).apply {
@@ -840,14 +904,8 @@ class PlayerActivity : Activity(), Host {
         menu.addView(roundBtn("🕳") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         menu.addView(roundBtn("📥") { doImport() })
         menu.addView(roundBtn("📂") { doOpen() })
-        val fab = TextView(this).apply {
-            text = "✦"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE; alpha = 0.6f
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE01E2228.toInt()); setStroke((1.5f * resources.displayMetrics.density).toInt(), 0x66F5A623) }
-            setOnClickListener { val o = menu.visibility != View.VISIBLE; menu.visibility = if (o) View.VISIBLE else View.GONE; alpha = if (o) 1f else 0.6f }
-        }
-        videoBox.addView(menu, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(60), 0) })
-        videoBox.addView(fab, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
-        fsOnly = listOf<View>(fsBadge, fab); assistMenuV = menu
+        videoBox.addView(menu, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(68), 0) })
+        fsOnly = listOf<View>(fsBadge); assistMenuV = menu
         val giHide = Runnable { gi.visibility = View.GONE }
         fun giShow(t: String, g: Int) {
             gi.text = t
@@ -972,6 +1030,7 @@ class PlayerActivity : Activity(), Host {
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
         tb2.addView(ui.fsBtn("☰ القائمة") { openSide() })
         tb2.addView(grp("🔤 النص", gText)); tb2.addView(grp("✨ لهجة", gAi)); tb2.addView(grp("🧰 أدوات", gTool))
+        tb2.addView(ui.fsBtn("✦ سريعة") { menu.visibility = if (menu.visibility == View.VISIBLE) View.GONE else View.VISIBLE; showChrome() })
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFF17130A.toInt())
@@ -1001,24 +1060,12 @@ class PlayerActivity : Activity(), Host {
         fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
         videoBox.addView(fsBtnV, fsBtnLp)
-        // كارت الاستكمال العايم (بيظهر لما الفيديو يكون له ترجمة محفوظة)
-        resumeTv = TextView(this).apply { setTextColor(Color.WHITE); textSize = 12f; gravity = Gravity.CENTER; setShadowLayer(3f, 0f, 1f, Color.BLACK) }
-        val rBtns = LinearLayout(this).apply {
-            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER
-            addView(ui.fsBtn("▶ تمام، كمّل") { engine.resumeAuto(); resumePending = false; h.removeCallbacks(hideCard); applyCard() }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(3), ui.dp(6), ui.dp(3), 0) })
-            addView(ui.fsBtn("🔄 ترجم من جديد…") { batchDialog() }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(ui.dp(3), ui.dp(6), ui.dp(3), 0) })
-        }
-        resumeCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; layoutDirection = View.LAYOUT_DIRECTION_RTL; visibility = View.GONE
-            setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8)); background = ui.box(0xE60F1114.toInt(), 0x33FFFFFF, 14); elevation = ui.dp(8).toFloat()
-            addView(resumeTv); addView(rBtns)
-        }
-        videoBox.addView(resumeCard, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(6) })
         applyChromeFn = {
             val on = fullMode && chromeShown && !pipNow()
             chromeFrame.visibility = if (on) View.VISIBLE else View.GONE; if (!on) dismissPop()
             val cv = (!fullMode || chromeShown) && !pipNow()
-            floatBar.visibility = if (cv) View.VISIBLE else View.GONE
+            floatBar.visibility = if (!pipNow()) View.VISIBLE else View.GONE
+            batchBtn.visibility = if (cv) View.VISIBLE else View.GONE
             logHandle.visibility = if (cv) View.VISIBLE else View.GONE
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) ui.dp(84) else ui.dp(12); sub.requestLayout()
@@ -1138,7 +1185,32 @@ class PlayerActivity : Activity(), Host {
         }
         counters = ui.text("", 10f, th.muted).apply { setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(2)) }
         sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(listView), true)
-        logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logSv), true)
+        val logCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
+        fun logChip(t: String, f: () -> Unit) = TextView(this).apply {
+            text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6); topMargin = ui.dp(4) }; setOnClickListener { f() }
+        }
+        fun logShow(m: Int) {
+            logMode = m
+            logTv.text = when (m) {
+                1 -> LogStore.prevText(80000).ifBlank { "مفيش لوج لجلسة سابقة" }
+                2 -> LogStore.crashText().ifBlank { "مفيش كراش متسجّل" }
+                else -> synchronized(logBuf) { logBuf.toString() }
+            }
+            logSv.post { if (m == 0) logSv.fullScroll(View.FOCUS_DOWN) else logSv.scrollTo(0, 0) }
+        }
+        fun logCopy() {
+            val body = when (logMode) { 1 -> LogStore.prevText(150000); 2 -> LogStore.crashText(); else -> LogStore.currentText(150000) }
+            (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("log", LogStore.header(this) + "\n\n" + body))
+            Toast.makeText(this, "📋 اللوج اتنسخ", Toast.LENGTH_SHORT).show()
+        }
+        val logRow = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(8), 0, ui.dp(8), ui.dp(4)) }
+        logRow.addView(logChip("📋 نسخ") { logCopy() }); logRow.addView(logChip("الحالي") { logShow(0) })
+        logRow.addView(logChip("🕘 الجلسة اللي فاتت") { logShow(1) }); logRow.addView(logChip("💥 آخر كراش") { logShow(2) })
+        logCol.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(logRow) }, LinearLayout.LayoutParams(-1, -2))
+        logSv.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); logCol.addView(logSv)
+        logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logCol), true)
+        logDlg.setOnShowListener { logShow(0) }
         mem = ui.memRow()
 
         fun menuItems(mk: (String, String, () -> Unit) -> View): List<View> = listOf<View>(
@@ -1200,6 +1272,7 @@ class PlayerActivity : Activity(), Host {
         buildPlayer()
 
         // المحرك + استرجاع التقدم المحفوظ
+        freshOnce = intent.getBooleanExtra("fresh", false)
         initEngine()
         if (Build.VERSION.SDK_INT >= 33) { try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7) } catch (_: Exception) {} }
         KeepAliveService.start(this)
@@ -1248,14 +1321,15 @@ class PlayerActivity : Activity(), Host {
                 }
                 st.text = status
                 if (now - lastBatch > 700) { lastBatch = now; batchTv.text = engine.batchLines() }
+                if (now - lastBeat > 20000) { lastBeat = now; LogStore.add("💓 ${LogStore.heapLine()} · ${if (player.isPlaying) "بيشتغل" else "واقف"} @${fmtMs(cur)} · مترجم ${(engine.coveredSec() / 60).toInt()}د · ${engine.subs.size} جملة") }
                 if (fullMode) fsBadge.set(PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toString() + "%", list.size.toString() + " جملة")
                 if (now - lastMem > 4000) { lastMem = now; if (!fullMode) mem.update(this@PlayerActivity) }
                 counters.text = "جمل ${list.size} · تغطية ${PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0)}% · فجوات ${engine.failedCount()} · كوتة ${Quota.used(conf.model)}/${Models.quotaOf(conf.model)}"
-                if (logDlg.isShowing) logTv.text = synchronized(logBuf) { logBuf.toString() }
+                if (logDlg.isShowing && logMode == 0) logTv.text = synchronized(logBuf) { logBuf.toString() }
                 h.postDelayed(this, 200)
             }
         })
-        Thread { engine.run() }.apply { isDaemon = true }.start()
+        startEngine()
     }
 
     private fun buildPlayer() {
@@ -1294,6 +1368,17 @@ class PlayerActivity : Activity(), Host {
         player.prepare(); player.playWhenReady = true
     }
 
+    private var freshOnce = false
+    /** يشغّل المحرك. لو الدخول كان «ابدأ من الأول وجديد»: المسح والحفظ على خيط الخلفية قبل ما الحلقة تبدأ (مش على الـ UI) */
+    private fun startEngine() {
+        val fresh = freshOnce; freshOnce = false
+        if (fresh) { try { player.seekTo(0) } catch (_: Exception) {}; cur = 0L }
+        Thread {
+            if (fresh) try { engine.redoAll() } catch (e: Throwable) { log("⚠ " + (e.message ?: e.toString()).take(120)) }
+            engine.run()
+        }.apply { isDaemon = true }.start()
+    }
+
     private fun initEngine() {
         vid = videoId()
         offsetMs = Cfg.str("sub_offset_ms:$vid", "0").toLongOrNull() ?: 0L
@@ -1307,8 +1392,9 @@ class PlayerActivity : Activity(), Host {
         Live.engine = engine
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
         val savedPos = engine.load()
-        if (savedPos > 5.0) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
+        if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
         refreshList()
+        LogStore.add("🎬 فتح فيديو $vid · ${LogStore.heapLine()}")
         maybePrompt(wasBg)
     }
 
@@ -1346,7 +1432,7 @@ class PlayerActivity : Activity(), Host {
         visOv.showBoxes(emptyList())
         resumePending = false; applyCard()
         buildPlayer(); initEngine()
-        Thread { engine.run() }.apply { isDaemon = true }.start()
+        startEngine()
     }
 
     /** أفقي = ملء الشاشة (شريط الأزرار العلوي + كبسولة التقدم تظهر بلمسة)، رأسي = فيديو فوق والكبسولة وشبكة الأزرار تحت */
@@ -1414,7 +1500,7 @@ class PlayerActivity : Activity(), Host {
         if (inPipNow) { try {
             closeSide(); dismissPopFn()
             h.removeCallbacks(hideChrome); chromeShown = false
-            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
+            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; batchBtn.visibility = View.GONE; closeBatchPanel(); logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
             fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
             visOv.showBoxes(emptyList())
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
@@ -1597,21 +1683,28 @@ class PlayerActivity : Activity(), Host {
 
     fun visualSnap() {
         if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Toast.makeText(this, "مفيش فيديو شغّال", Toast.LENGTH_SHORT).show(); return }
+        if (visBusy) { Toast.makeText(this, "👁 لسه بترجم اللقطة اللي فاتت…", Toast.LENGTH_SHORT).show(); return }
+        visBusy = true
+        val wasPlaying = try { player.playWhenReady } catch (_: Exception) { false }
+        try { player.pause() } catch (_: Exception) {}
         val curUs = player.currentPosition * 1000
-        Toast.makeText(this, "📸 بلقط الشاشة وبترجم… الفيديو مكمّل", Toast.LENGTH_SHORT).show()
+        val t0 = (player.currentPosition - offsetMs) / 1000.0
+        Toast.makeText(this, "📸 وقفت الفيديو وبترجم اللقطة…", Toast.LENGTH_SHORT).show()
+        val done = { runOnUiThread { visBusy = false; if (wasPlaying && !isFinishing && !isDestroyed) try { player.play() } catch (_: Exception) {} } }
         fun fallback() {
             Thread {
                 val r = makeRetriever()
                 val b = try { r?.getFrameAtTime(curUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 try { r?.release() } catch (_: Exception) {}
-                if (b != null) visual.snap(b) { visNow } else runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }
+                if (b != null) visual.snap(b, { t0 }, done) else { runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }; done() }
             }.start()
         }
         val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
         try {
-            android.view.PixelCopy.request(svRef, bmp, { res -> if (res == android.view.PixelCopy.SUCCESS) visual.snap(bmp) { visNow } else fallback() }, Handler(Looper.getMainLooper()))
+            android.view.PixelCopy.request(svRef, bmp, { res -> if (res == android.view.PixelCopy.SUCCESS) visual.snap(bmp, { t0 }, done) else fallback() }, Handler(Looper.getMainLooper()))
         } catch (_: Exception) { fallback() }
     }
+    private var visBusy = false
 
     fun visualDialog() {
         val d = android.app.Dialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
@@ -1647,7 +1740,7 @@ class PlayerActivity : Activity(), Host {
         restyleFn()
         if (resumeAfterSettings) { resumeAfterSettings = false; try { player.play() } catch (_: Exception) {} }
     }
-    override fun onPause() { super.onPause(); resumedNow = false; if (!handedOff) { saveRecent(); Thread { engine.saveNow() }.start() } }
+    override fun onPause() { super.onPause(); LogStore.add("⏸ onPause · ${LogStore.heapLine()}"); resumedNow = false; if (!handedOff) { saveRecent(); Thread { engine.saveNow() }.start() } }
     override fun onStop() {
         super.onStop(); saveRecent()
         // ✕ على نافذة PiP: النظام بيوقف الأكتيفيتي وهي لسه في وضع PiP — نقفل الفيديو ونخرج (إلا لو الشاشة اتقفلت)
@@ -1655,6 +1748,7 @@ class PlayerActivity : Activity(), Host {
         if (pipNow() && interactive && !isFinishing) closeAfterPip()
     }
     override fun onDestroy() {
+        LogStore.add("🔚 onDestroy (isFinishing=$isFinishing)")
         h.removeCallbacksAndMessages(null)
         pipOv?.hide(); pipOv = null
         saveRecent()

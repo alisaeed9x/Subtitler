@@ -50,7 +50,7 @@ object VideoScan {
                 while (c.moveToNext()) {
                     val name = c.getString(iName) ?: continue
                     val size = c.getLong(iSize)
-                    if (size <= 0 || name.isBlank()) continue
+                    if (size <= 0 || name.isBlank() || VideoLib.tooSmall(size, name)) continue
                     val (key, fname, fpath) = VideoLib.folderInfo(c.getString(iData), if (iRel >= 0) c.getString(iRel) else null, c.getString(iBuck))
                     seen.add("$name:$size:$key")
                     out.add(VideoItem(c.getLong(iId), ContentUris.withAppendedId(base, c.getLong(iId)).toString(), name, key, fname, fpath, size,
@@ -69,7 +69,7 @@ object VideoScan {
                 while (c.moveToNext()) {
                     val name = c.getString(1) ?: continue
                     val size = c.getLong(2)
-                    if (size <= 0) continue
+                    if (size <= 0 || VideoLib.tooSmall(size, name)) continue
                     val (key, fname, fpath) = VideoLib.folderInfo(c.getString(5), null, null)
                     if (!seen.add("$name:$size:$key")) continue
                     out.add(VideoItem(c.getLong(0), ContentUris.withAppendedId(files, c.getLong(0)).toString(), name, key, fname, fpath, size, 0L, c.getLong(3), c.getLong(4)))
