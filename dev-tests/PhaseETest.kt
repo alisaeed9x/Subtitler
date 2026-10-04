@@ -36,7 +36,7 @@ fun server(delayMs: Long): HttpServer {
     val s = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     s.executor = java.util.concurrent.Executors.newFixedThreadPool(16)
     s.createContext("/") { ex ->
-        val key = Regex("key=([^&]+)").find(ex.requestURI.query ?: "")?.groupValues?.get(1) ?: ""
+        val key = ex.requestHeaders.getFirst("x-goog-api-key") ?: ""
         val body = JSONObject(String(ex.requestBody.readBytes(), Charsets.UTF_8))
         val prompt = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts").let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.has("text") }?.getString("text") ?: "" }
         val isTr = !(prompt.contains("محلل قصصي") || prompt.contains("مراجع جودة") || prompt.contains("مصحح لغوي") || prompt.contains("فيما يلي مجموعة تعليمات"))

@@ -90,9 +90,9 @@ class VisualMode(
                 frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
                 say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
                 changed(); return
-            } catch (e: ApiErr) { last = e.message ?: ""; if (e.code == 429) Thread.sleep(1500) }
+            } catch (e: ApiErr) { last = e.message ?: ""; say("👁 خطأ ${e.code} على …${key.takeLast(4)}"); if (e.code == 429) Thread.sleep(1500) }
         }
-        say("👁 فشل: " + last.take(70))
+        say("👁 فشل: " + last.take(110))
     }
 
     fun start() {
@@ -101,7 +101,11 @@ class VisualMode(
     }
     fun stop() { running = false; th?.interrupt(); th = null }
 
-    private fun keyList() = (conf.keys + conf.backup).filter { it.isNotBlank() }.distinct()
+    /** الوضع البصري بيستخدم المفاتيح الاحتياطية بس عشان ما يستهلكش كوتة الترجمة الأساسية. لو مفيش احتياطي بيرجع للأساسية. */
+    private fun keyList(): List<String> {
+        val b = conf.backup.filter { it.isNotBlank() }.distinct()
+        return if (b.isNotEmpty()) b else conf.keys.filter { it.isNotBlank() }.distinct()
+    }
 
     private fun loop() {
         val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
@@ -128,9 +132,9 @@ class VisualMode(
                     changed()
                     next += STEP
                 } catch (e: ApiErr) {
-                    if (e.code == 429) { status = "⏸ 429 — انتظار 30ث"; say(status); ki++; Thread.sleep(WAIT_429) }
-                    else if (e.code == 403) { ki++; if (ki > keys.size * 2) { say("المفاتيح كلها مرفوضة"); return } }
-                    else { say("👁 خطأ: " + (e.message ?: "").take(60)); next += STEP; Thread.sleep(1000) }
+                    if (e.code == 429) { status = "⏸ ${e.message?.take(90)} — انتظار 30ث"; say(status); ki++; Thread.sleep(WAIT_429) }
+                    else if (e.code == 403) { ki++; if (ki > keys.size * 2) { say("المفاتيح كلها مرفوضة (${e.message?.take(80)})"); return } }
+                    else { say("👁 خطأ: " + (e.message ?: "").take(110)); next += STEP; Thread.sleep(1000) }
                 }
             }
         } catch (_: InterruptedException) {

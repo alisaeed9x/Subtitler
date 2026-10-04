@@ -22,13 +22,13 @@ import android.widget.Toast
 const val KEY_PAGE_URL = "https://aistudio.google.com/apikey"
 
 /**
- * صفحة إنشاء مفتاح Gemini جوه البرنامج: بتفتح رابط المفاتيح مباشرة، وأول ما تنسخ المفتاح (AIza…)
+ * صفحة إنشاء مفتاح Gemini جوه البرنامج: بتفتح رابط المفاتيح مباشرة، وأول ما تنسخ المفتاح (AQ.… أو AIza…)
  * البرنامج بيلقطه من الكليبورد ويسلّمه لـ onKey (اللي بيحفظه) ويقفل الصفحة لوحده.
  * ملحوظة: جوجل ساعات بترفض تسجيل الدخول جوه WebView — لو حصل، زرار «Chrome» بيفتح نفس الصفحة في المتصفح والالتقاط بيشتغل برضو.
  */
 @SuppressLint("SetJavaScriptEnabled")
 fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
-    val th = Themes.byId(Cfg.str("theme", "default")); val ui = Ui(this, th)
+    val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
     val d = Dialog(this, android.R.style.Theme_Black_NoTitleBar)
     val wv = WebView(this)
     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

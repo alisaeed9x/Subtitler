@@ -86,3 +86,14 @@ class Ui(val ctx: Context, var th: Theme) {
         c.addView(head); c.addView(body); return c
     }
 }
+
+/** شريط الحالة والتنقل بلون الثيم، وأيقونات غامقة لو الثيم فاتح (عشان تبان على الأبيض) */
+@Suppress("DEPRECATION")
+fun android.app.Activity.applyBars(th: Theme) {
+    window.statusBarColor = th.bg; window.navigationBarColor = th.bg
+    if (android.os.Build.VERSION.SDK_INT >= 23 && th.isLight) {
+        var f = window.decorView.systemUiVisibility or android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        if (android.os.Build.VERSION.SDK_INT >= 26) f = f or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = f
+    }
+}

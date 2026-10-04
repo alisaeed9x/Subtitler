@@ -22,7 +22,7 @@ fun reply(text: String): String = JSONObject().put("candidates", JSONArray().put
 fun startServer(): HttpServer {
     val s = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     s.createContext("/") { ex ->
-        val key = Regex("key=([^&]+)").find(ex.requestURI.query ?: "")?.groupValues?.get(1) ?: ""
+        val key = ex.requestHeaders.getFirst("x-goog-api-key") ?: ""
         val body = JSONObject(String(ex.requestBody.readBytes(), Charsets.UTF_8))
         val parts = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
         var prompt = ""; var audio = ""

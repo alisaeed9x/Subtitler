@@ -87,8 +87,11 @@ object PlayerLogic {
     fun orderSpeakers(subs: List<Sub>): List<Sub> {
         if (subs.size < 2) return subs
         val tags = subs.map { it.speakerTag.trim().toIntOrNull() }
-        return if (tags.all { it != null } && tags.toSet().size == subs.size) subs.sortedBy { it.speakerTag.trim().toInt() } else subs
+        val base = if (tags.all { it != null } && tags.toSet().size == subs.size) subs.sortedBy { it.speakerTag.trim().toInt() } else subs
+        return base.sortedBy { if (it.faint) 0 else 1 }   // الخافت فوق، والعادي تحته (الترتيب ثابت جوه كل مجموعة)
     }
+
+    const val FAINT_TAG = "🔈 (صوت خافت) "
 
     private val AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
     fun arNum(n: Int) = n.toString().map { AR_DIGITS[it - '0'] }.joinToString("")
@@ -96,8 +99,8 @@ object PlayerLogic {
     /** جملة واحدة للعرض: لو أكتر من متحدث بيتكلموا مع بعض بتتجمّع كل واحد في سطر وقبله شرطة (- ) */
     fun combine(subs: List<Sub>): Sub? {
         if (subs.isEmpty()) return null
-        if (subs.size == 1) return subs[0]
-        fun line(i: Int, t: String) = "- " + t
+        if (subs.size == 1) return if (subs[0].faint) subs[0].copy(translated = FAINT_TAG + subs[0].translated.ifBlank { subs[0].original }) else subs[0]
+        fun line(i: Int, t: String) = if (subs[i].faint) FAINT_TAG + t else "- " + t
         val tr = subs.mapIndexed { i, x -> line(i, x.translated.ifBlank { x.original }) }.joinToString("\n")
         val og = subs.mapIndexed { i, x -> line(i, x.original) }.joinToString("\n")
         val pv = if (subs.all { it.pivot.isNotBlank() }) subs.mapIndexed { i, x -> line(i, x.pivot) }.joinToString("\n") else ""

@@ -6,6 +6,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 interface Host {
@@ -57,6 +58,8 @@ class Engine(
     @Volatile private var running = true
     /** وقفة: المحرك مايبعتش مقاطع جديدة (مستني اختيار المستخدم: كمّل ولا ترجم من جديد) */
     @Volatile var paused = false
+    /** إيقاف مؤقت بإيد المستخدم (زرار ⏸ في المشغّل): مفيش مقاطع جديدة بتتبعت لحد ما يتلغي — اللي شغال بيخلص عادي */
+    @Volatile var userPaused = false
     /** لما الباتشات حوالين مكان التشغيل تخلص: كمّل ترجمة باقي الفيديو (قدّام ثم من الأول) بدل ما تقف */
     @Volatile var keepGoing = true
     /** ترجمة في الخلفية من غير مشغّل: بيمشي من أول مقطع ناقص وبيخلص لوحده */
@@ -91,6 +94,12 @@ class Engine(
     private var pronUpTo = 0
     private var pronBusy = false
     private val reviews = AtomicInteger(0)
+    /** لهجة التحويل التلقائي: الترجمة بتتعمل بالفصحى الحرفية وكل ~3 باتشات بتتحوّل للهجة دي. "" = من غير تحويل */
+    @Volatile var convDialect: String = ""
+    private val convBusy = AtomicBoolean(false)
+    @Volatile private var lastConvFail = 0L
+    /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
+    private val incomplete = ConcurrentHashMap.newKeySet<Int>()
     private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     private val ch get() = conf.chunkSec.toDouble()
     /** عدد المقاطع قدّام = الأكبر بين الإعداد وعدد الطلبات المتوازية، عشان كل المفاتيح تشتغل مع بعض */
@@ -108,6 +117,7 @@ class Engine(
             val mark = when {
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
+                i in incomplete -> "⚠"
                 isDone(i, d) -> "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
@@ -132,6 +142,7 @@ class Engine(
             val mark = when {
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
+                i in incomplete -> "⚠"
                 isDone(i, d) -> "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
@@ -139,6 +150,82 @@ class Engine(
             out.add(BatchInfo(i, cStart(i), cEnd(i, d), mark, subCount(i, d))); i++
         }
         return out
+    }
+    /** الباتشات اللي ما اترجمتش (❌) أو رجعت ناقصة (⚠) وملهاش طلب شغال دلوقتي */
+    fun problems(): List<BatchInfo> = batches().filter { it.mark == "❌" || it.mark == "⚠" }
+    /** إعادة ترجمة باتش واحد على المفاتيح الاحتياطية */
+    fun retryOnBackup(i: Int) {
+        if (!inflight.add(i)) return
+        host.log("🔁 إعادة باتش ${i + 1} على المفاتيح الاحتياطية…")
+        Thread {
+            try {
+                incomplete.remove(i); failed.remove(i)
+                val p = prepare(i)
+                if (p != null) send(i, p, true)
+                host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة")
+            } catch (e: Exception) {
+                failed[i] = MAX_FAILS
+                host.log("⚠ إعادة باتش ${i + 1} فشلت: " + (e.message ?: e.toString()).take(160))
+            } finally { inflight.remove(i); host.changed(); persist() }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /** اختيار لهجة التحويل. existing=true: بيحوّل كمان اللي اتترجم قبل كده */
+    fun setConvDialect(d: String, existing: Boolean) {
+        convDialect = d
+        if (d.isBlank() || d == "فصحى") return
+        if (existing) synchronized(lock) { subs = subs.map { it.copy(conv = false) } }
+        maybeConvert(true)
+    }
+    /** بيحوّل الجمل اللي لسه ما اتحوّلتش كل ~3 باتشات (أو الباقي لما الترجمة تهدى) على المفاتيح الاحتياطية */
+    fun maybeConvert(force: Boolean = false) {
+        val tgt = convDialect
+        if (tgt.isBlank() || tgt == "فصحى" || tgt == conf.lang) return
+        if (System.currentTimeMillis() - lastConvFail < 60_000) return
+        val todo = synchronized(lock) { subs.filter { !it.conv } }
+        if (todo.isEmpty()) return
+        val span = todo.maxOf { it.end } - todo.minOf { it.start }
+        if (!force && span < ch * 3 - 2) return
+        if (!convBusy.compareAndSet(false, true)) return
+        try { bg.submit { try { convertSubs(tgt) } finally { convBusy.set(false) } } } catch (_: Exception) { convBusy.set(false) }
+    }
+    private fun convertSubs(tgt: String): Int {
+        var changed = 0
+        val snap = synchronized(lock) { subs }
+        val idx = snap.indices.filter { !snap[it].conv }
+        if (idx.isEmpty()) return 0
+        val batches = idx.chunked(40)
+        host.log("🌐 تحويل ${idx.size} جملة للهجة $tgt…")
+        batches.forEachIndexed { bi, batch ->
+            if (!running) return@forEachIndexed
+            val list = JSONArray()
+            for (k in batch) { val s = snap[k]; list.put(JSONObject().put("idx", k).put("original", s.original).put("translated", s.translated).put("speaker_gender", s.gender).put("addressee_gender", s.addressee)) }
+            val prompt = "أنت محرر ترجمة محترف. الجمل دي مترجمة بالفصحى الحرفية. حوّل حقل translated في كل جملة للهجة $tgt الحقيقية (زي ما أهلها بيتكلموا فعلًا) مع الحفاظ الكامل على المعنى والأسماء والأرقام وجنس المتكلم speaker_gender والمخاطَب addressee_gender.\n" +
+                "- ماتدمجش ولا تقسّم جمل ولا تغيّر عددها أو ترتيبها. original للمرجع بس (لو الفصحى فيها غلط في المعنى صحّحه من original).\n" +
+                "- 🔴 لازم ترجّع كل الجمل (حتى لو الجملة أصلًا قريبة من اللهجة) بالصياغة النهائية باللهجة.\n" +
+                pb.dialectBlock(tgt) + "\nالجمل:\n$list\n\n" +
+                "أرجع JSON فقط: {\"rewrites\":[{\"idx\":0,\"translated\":\"النص باللهجة\"}]}"
+            try {
+                val r = bgCall(prompt, 8192, 0.3, true, bi)
+                val arr = (Parse.json(r.text) ?: throw BadReply("رد التحويل مش JSON")).optJSONArray("rewrites") ?: throw BadReply("رد التحويل من غير rewrites")
+                synchronized(lock) {
+                    val cur = subs.toMutableList(); val got = HashSet<Int>()
+                    for (q in 0 until arr.length()) {
+                        val c = arr.optJSONObject(q) ?: continue
+                        val ix = c.optInt("idx", -1); if (ix !in batch) continue
+                        val tr = c.optString("translated").trim(); if (tr.isEmpty()) continue
+                        val t = snap[ix]
+                        val at = cur.indexOfFirst { Math.abs(it.start - t.start) < 0.05 && it.original == t.original }
+                        if (at >= 0) { cur[at] = cur[at].copy(translated = tr, conv = true); got.add(ix); if (tr != t.translated) changed++ }
+                    }
+                    // اللي ما رجعش في الرد يفضل غير محوّل (هيتحاول تاني)، مش بيتعلّم
+                    subs = cur
+                }
+                host.changed()
+            } catch (e: Exception) { lastConvFail = System.currentTimeMillis(); host.log("⚠ التحويل للهجة فشل: " + (e.message ?: "").take(130)) }
+        }
+        if (changed > 0) { persist(); host.log("✅ اتحوّلت $changed جملة للهجة $tgt") }
+        return changed
     }
     fun chunkOfSec(sec: Double): Int { var i = 0; while (cStart(i + 1) <= sec) i++; return i }
     fun chunkStartSec(i: Int) = cStart(i)
@@ -210,6 +297,7 @@ class Engine(
                 val d = currentDur()
                 if (headless && d <= 0 && (failed[0] ?: 0) >= MAX_FAILS) { fatal = "معرفتش أفتح الفيديو أو أقرأ مدته"; host.log("⛔ " + fatal); host.status("⛔ " + fatal); running = false; break }
                 if (headless && !anyApplied && failedCount() >= 5) { fatal = "المقاطع بتفشل ورا بعض — راجع المفاتيح والنت"; host.log("⛔ " + fatal); host.status("⛔ " + fatal); running = false; break }
+                if (userPaused) { host.status("⏸ الترجمة واقفة مؤقتًا — دوس «إلغاء الإيقاف» تكمّل"); nap(300); continue }
                 if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
                 var c = if (headless) firstUndone(d) else (host.position() / ch).toInt().coerceAtLeast(0)
                 val fc = forcedCursor
@@ -241,6 +329,7 @@ class Engine(
                 if (headless && inflight.isEmpty() && gapBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
                     finished = true; host.status("✅ خلصت الترجمة"); break
                 }
+                if (inflight.isEmpty()) maybeConvert(true)
                 idleStatus(d)
                 nap(if (inflight.isEmpty()) 700 else 200)
             }
@@ -385,15 +474,18 @@ class Engine(
         return Prep(w, rawStart, rawEnd)
     }
 
-    private fun send(i: Int, p: Prep) {
+    private fun send(i: Int, p: Prep, backupFirst: Boolean = false) {
         val w = p.w; val rawStart = p.rawStart; val rawEnd = p.rawEnd
         val prior = subs
-        var key = pool.pick(null, rr.getAndIncrement()) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        fun nextKey(avoid: String?): String? = if (backupFirst) (pool.pickBackup(avoid) ?: pool.pick(avoid, rr.getAndIncrement())) else pool.pick(avoid, rr.getAndIncrement())
+        var key = nextKey(null) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        var partial = false
         var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
             val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0)
             try {
                 val r = Api.generate(conf.model, key, prompt, w.bytes)
+                if (r.finish == "MAX_TOKENS" && trunc >= 2) partial = true
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
                 if (r.finish.isNotEmpty() && r.finish != "STOP" && r.finish != "MAX_TOKENS") throw Exception("رد Gemini اتوقف: ${r.finish}")
                 var j: JSONObject? = null
@@ -409,12 +501,13 @@ class Engine(
                 if (fresh.isEmpty() && empties < (if (w.silent) 1 else 3)) {
                     empties++
                     if (!w.silent) host.log("⚠ المقطع ${i + 1} رجع من غير جمل رغم وجود صوت — إعادة محاولة ($empties/3)")
-                    pool.pick(key, rr.getAndIncrement())?.let { key = it }
+                    nextKey(key)?.let { key = it }
                     nap(400); continue
                 }
-                if (fresh.isEmpty() && !w.silent) host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة")
+                if (fresh.isEmpty() && !w.silent) { partial = true; host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة") }
                 pool.good(key)
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
+                if (partial) { incomplete.add(i); host.log("⚠ باتش ${i + 1} رجع ناقص — تقدر تعيده من علامة التحذير") }
                 return
             } catch (e: BadReply) {
                 if (bad++ < 2) { host.log("⚠ ${e.message} — إعادة المحاولة"); nap(600); continue }
@@ -423,17 +516,17 @@ class Engine(
                 val invalid = e.code == 403 || (e.code == 400 && (e.message ?: "").contains("API key", true))
                 if (e.code == 429) {
                     pool.block(key, 60_000)
-                    val alt = pool.pick(key, rr.getAndIncrement())
-                    if (alt != null) { host.log("⏳ 429 على ${pool.tail(key)} — تحويل لمفتاح ${pool.tail(alt)}"); key = alt; continue }
+                    val alt = nextKey(key)
+                    if (alt != null) { host.log("⏳ ${(e.message ?: "").take(130)} على ${pool.tail(key)} — تحويل لمفتاح ${pool.tail(alt)}"); key = alt; continue }
                     val s = pool.streakUp(); val wait = minOf(60, 10 * s)
-                    host.log("⏳ كل المفاتيح في كوتة — انتظار ${wait}ث"); nap(wait * 1000L)
+                    host.log("⏳ كل المفاتيح في كوتة (${(e.message ?: "").take(130)}) — انتظار ${wait}ث"); nap(wait * 1000L)
                     pool.clear(); continue
                 }
                 if (invalid) {
                     pool.block(key, 3_600_000)
-                    val alt = pool.pick(key, rr.getAndIncrement())
-                    if (alt != null) { host.log("🔑 مفتاح ${pool.tail(key)} غير صالح — تحويل"); key = alt; continue }
-                    throw Exception("مفتاح API غير صالح أو الموديل مش متاح")
+                    val alt = nextKey(key)
+                    if (alt != null) { host.log("🔑 ${(e.message ?: "").take(110)} — مفتاح ${pool.tail(key)} غير صالح — تحويل"); key = alt; continue }
+                    throw Exception("مفتاح API غير صالح أو الموديل مش متاح — ${(e.message ?: "").take(120)}")
                 }
                 if (e.code >= 500) { host.log("⚠ خطأ من السيرفر (${e.code}) — إعادة المحاولة"); nap(3000); continue }
                 throw e
@@ -495,13 +588,14 @@ class Engine(
             subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
         }
         done.add(rawStart, rawEnd)
-        failed.remove(i)
+        failed.remove(i); incomplete.remove(i)
         anyApplied = true
         host.changed()
         Stats.addSec(rawEnd - rawStart)
         host.log("✅ المقطع ${i + 1}: ${fresh.size} جملة — الإجمالي ${subs.size}")
         persist()
         afterChunk(w, fresh, prior)
+        maybeConvert(false)
     }
 
     private fun applyPrevCorrections(j: JSONObject) {
@@ -818,7 +912,7 @@ class Engine(
                 val ta = toks(a.translated); val tb = toks(b.translated)
                 val inter = ta.intersect(tb).size; val uni = ta.union(tb).size
                 val sim = if (uni == 0) 0.0 else inter.toDouble() / uni
-                if (ov > 0.3 && !(a.overlap && b.overlap && a.gender != b.gender) && (sim >= 0.7 || a.translated.contains(b.translated) || b.translated.contains(a.translated))) {
+                if (ov > 0.3 && a.faint == b.faint && !(a.overlap && b.overlap && a.gender != b.gender) && (sim >= 0.7 || a.translated.contains(b.translated) || b.translated.contains(a.translated))) {
                     val keep = if (b.translated.length >= a.translated.length) b else a
                     cur[i] = keep.copy(start = minOf(a.start, b.start), end = maxOf(a.end, b.end))
                     cur.removeAt(i + 1); removed++

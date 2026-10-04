@@ -13,7 +13,11 @@ data class Sub(
     val people: List<String>, val places: List<String>, val isSong: Boolean, val lowConf: Boolean,
     val chunk: Int = -1,
     val emotion: String = "", val overlap: Boolean = false, val speakerTag: String = "",
-    val isContinuation: Boolean = false, val pivot: String = ""
+    val isContinuation: Boolean = false, val pivot: String = "",
+    /** صوت خافت/همس/خلفية: بيتعرض فوق الكلام العادي */
+    val faint: Boolean = false,
+    /** اتحوّلت للهجة المختارة (التحويل التلقائي بعد الترجمة الحرفية) */
+    val conv: Boolean = false
 )
 
 data class Chr(val name: String, val gender: String, val role: String)
@@ -100,6 +104,9 @@ object Cfg {
         Stats.load = { p.getString("stats", "") ?: "" }
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
+        try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
+        // مرة واحدة: الثيم الأساسي بقى «MX أبيض وأزرق» (القديم لسه موجود في الإعدادات ← المظهر)
+        if (!p.getBoolean("theme_mx_v1", false)) p.edit().putString("theme", "mx").putBoolean("theme_mx_v1", true).apply()
     }
     /** هجرة لمرة واحدة: القيم النصية القديمة ("1" / "60") بتتحوّل لـ Boolean / Int. أسماء المفاتيح ما اتغيرتش. */
     private fun migrate() {
@@ -134,7 +141,7 @@ object Cfg {
         val (main, bk) = KeyModes.split(allMainKeys(), KeyModes.parse(str("keymodes")))
         return Conf(
             main, (keys("backup") + bk).distinct(), str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
-            str("lang", "مصري"), str("style", "حرفي"),
+            str("lang", "فصحى"), str("style", "حرفي"),
             int("chunk", 100).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
@@ -158,6 +165,49 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴🔴 علامات الترقيم هي أماكن القطع: ممنوع يبقى جوه حقل translated الواحد أكتر من جملة مفصولة بنقطة (.) أو ؟ أو ! أو …، وممنوع جزئين مفصولين بفاصلة (،) كل واحد ليه توقيت كلام مختلف. كل جملة بتنتهي بنقطة/؟/! = subtitle مستقل بتوقيته الفعلي (حتى لو المتحدث التاني هو اللي كمّلها بعد الأول مباشرة). وكل جزء بين فاصلتين = subtitle مستقل بتوقيت start/end الحقيقي بتاعه، بشرط يبقى كلمتين فأكتر (الكلمة الواحدة زي \"أيوه،\" بتتلزق في اللي بعدها). مثال غلط: {\"start\":3.0,\"end\":8.0,\"translated\":\"يعني حبر فقعات. آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. الصح: subtitle أول {\"start\":3.0,\"end\":4.6,\"translated\":\"يعني حبر فقعات.\"} وsubtitle تاني {\"start\":5.1,\"end\":8.0,\"translated\":\"آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. كل subtitle يختفي لما صوت صاحبه يخلص ويظهر اللي بعده لما صوت صاحبه يبدأ.\n" +
             "- 🔴 لو الكلام متصل من غير وقفة خالص، قسّم عند أقرب نهاية فكرة أو فاصلة. كل subtitle لازم يكون جملة أو عبارة مفهومة ومكتملة المعنى (ماتقطعش في نص عبارة ولا تسيب جملة ناقصة ولا تحذف أي كلمة من الكلام المسموع).\n" +
             "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرضهم كل واحد في سطر تحت التاني بلون مختلف.\n"
+
+        /** بلوكات إضافية على كل القوالب: تغطية كاملة، صوت خافت، فصل متحدثين، جودة ترجمة */
+        val EXTRA_BLOCK = "\n" +
+            "═══ التغطية الكاملة (إلزامي — ممنوع تفويت أي كلام) ═══\n" +
+            "- 🔴🔴 اسمع المقطع كله من أوله لآخره وسجّل كل كلمة منطوقة مهما كانت: كلام عالي أو واطي، همس، كلام بعيد أو في الخلفية، صوت من تليفزيون/راديو/تليفون/مكبّر صوت، مقاطعات قصيرة (\"أه\"، \"إيه؟\"، \"لا\")، تعليقات جانبية، وكلام بيتقال فوق موسيقى أو ضوضاء.\n" +
+            "- 🔴 ممنوع تتجاهل أي جزء لأنه خافت أو متداخل أو قصير أو لأن فيه موسيقى. لو سمعت كلام (حتى لو مش متأكد منه) اكتبه واحط low_confidence=true — ده أحسن بكتير من إنك تسيبه.\n" +
+            "- 🔴 قبل ما ترد: اعمل مراجعة أخيرة على المقطع من الأول للآخر وتأكد إن مفيش أي فجوة فيها كلام مسموع من غير subtitle (خصوصًا أول ثانيتين وآخر ثانيتين من المقطع وبعد كل وقفة طويلة). لو لقيت فجوة فيها صوت بشري ارجع اسمعها تاني وسجّلها.\n" +
+            "- ممنوع تلخّص أو تختصر أو تدمج جمل عشان توفّر. كل جملة منطوقة ليها subtitle خاص بيها وترجمتها كاملة.\n" +
+            "\n" +
+            "═══ الصوت الخافت / الهمس / كلام الخلفية ═══\n" +
+            "- أضف لكل subtitle حقل \"faint\" (true أو false).\n" +
+            "- faint=true لأي كلام صوته ضعيف بوضوح مقارنة بالكلام الأساسي في المشهد: همس، همهمة مفهومة، صوت بعيد في الخلفية، حد بيتكلم من غرفة تانية، تعليق جانبي بصوت واطي، صوت جهاز بعيد.\n" +
+            "- faint=false للكلام الأساسي الواضح العادي.\n" +
+            "- 🔴 الكلام الخافت لازم يتسجّل بنفس الدقة في original وtranslated (ماتسيبوش أبدًا). التطبيق هيعرض الخافت فوق والعادي تحته.\n" +
+            "- لو الصوت الخافت مفهوم جزئيًا اكتب اللي فهمته وحط low_confidence=true.\n" +
+            "- لو الكلام الخافت بيتقال في نفس وقت كلام أساسي: subtitle منفصل للخافت (faint=true وoverlap=true) وsubtitle منفصل للأساسي.\n" +
+            "\n" +
+            "═══ فصل المتحدثين ═══\n" +
+            "- 🔴 ممنوع subtitle واحد فيه كلام شخصين مختلفين، حتى لو بالتتابع وبدون وقفة. تغيّر المتحدث = subtitle جديد بتوقيته الفعلي. اعتمد على اختلاف الصوت (الطبقة، النبرة، الجنس، العمر) مش على علامات الترقيم بس.\n" +
+            "- أي سؤال وجواب (واحد بيسأل والتاني بيرد) لازم يتفصلوا في subtitle لكل واحد.\n" +
+            "- لو مش متأكد إن المتحدث اتغيّر: لو في أي اختلاف في الصوت افصل.\n" +
+            "- حقل gender في كل subtitle لازم يعبّر عن صاحب الجملة دي بالذات.\n" +
+            "\n" +
+            "═══ جودة الترجمة (مترجم محترف) ═══\n" +
+            "- 🔴 الدقة أولًا: انقل المعنى كاملًا وبدقة. ماتضيفش ولا تحذف ولا تخمّن معلومة مش موجودة في الكلام. كل رقم واسم وتاريخ ووحدة قياس تتنقل صح.\n" +
+            "- افهم المقصود قبل الترجمة: العبارات الاصطلاحية والأمثال والسخرية والمجاز ماتتترجمش كلمة بكلمة. ترجم المعنى بما يقابله طبيعيًا في اللغة الهدف مع الحفاظ على نبرة المتحدث (رسمي/ساخر/غاضب/حنون).\n" +
+            "- اختار المعنى الصح للكلمة متعددة المعاني حسب السياق والمشهد، مش أول معنى بيخطر على بالك.\n" +
+            "- صياغة عربية سليمة وطبيعية: جملة مفهومة تتقري بسهولة، من غير تركيب أجنبي ولا ترجمة آلية ولا كلمات ناقصة.\n" +
+            "- ثبّت ترجمة نفس الاسم/المصطلح في كل المقطع وبنفس الكتابة العربية.\n" +
+            "- استخدم السياق السابق وجدول الشخصيات في تحديد الضمائر (هو/هي/هم) والمخاطَب.\n" +
+            "- ماتكرّرش الجملة ولا تنسخ الأصل. راجع كل subtitle قبل الرد: هل المعنى مطابق للمسموع؟ هل العربية سليمة؟ هل المتحدث صح؟\n"
+    }
+
+    /** قواعد اللهجة/الفصحى: بتتحط في آخر الـ prompt (أقوى مكان) */
+    fun dialectBlock(lang: String): String = when (lang) {
+        "فصحى" -> "\n═══ أسلوب الفصحى ═══\n- ترجمة حرفية أمينة بالعربية الفصحى المعاصرة السليمة نحويًا، قريبة من نص الكلام الأصلي ومعناه، بدون أي لفظ عامي أو لهجة، وبدون إعادة صياغة حرة.\n"
+        "مصري" -> "\n═══ قواعد اللهجة المصرية (إلزامي) ═══\n" +
+            "- 🔴🔴 كل translated لازم يبقى بالمصري الصرف زي ما مصري حقيقي بيتكلم في الشارع — مش فصحى مبسطة ومش فصحى فيها كلمتين عامية.\n" +
+            "- ممنوع الألفاظ الفصحى اللي المصريين مابيقولوهاش: لقد، سوف، لماذا، ماذا، هذا/هذه/هؤلاء، هناك، الآن، أريد، كيف، أين، متى، الذي/التي، لكن، سوى، حيث، يجب أن، أستطيع.\n" +
+            "- استعمل بدالها: ده/دي/دول، إيه، ليه، إزاي، فين، إمتى، مين، اللي، بس، عايز/عايزة، مش، مفيش، لسه، دلوقتي، كده، عشان/علشان، أوي، خالص، برضه، لازم، أقدر.\n" +
+            "- الأفعال بالتصريف المصري: المضارع بـ\"ب\" (بيقول، بتعمل، بنروح)، المستقبل بـ\"ه\" (هعمل، هنروح)، النفي بـ\"ما…ش\" (ماعرفش، مشفتهوش)، والأمر بالمصري (قول، تعالى، خليك).\n" +
+            "- حافظ على الأسلوب المحدد (حرفي/شعبي/جرئ/+18) بس بالمصري، وماتغيّرش المعنى.\n"
+        else -> "\n═══ قواعد اللهجة ($lang) (إلزامي) ═══\n- 🔴 كل translated لازم يبقى بلهجة $lang الحقيقية زي ما أهلها بيتكلموا فعلًا: مفردات وتعبيرات وتصريفات اللهجة، مش فصحى ولا مصري. ممنوع الفصحى الرسمية إلا لو الكلام الأصلي رسمي فعلًا.\n- حافظ على الأسلوب المحدد وماتغيّرش المعنى.\n"
     }
 
     /** قفل لغة الإخراج: بيتحط آخر الـ prompt دايمًا (بالعربي) مهما كانت لغة القالب أو لغة الصوت */
@@ -167,6 +217,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴🔴 حقل translated في كل subtitle لازم يتكتب بـ$target وبالحروف العربية فقط. ممنوع تسيب جملة بلغتها الأصلية، وممنوع الإنجليزي، وممنوع تنسخ النص الأصلي في translated — حتى لو الجملة قصيرة أو غناء أو اسم أو كلمة واحدة (الأسماء تتكتب بحروف عربية).\n" +
             "- حقل original بس هو اللي بيتكتب بلغة الصوت الأصلية (وtranslated_en_pivot للإنجليزي). translated ما بيبقاش أبدًا بلغة الصوت الأصلية ولا بالإنجليزي.\n" +
             "- لغة الترجمة النهائية ثابتة ($target) مهما كانت لغة التعليمات اللي فوق أو لغة الصوت أو لغة المقاطع اللي قبل كده.\n"
+        t += dialectBlock(c.lang)
         if (strict) t += "- ⚠⚠ الرد اللي فات فيه جمل في translated مش بالعربي. راجع كل subtitle قبل ما ترد وتأكد إن كل translated عربي بـ$target.\n"
         return t
     }
@@ -223,7 +274,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + glossBlock + tailFinal + langLock(c, strict))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + glossBlock + tailFinal + langLock(c, strict))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -251,6 +302,7 @@ class Pool(private val c: Conf) {
         watchers.firstOrNull { it != avoid && ok(it) }?.let { return it }
         return c.backup.firstOrNull { it != avoid && ok(it) }
     }
+    @Synchronized fun pickBackup(avoid: String?): String? = c.backup.firstOrNull { it != avoid && ok(it) }
     /** مفتاح لسدّ فجوة: المراقبين، بعدين الاحتياطي، بعدين الأساسي — من غير المفاتيح المشغولة */
     @Synchronized fun gapKey(busy: Set<String>, rr: Int): String? {
         val pref = (watchers + c.backup + mains).distinct().filter { it !in busy && ok(it) }
@@ -282,7 +334,7 @@ object Quota {
     @Synchronized fun used(model: String, now: Long = System.currentTimeMillis()): Int = read(now).getJSONObject("m").optInt(model, 0)
 }
 
-class ApiErr(val code: Int, msg: String) : Exception(msg)
+class ApiErr(val code: Int, val raw: String) : Exception("[$code] $raw")
 class Unsupported(msg: String) : Exception(msg)
 
 object Api {
@@ -303,10 +355,10 @@ object Api {
         val body = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}},{\"text\":" + JSONObject.quote(prompt) + "}]}]," +
             "\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp,\"responseMimeType\":\"application/json\"},\"safetySettings\":[$SAFETY]}"
         val bytes = body.toByteArray(Charsets.UTF_8)
-        val c = URL("$base/models/$model:generateContent?key=$key").openConnection() as HttpURLConnection
+        val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 60000
-            c.setRequestProperty("Content-Type", "application/json"); c.setFixedLengthStreamingMode(bytes.size)
+            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-goog-api-key", key); c.setFixedLengthStreamingMode(bytes.size)
             c.outputStream.use { it.write(bytes) }
             val code = c.responseCode
             val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
@@ -333,10 +385,10 @@ object Api {
         val b64Len = if (wav != null) ((wav.size + 2) / 3).toLong() * 4 else 0L
         val total = hb.size + b64Len + mb.size
 
-        val c = URL("$base/models/$model:generateContent?key=$key").openConnection() as HttpURLConnection
+        val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 90000
-            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-goog-api-key", key)
             c.setFixedLengthStreamingMode(total)
             c.outputStream.use { os ->
                 os.write(hb)
@@ -408,7 +460,8 @@ object Parse {
             orig, tr, if (s.optString("gender") == "female") "female" else "male", ad, tg,
             strs(s.optJSONArray("people")), strs(s.optJSONArray("places")), s.optBoolean("is_song", false), s.optBoolean("low_confidence", false), -1,
             s.optString("emotion").trim().lowercase(), s.optBoolean("overlap", false), s.optString("speaker_tag").trim(),
-            s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim()
+            s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
+            s.optBoolean("faint", false)
         )
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
@@ -472,7 +525,7 @@ object Subs {
                 val overlaps = cur.start < prev.end - 0.15 && cur.end > prev.start - 0.15
                 val similar = norm(cur.original) == norm(prev.original) ||
                     (cur.translated.isNotEmpty() && prev.translated.isNotEmpty() && norm(cur.translated) == norm(prev.translated))
-                if (overlaps && similar) { res[res.size - back] = cur; merged = true; break }
+                if (overlaps && similar && cur.faint == prev.faint) { res[res.size - back] = cur; merged = true; break }
                 back++
             }
             if (!merged) res.add(cur)

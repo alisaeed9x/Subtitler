@@ -39,7 +39,7 @@ class Store(private val dir: File, key: String) {
         .put("g", s.gender).put("a", s.addressee).put("tg", s.topicGender)
         .put("p", JSONArray(s.people)).put("pl", JSONArray(s.places))
         .put("song", s.isSong).put("low", s.lowConf).put("c", s.chunk)
-        .put("emo", s.emotion).put("ov", s.overlap).put("spk", s.speakerTag).put("cont", s.isContinuation).put("piv", s.pivot)
+        .put("emo", s.emotion).put("ov", s.overlap).put("spk", s.speakerTag).put("cont", s.isContinuation).put("piv", s.pivot).put("fa", s.faint).put("cv", s.conv)
 
     private fun strs(a: JSONArray?): List<String> = (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
 
@@ -47,7 +47,7 @@ class Store(private val dir: File, key: String) {
         o.optDouble("s"), o.optDouble("e"), o.optString("o"), o.optString("t"),
         o.optString("g", "male"), o.optString("a", "unknown"), o.optString("tg", "none"),
         strs(o.optJSONArray("p")), strs(o.optJSONArray("pl")), o.optBoolean("song"), o.optBoolean("low"), o.optInt("c", -1),
-        o.optString("emo"), o.optBoolean("ov"), o.optString("spk"), o.optBoolean("cont"), o.optString("piv")
+        o.optString("emo"), o.optBoolean("ov"), o.optString("spk"), o.optBoolean("cont"), o.optString("piv"), o.optBoolean("fa"), o.optBoolean("cv")
     )
 
     private fun ranges(l: List<DoubleArray>): JSONArray {

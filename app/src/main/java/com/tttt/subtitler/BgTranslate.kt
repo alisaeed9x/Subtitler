@@ -289,6 +289,7 @@ class BgService : Service() {
             if (uri == null && u != null && u.contains(".m3u8", true)) HlsSource(app, u, job.hdr, conf.audioTrack, lg) else FileSource(app, uri, u, job.hdr, conf.audioTrack, lg)
         }, store, host, pb)
         engine.headless = true
+        engine.convDialect = Cfg.str("conv_dialect", "")
         job.engine = engine
         var ok = false
         engine.onFinished = { r -> ok = r }

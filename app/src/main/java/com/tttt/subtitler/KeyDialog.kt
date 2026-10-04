@@ -14,18 +14,22 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
-private val KEY_RE = Regex("AIza[0-9A-Za-z_\\-]{30,}")
+// مفاتيح جوجل: القديم AIza… والجديد (AI Studio دلوقتي) AQ.… وفيه نقط وشرطات
+private val KEY_RE = Regex("AIza[0-9A-Za-z_\\-]{30,}|AQ\\.[0-9A-Za-z_.\\-]{20,}")
 
-/** أول مفتاح Gemini (AIza…) موجود في الكليبورد، أو null */
+/** أول مفتاح Gemini (AIza… أو AQ.…) جوه نص، أو null */
+fun findGeminiKey(t: String): String? = KEY_RE.find(t)?.value?.trimEnd('.')
+
+/** أول مفتاح Gemini (AIza… أو AQ.…) موجود في الكليبورد، أو null */
 fun Activity.clipboardKey(): String? = try {
     val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
     val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
-    KEY_RE.find(t)?.value
+    findGeminiKey(t)
 } catch (_: Exception) { null }
 
 /** شاشة «إزاي أجيب مفتاح Gemini؟»: خطوات + زرار يفتح Google AI Studio + زرار يلصق المفتاح من الكليبورد */
 fun Activity.showKeyGuide(onKey: (String) -> Unit) {
-    val th = Themes.byId(Cfg.str("theme", "default")); val ui = Ui(this, th)
+    val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
     val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var auto = false
     val box = LinearLayout(this).apply {
@@ -38,7 +42,7 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
         "١) دوس «🌐 افتح صفحة المفتاح هنا» تحت وسجّل دخول بحساب جوجل بتاعك.",
         "٢) لو طلب منك توافق على الشروط، وافق.",
         "٣) دوس على Create API key (لو سألك عن مشروع، اختار «مشروع جديد» أو أي مشروع موجود).",
-        "٤) دوس على أيقونة النسخ جنب المفتاح (اللي بيبدأ بـ AIza) — البرنامج هيلقطه ويحفظه لوحده وتقفل الصفحة.",
+        "٤) دوس على أيقونة النسخ جنب المفتاح (اللي بيبدأ بـ AQ. أو AIza) — البرنامج هيلقطه ويحفظه لوحده وتقفل الصفحة.",
         "لو جوجل رفضت تسجيل الدخول جوه البرنامج، دوس «Chrome» فوق في الصفحة (أو الزرار اللي تحت) وانسخ المفتاح من هناك وارجع."
     )
     for (s in steps) box.addView(ui.text(s, 13f, th.text).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)) })
@@ -49,7 +53,7 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     }
     fun paste() {
         val k = clipboardKey()
-        if (k == null) Toast.makeText(this, "مفيش مفتاح (بيبدأ بـ AIza) في الكليبورد — انسخه الأول", Toast.LENGTH_LONG).show()
+        if (k == null) Toast.makeText(this, "مفيش مفتاح (بيبدأ بـ AQ. أو AIza) في الكليبورد — انسخه الأول", Toast.LENGTH_LONG).show()
         else { onKey(k); Toast.makeText(this, "✓ اتحط المفتاح", Toast.LENGTH_SHORT).show(); d.dismiss() }
     }
     box.addView(pill("🌐 افتح صفحة المفتاح هنا (جوه البرنامج)", th.primary, Color.BLACK) {
@@ -73,8 +77,9 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
 /** لو مفيش أي مفتاح Gemini متسجّل: نافذة منبثقة تطلب المفتاح (+ لإضافة شريط مفتاح جديد). بعد الحفظ أو "بعدين" بينفّذ onDone */
 fun Activity.ensureKeys(onDone: () -> Unit) {
     Cfg.init(this)
+    KeyVault.restore(this, "kv_full"); KeyVault.save(this)   // بعد ما الصلاحيات تتمنح: استرجاع من النسخة المخفية لو متثبّت من جديد
     if (Cfg.keys("keys").isNotEmpty() || Cfg.keys("backup").isNotEmpty() || Cfg.keys("extra").isNotEmpty()) { onDone(); return }
-    val th = Themes.byId(Cfg.str("theme", "default")); val ui = Ui(this, th)
+    val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
     val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var finished = false
     fun done() { if (!finished) { finished = true; onDone() } }

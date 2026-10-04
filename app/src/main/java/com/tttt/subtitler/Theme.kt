@@ -12,6 +12,8 @@ class Theme(val id: String, val name: String, val bg: Int, val surface: Int, val
 
 object Themes {
     val all: List<Theme> = listOf(
+        // أبيض وأزرق زي MX Player — الثيم الأساسي
+        Theme("mx", "MX أبيض وأزرق", 0xFFFFFFFF.toInt(), 0xFFF3F5F8.toInt(), 0xFFFFFFFF.toInt(), 0xFFE3E8EF.toInt(), 0xFF2196F3.toInt(), 0xFF1565C0.toInt(), 0xFF1B1F27.toInt(), 0xFF6B7280.toInt(), 0xFFE53935.toInt(), 0xFF2E7D32.toInt()),
         Theme("default", "افتراضي (غرفة تحكم)", 0xFF0B0E11.toInt(), 0xFF12161B.toInt(), 0xFF1A1F26.toInt(), 0xFF262D36.toInt(), 0xFFF5A623.toInt(), 0xFF43C6D0.toInt(), 0xFFECEFF2.toInt(), 0xFF7C8591.toInt(), 0xFFE85C5C.toInt(), 0xFF4FD1A5.toInt()),
         Theme("amoled", "أموليد", 0xFF000000.toInt(), 0xFF000000.toInt(), 0xFF0A0A0A.toInt(), 0xFF1E1E1E.toInt(), 0xFFF5A623.toInt(), 0xFF43C6D0.toInt(), 0xFFECEFF2.toInt(), 0xFF7C8591.toInt(), 0xFFE85C5C.toInt(), 0xFF4FD1A5.toInt()),
         Theme("light", "فاتح", 0xFFF5F6F8.toInt(), 0xFFFFFFFF.toInt(), 0xFFFFFFFF.toInt(), 0xFFE1E4EA.toInt(), 0xFFE08E1D.toInt(), 0xFF1596A0.toInt(), 0xFF1B1F27.toInt(), 0xFF6B7280.toInt(), 0xFFD64545.toInt(), 0xFF1E9E75.toInt()),
@@ -24,5 +26,5 @@ object Themes {
         Theme("infinix", "إنفينكس", 0xFF121214.toInt(), 0xFF1B1B1F.toInt(), 0xFF232327.toInt(), 0xFF333338.toInt(), 0xFFFF5722.toInt(), 0xFFFFA000.toInt(), 0xFFF5F5F7.toInt(), 0xFF96969C.toInt(), 0xFFFF3B30.toInt(), 0xFF34C759.toInt()),
         Theme("winxp", "ويندوز XP", 0xFFECE9D8.toInt(), 0xFFECE9D8.toInt(), 0xFFFFFFFF.toInt(), 0xFF7F9DB9.toInt(), 0xFF2A66C8.toInt(), 0xFF3C9C3C.toInt(), 0xFF000000.toInt(), 0xFF4A4A4A.toInt(), 0xFFC83232.toInt(), 0xFF3C9C3C.toInt())
     )
-    fun byId(id: String?): Theme = all.firstOrNull { it.id == id } ?: all[0]
+    fun byId(id: String?): Theme = all.firstOrNull { it.id == id } ?: all[0]   // all[0] = mx
 }
