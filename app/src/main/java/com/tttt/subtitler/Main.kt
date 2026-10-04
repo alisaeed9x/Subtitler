@@ -55,6 +55,8 @@ class MainActivity : Activity() {
     private var libUi: LibraryUi? = null
     private var mediaOps: MediaOps? = null
     private var queueUi: QueueUi? = null
+    private var lockUi: LockUi? = null
+    private var stoppedAt = 0L
     private var keyLoadersRef: List<() -> Unit> = emptyList()
     private var permDone: (() -> Unit)? = null
     private var scanFn: () -> Unit = {}
@@ -232,24 +234,64 @@ class MainActivity : Activity() {
             modelChipTv.text = "▾ " + mid.removePrefix("gemini-") + " ●"
         }
         val sp = styleParts(ui, th)
+        var settingsDlg0: TabbedDialog? = null; var qui0: QueueUi? = null
+        val lk = LockUi(this, ui, th); lockUi = lk
+        val lockStatus = ui.text("", 13f, th.text)
+        lateinit var bioBtn: android.widget.Button
+        fun refreshLock() {
+            lockStatus.text = if (lk.isSet) "🔒 القفل شغّال (نمط" + (if (lk.bioOn) " + بصمة" else "") + ")" else "🔓 مفيش قفل لسه — بيتعمل أول مرة تفتح المخفي"
+            bioBtn.text = if (!lk.bioAvailable) "👆 البصمة: مش متاحة على جهازك" else if (lk.bioOn) "👆 فتح بالبصمة: مفعّل (اضغط للإيقاف)" else "👆 فتح بالبصمة: مقفول (اضغط للتفعيل)"
+            bioBtn.alpha = if (lk.isSet && lk.bioAvailable) 1f else 0.5f
+        }
+        bioBtn = ui.button("") {
+            if (!lk.isSet) Toast.makeText(this, "اعمل نمط الأول", Toast.LENGTH_SHORT).show()
+            else if (lk.bioOn) { lk.disableBio(); refreshLock() } else lk.enableBio { refreshLock() }
+        }
+        refreshLock()
+        fun fl(vararg k: String): Array<View> = k.map { key -> flagViews[flags.keys.indexOf(key)] }.toTypedArray()
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
-            TabDef("fonts", "🔤 الخطوط", sp.fonts, true),
-            TabDef("anim", "✨ الأنيميشن", sp.anim, true),
-            TabDef("look", "🎬 العرض والألوان", sp.look, true),
-            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss))),
+            TabDef("fonts", "🔤 الخطوط", sp.fonts, true, "نوع الخط ونمطه وحجم الترجمة"),
+            TabDef("anim", "✨ الأنيميشن", sp.anim, true, "حركة ظهور الترجمة وسرعتها"),
+            TabDef("look", "🎬 العرض والألوان", sp.look, true, "وضع العرض · اللون · تقسيم الجمل · الخلفية"),
             TabDef("general", "🌐 اللهجة والأسلوب", listOf<View>(
-                ui.text("اللهجة", 13f, th.muted), ui.chips(langs, { lang }) { lang = it },
-                ui.text("أسلوب الترجمة", 13f, th.muted), ui.chips(styles, { style }) { style = it })),
-            TabDef("keys", "🔑 المفاتيح", listOf<View>(ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
-                showKeyGuide { k ->
-                    val cur = keys.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
-                    if (k !in cur) { keys.setText((cur + k).joinToString("\n")); keyLoaders.forEach { it() } }
-                    Cfg.p.edit().putString("keys", keys.text.toString()).apply()
-                }
-            }, ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() }, keysUi, backupUi, extraUi, ui.text("أوضاع المفاتيح (الأساسية + الإضافية):", 13f, th.muted), modesBox, modesBtn)),
-            TabDef("model", "🤖 الموديل", listOf<View>(modelChips, model, modelDesc)),
-            TabDef("engine", "⏱ المحرك", listOf<View>(chunk, parallelRow, ahead, atrack) + flagViews),
-            TabDef("theme", "🎨 المظهر", listOf<View>(themeChips))
+                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it }),
+                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it })), false, "لهجة الترجمة وأسلوبها"),
+            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
+            TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
+                ui.section("🤖 الموديل", true, modelChips, model, modelDesc),
+                ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, atrack),
+                ui.section("🔊 الصوت والتوقيت", false, *fl("vad", "strim", "hitiming")),
+                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
+                ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
+            TabDef("keys", "🔑 المفاتيح", listOf<View>(
+                ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
+                    showKeyGuide { k ->
+                        val cur = keys.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
+                        if (k !in cur) { keys.setText((cur + k).joinToString("\n")); keyLoaders.forEach { it() } }
+                        Cfg.p.edit().putString("keys", keys.text.toString()).apply()
+                    }
+                },
+                ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() },
+                ui.section("🔑 الأساسية", true, keysUi),
+                ui.section("🛟 الاحتياطية", false, backupUi),
+                ui.section("➕ الإضافية", false, extraUi),
+                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
+            TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
+                ui.section("▶ التشغيل", true,
+                    ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
+                    ui.text("الطابور بيتحفظ، وبيكمّل حتى لو قفلت البرنامج أو مسحته من الأخيرة. الفيديو اللي فوق في «مجلد الترجمة في الخلفية» بيترجم الأول.", 12f, th.muted),
+                    ui.button("📋 افتح مجلد الترجمة في الخلفية") { settingsDlg0?.dialog?.dismiss(); qui0?.show() }),
+                ui.section("🔋 عشان الجهاز ما يقتلش الخدمة", true,
+                    ui.text("أجهزة شاومي / أوبو / فيفو / سامسونج / هواوي بتقتل الخدمات الخلفية. اعمل الخطوتين دول مرة واحدة:", 12f, th.muted),
+                    ui.button("1) استثناء من توفير البطارية") { requestBatteryExemption() },
+                    ui.button("2) السماح بالتشغيل التلقائي / الخلفية للتطبيق") { openAutoStartSettings() },
+                    ui.text("وكمان: في قايمة التطبيقات الأخيرة اعمل «قفل 🔒» للتطبيق لو جهازك فيه الخيار ده.", 12f, th.muted))), false, "استمرار الترجمة بعد قفل البرنامج · التشغيل التلقائي · استثناء البطارية"),
+            TabDef("sec", "🔒 الأمان", listOf<View>(lockStatus,
+                ui.text("القفل بيحمي المجلد المخفي. لفتحه: اسحب لتحت في قايمة الفيديوهات وكمّل السحب لحد 🔒 وسيب.", 12f, th.muted),
+                ui.button("🔑 تعيين / تغيير النمط") { lk.change { refreshLock() } }, bioBtn,
+                ui.button("🗑 إزالة القفل") { lk.remove { refreshLock() } },
+                ui.text("البصمة بتتحقق من بصمات جهازك المسجّلة في إعدادات الأندرويد (التطبيق مابيخزّنش بصمتك). لو نسيت النمط: «نسيت النمط؟» بيطلب قفل شاشة الجهاز.", 12f, th.muted)), false, "نمط وبصمة للمجلد المخفي"),
+            TabDef("theme", "🎨 المظهر", listOf<View>(themeChips), false, "ثيم البرنامج")
         ), sp.holder) { save(); refreshChip(); if (fromPlayer) finish() }
         // رابط مباشر + المحفوظة (نافذة سفلية): حقل الرابط بيتحط هنا
         link.hint = "رابط الفيديو (MP4 / M3U8 ...)"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR
@@ -296,10 +338,13 @@ class MainActivity : Activity() {
         lib.onShare = { v -> ops.share(v) }
         lib.onDelete = { v -> ops.delete(v) }
         lib.onDetails = { v -> ops.details(v, Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }).firstOrNull { it.id == v.videoId }) }
-        val qui = QueueUi(this, ui, th); queueUi = qui
+        val qui = QueueUi(this, ui, th); queueUi = qui; qui0 = qui; settingsDlg0 = settingsDlg
+        // رجّع الطابور المحفوظ (لو التطبيق اتقفل/اتمسح) وكمّل الترجمة
+        if (!fromPlayer && BgJobs.restore(this) > 0) { BgService.start(this); libUi?.refreshRows() }
         lib.onQueue = { qui.show() }
         BgJobs.onChange = { runOnUiThread { if (!isDestroyed) { libUi?.refreshRows(); if (qui.showing) qui.refresh() } } }
-        lib.onSettings = { settingsDlg.show("keys") }
+        lib.gate = { open -> lk.gate(open) }
+        lib.onSettings = { settingsDlg.show() }
         lib.onLink = { recentDlg?.show() }
         lib.onPick = { save(); pickVideo() }
         lib.onGrant = { requestPermissions(arrayOf(VideoScan.permission()), 11) }
@@ -375,13 +420,20 @@ class MainActivity : Activity() {
             slider("سرعة الأنيميشن", "sub_aspeed", 250, 50, 600, "ms")
         )
         val lookV = listOf<View>(
-            ui.text("وضع العرض", 13f, th.muted), ui.chips(dualNames, { dualNames[st().dual] }) { put("sub_dual", dualNames.indexOf(it).toString()) },
-            sw("نص أبيض عادي بحجم ثابت (بدون ألوان الجنس والأسماء وكلمة التأكيد والتكبير التلقائي)", "sub_plain", false),
-            sw("لون نص موحّد", "sub_uni_on", false),
-            ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) },
-            sw("قسّم الجملة عند النقطة والفاصلة (كل جزء يظهر في وقته ويختفي)", "sub_punct", true),
-            sw("تقسيم الجمل الطويلة لأجزاء بالتتابع (تقدير بعدد الكلمات — جيميناي بيقسّم عند الوقفات أصلًا)", "sub_split_on", false), slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, ""),
-            sw("إخفاء الخلفية", "sub_nobg", false), slider("غمقان الخلفية (0 = شفافة)", "sub_bgopa", 45, 0, 100, "%"), slider("نعومة حواف الخلفية (blur) — 0 = بدون", "sub_blur", 0, 0, 20, "")
+            ui.section("🎬 وضع العرض", true,
+                ui.chips(dualNames, { dualNames[st().dual] }) { put("sub_dual", dualNames.indexOf(it).toString()) },
+                sw("نص أبيض عادي بحجم ثابت (بدون ألوان الجنس والأسماء وكلمة التأكيد والتكبير التلقائي)", "sub_plain", false)),
+            ui.section("🎨 اللون", false,
+                sw("لون نص موحّد", "sub_uni_on", false),
+                ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) }),
+            ui.section("✂️ تقسيم الجمل", false,
+                sw("قسّم الجملة عند النقطة والفاصلة (كل جزء يظهر في وقته ويختفي)", "sub_punct", true),
+                sw("تقسيم الجمل الطويلة لأجزاء بالتتابع (تقدير بعدد الكلمات — جيميناي بيقسّم عند الوقفات أصلًا)", "sub_split_on", false),
+                slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, "")),
+            ui.section("🌫 الخلفية", false,
+                sw("إخفاء الخلفية", "sub_nobg", false),
+                slider("غمقان الخلفية (0 = شفافة)", "sub_bgopa", 45, 0, 100, "%"),
+                slider("نعومة حواف الخلفية (blur) — 0 = بدون", "sub_blur", 0, 0, 20, ""))
         )
         prev.style = st(); holder.post { showDemo() }
         return StyleParts(holder, fontsV, animV, lookV)
@@ -441,6 +493,34 @@ class MainActivity : Activity() {
         val d = permDone; permDone = null; d?.invoke()
     }
 
+    fun requestBatteryExemption() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) { Toast.makeText(this, "✅ الاستثناء شغّال بالفعل", Toast.LENGTH_SHORT).show(); return }
+            startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (_: Exception) {
+            try { startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) {}
+        }
+    }
+    /** صفحة «التشغيل التلقائي» عند الشركات اللي بتقتل الخلفية؛ لو مش لاقيها بيفتح إعدادات التطبيق */
+    fun openAutoStartSettings() {
+        val c = listOf(
+            "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+            "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.BatteryActivity",
+            "com.transsion.phonemanager" to "com.itel.autobootmanager.activity.AutoBootMgrActivity"
+        )
+        for ((pkg, cls) in c) {
+            try { startActivity(Intent().setClassName(pkg, cls)); return } catch (_: Exception) {}
+        }
+        Toast.makeText(this, "مفيش صفحة مخصوصة لجهازك — هفتحلك إعدادات التطبيق: فعّل «التشغيل التلقائي» و«بدون قيود» للبطارية", Toast.LENGTH_LONG).show()
+        try { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+    }
+
     fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
     /** landscape: الفيديو من الجهاز بيفتح لاندسكيب مباشرة (زي MX) إلا لو معروف إنه طولي */
     fun play(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false) {
@@ -477,6 +557,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
         super.onActivityResult(r, c, d)
+        if (lockUi?.onResult(r, c == RESULT_OK) == true) return
         if (mediaOps?.onResult(r, c == RESULT_OK) == true) return
         if (r == 14) { nextPerm(); return }
         if (r == 1 && c == RESULT_OK) d?.data?.let { try { contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}; play("", it) }
@@ -492,10 +573,14 @@ class MainActivity : Activity() {
             try { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
         }
     }
+    override fun onStop() { super.onStop(); stoppedAt = System.currentTimeMillis() }
     override fun onResume() {
         super.onResume()
         // الرجوع من المشغّل أو من إعدادات الإذن: حدّث العرض (تقدم الترجمة) أو أعد الفحص
         if (!fromPlayer) CrashLog.showIfAny(this)
+        // المخفي بيتقفل تاني لو التطبيق قعد في الخلفية أكتر من دقيقة
+        if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
+        stoppedAt = 0L
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
     }
     @Suppress("DEPRECATION")

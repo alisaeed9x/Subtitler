@@ -16,6 +16,8 @@ import android.os.PowerManager
 import android.provider.OpenableColumns
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** مهمة ترجمة في الخلفية لفيديو واحد (من غير مشغّل). التقدم بيتحفظ في نفس ملف الـ progress بتاع المشغّل، فاللي اترجم بيتكمّل. */
 class BgJob(val vid: String, val title: String, val uri: String?, val url: String?, val hdr: Map<String, String>) {
@@ -27,6 +29,8 @@ class BgJob(val vid: String, val title: String, val uri: String?, val url: Strin
     @Volatile var err = ""
     @Volatile var srt = ""
     @Volatile var stopReq = false
+    /** وقف مؤقت عشان فيديو تاني يبدأ الأول: الفيديو ده يرجع للطابور بعده بدل ما يتحسب «اتوقف» */
+    @Volatile var requeue = false
     @Volatile var paused = false
     @Volatile var engine: Engine? = null
     val active: Boolean get() = state == "queued" || state == "running"
@@ -35,7 +39,56 @@ class BgJob(val vid: String, val title: String, val uri: String?, val url: Strin
 object BgJobs {
     val jobs = CopyOnWriteArrayList<BgJob>()
     @Volatile var onChange: (() -> Unit)? = null
-    fun notifyChange() { try { onChange?.invoke() } catch (_: Exception) {} }
+    fun notifyChange() { try { onChange?.invoke() } catch (_: Exception) {}; persist() }
+
+    // ===== الطابور بيتحفظ في filesDir/bg_queue.json (الشغّال والمستني بس) عشان يكمّل بعد قفل البرنامج/إعادة تشغيل الجهاز =====
+    @Volatile private var app: Context? = null
+    private var lastSig = ""
+    private var restored = false
+    private fun qFile(c: Context) = File(c.filesDir, "bg_queue.json")
+    private fun sigOf(l: List<BgJob>) = l.joinToString("|") { it.vid + ":" + it.paused }
+    @Synchronized fun persist() {
+        val c = app ?: return
+        val act = jobs.filter { it.active }
+        val sig = sigOf(act)
+        if (sig == lastSig) return
+        lastSig = sig
+        try {
+            val arr = JSONArray()
+            act.forEach { j ->
+                arr.put(JSONObject().put("vid", j.vid).put("title", j.title).put("uri", j.uri ?: JSONObject.NULL).put("url", j.url ?: JSONObject.NULL)
+                    .put("hdr", JSONObject(j.hdr as Map<*, *>)).put("paused", j.paused))
+            }
+            qFile(c).writeText(arr.toString())
+        } catch (_: Exception) {}
+    }
+    /** بيرجّع الطابور المحفوظ (مرة واحدة في كل عملية). بيرجّع عدد المهام المستنية/الشغالة */
+    @Synchronized fun restore(ctx: Context): Int {
+        val c = ctx.applicationContext
+        app = c
+        if (!restored) {
+            restored = true
+            try {
+                val f = qFile(c)
+                if (f.exists()) {
+                    val arr = JSONArray(f.readText())
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val vid = o.getString("vid")
+                        if (jobs.any { it.vid == vid && it.active }) continue
+                        val hdr = HashMap<String, String>()
+                        o.optJSONObject("hdr")?.let { h -> h.keys().forEach { k -> hdr[k] = h.optString(k) } }
+                        val j = BgJob(vid, o.optString("title", vid), if (o.isNull("uri")) null else o.optString("uri"), if (o.isNull("url")) null else o.optString("url"), hdr)
+                        j.paused = o.optBoolean("paused", false)
+                        jobs.add(j)
+                    }
+                }
+            } catch (_: Exception) {}
+            lastSig = sigOf(jobs.filter { it.active })
+            notifyChange()
+        }
+        return jobs.count { it.active }
+    }
 
     fun find(vid: String): BgJob? = jobs.lastOrNull { it.vid == vid }
     fun isActive(vid: String) = find(vid)?.active == true
@@ -57,6 +110,7 @@ object BgJobs {
 
     /** بيضيف الفيديو لطابور الترجمة في الخلفية. بيرجّع false لو هو أصلًا في الطابور/شغّال */
     fun enqueue(ctx: Context, job: BgJob): Boolean {
+        restore(ctx)
         if (isActive(job.vid)) return false
         jobs.removeAll { it.vid == job.vid && !it.active }
         while (jobs.count { !it.active } > 20) jobs.firstOrNull { !it.active }?.let { jobs.remove(it) }
@@ -77,7 +131,33 @@ object BgJobs {
     fun resume(ctx: Context, vid: String) { find(vid)?.let { if (it.active) { it.paused = false; it.engine?.paused = false; BgService.start(ctx.applicationContext); notifyChange() } } }
     /** شيل الفيديو من الطابور (لو شغّال بيتوقف والتقدم بيتحفظ) */
     fun remove(j: BgJob) { if (j.active) { j.stopReq = true; if (j.state == "queued") j.state = "stopped" }; jobs.remove(j); notifyChange() }
-    fun moveUp(j: BgJob) { val i = jobs.indexOf(j); if (i > 0) { val p = jobs[i - 1]; jobs[i - 1] = j; jobs[i] = p; notifyChange() } }
+    // ترتيب الطابور: الأول في القايمة هو اللي بيترجم الأول (الشغّال حاليًا بيكمّل). الحركة بين المستنيين بس.
+    @Synchronized fun moveUp(j: BgJob) {
+        val i = jobs.indexOf(j); if (i < 0 || j.state != "queued") return
+        val p = (i - 1 downTo 0).firstOrNull { jobs[it].state == "queued" } ?: return
+        jobs.remove(j); jobs.add(p, j); notifyChange()
+    }
+    @Synchronized fun moveDown(j: BgJob) {
+        val i = jobs.indexOf(j); if (i < 0 || j.state != "queued") return
+        val n = (i + 1 until jobs.size).firstOrNull { jobs[it].state == "queued" } ?: return
+        jobs.remove(j); jobs.add(n, j); notifyChange()
+    }
+    /** أول واحد مستني (بيترجم بعد الشغّال حاليًا مباشرة) */
+    @Synchronized fun moveTop(j: BgJob) {
+        val i = jobs.indexOf(j); if (i < 0 || j.state != "queued") return
+        val f = jobs.indexOfFirst { it.state == "queued" && it !== j }
+        if (f < 0 || f >= i) return
+        jobs.remove(j); jobs.add(f, j); notifyChange()
+    }
+    /** ابدأ ده دلوقتي: الشغّال حاليًا بيتوقف (التقدم محفوظ) ويرجع في الطابور بعد ده */
+    @Synchronized fun startNow(ctx: Context, j: BgJob) {
+        val i = jobs.indexOf(j); if (i < 0 || j.state != "queued") return
+        j.paused = false
+        val r = jobs.firstOrNull { it.state == "running" && it !== j }
+        if (r != null) { r.requeue = true; r.stopReq = true; jobs.remove(j); jobs.add(jobs.indexOf(r), j); notifyChange() } else moveTop(j)
+        BgService.start(ctx.applicationContext)
+    }
+    fun position(j: BgJob): Int = jobs.filter { it.state == "queued" }.indexOf(j) + 1
     fun retry(ctx: Context, j: BgJob): Boolean { jobs.remove(j); return enqueue(ctx, BgJob(j.vid, j.title, j.uri, j.url, j.hdr)) }
     fun clearFinished() { jobs.removeAll { !it.active }; notifyChange() }
     fun stopAll() { jobs.filter { it.active }.forEach { it.stopReq = true; if (it.state == "queued") it.state = "stopped" }; notifyChange() }
@@ -112,12 +192,25 @@ class BgService : Service() {
         nm.createNotificationChannel(NotificationChannel(CH, "ترجمة في الخلفية", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_DONE, "خلصت الترجمة", NotificationManager.IMPORTANCE_DEFAULT))
         postForeground(null)
+        // لو النظام رجّع الخدمة بعد ما قتل العملية (intent = null) أو بعد ريستارت: ارجع الطابور المحفوظ
+        Cfg.init(applicationContext)
+        BgJobs.restore(this)
         if (i?.action == ACTION_STOP) BgJobs.stopAll()
         synchronized(lock) {
             lastStartId = startId
             if (!workerAlive) { workerAlive = true; Thread { work() }.apply { isDaemon = true }.start() }
         }
-        return START_NOT_STICKY
+        return START_STICKY
+    }
+
+    /** المستخدم مسح التطبيق من الأخيرة: الخدمة (Foreground) بتكمّل، ولو الجهاز قتل العملية بنجدول إعادة تشغيل احتياطي */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!BgJobs.anyActive()) return
+        try {
+            val pi = PendingIntent.getForegroundService(this, 2, Intent(this, BgService::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 4000, pi)
+        } catch (_: Exception) {}
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(this, 0,
@@ -161,6 +254,7 @@ class BgService : Service() {
                     if (j == null) { workerAlive = false; stopId = lastStartId }
                     j
                 } ?: break
+                try { wake?.acquire(6 * 3600 * 1000L) } catch (_: Exception) {}
                 runJob(job)
             }
         } finally {
@@ -219,6 +313,7 @@ class BgService : Service() {
         job.covered = engine.coveredSec(); job.dur = engine.durationSec().takeIf { it > 0 } ?: job.dur
         Recents.saveProgress(app, job.vid, job.title, job.url ?: "", job.uri ?: "", job.dur, engine.subs.size, job.covered)
         when {
+            job.stopReq && job.requeue -> { job.state = "queued"; job.stopReq = false; job.requeue = false; job.err = "" }
             job.stopReq -> job.state = "stopped"
             ok -> { job.state = "done"; job.pct = 100; try { SrtWriter.save(app, job.uri, engine.subs, Cfg.str("sub_offset_ms:" + job.vid, "0").toLongOrNull() ?: 0L)?.let { job.srt = it } } catch (_: Exception) {}; val nf = engine.failedCount(); job.err = if (nf > 0) "فيها $nf مقطع فاشل — افتح الفيديو وادوس سد الفجوات" else "" }
             else -> { job.state = "failed"; job.err = engine.fatal ?: "الترجمة وقفت قبل ما تخلص" }
@@ -229,7 +324,7 @@ class BgService : Service() {
     }
 
     private fun done(job: BgJob) {
-        if (job.state == "stopped") return
+        if (job.state == "stopped" || job.state == "queued") return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val ok = job.state == "done"
         val n = Notification.Builder(this, CH_DONE).setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)

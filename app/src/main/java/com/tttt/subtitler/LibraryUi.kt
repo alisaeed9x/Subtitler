@@ -44,9 +44,12 @@ class LibraryUi(
     var onDetails: (VideoItem) -> Unit = {}
     var onShare: (VideoItem) -> Unit = {}
     var onDelete: (VideoItem) -> Unit = {}
-    fun allFolders(): List<FolderItem> = VideoLib.group(all)
+    fun allFolders(): List<FolderItem> = VideoLib.group(visible())
     var bgJob: (VideoItem) -> BgJob? = { null }
     fun refreshRows() {
+        // ظهور/اختفاء صف «مجلد الترجمة في الخلفية» في الرئيسية
+        val hasBg = rows.firstOrNull() === bgFolder
+        if (mode == "ready" && curFolder == null && !inHidden && query.isEmpty() && hasBg != BgJobs.jobs.isNotEmpty()) render()
         (listV.adapter as? BaseAdapter)?.notifyDataSetChanged()
         if (::queueBtn.isInitialized) { val n = BgJobs.jobs.count { it.active }; queueBtn.text = if (n > 0) "📋$n" else "📋"; queueBtn.textSize = if (n > 0) 13f else 17f }
     }
@@ -102,6 +105,26 @@ class LibraryUi(
     private var refreshing = false
     private var spinner: ObjectAnimator? = null
     private val ORANGE = 0xFFFF9F1C.toInt()
+    // ===== المجلد المخفي: إخفاء منطقي بالـ videoId (الملف نفسه ما بيتحركش) =====
+    private val hiddenFile = File(act.filesDir, "hidden_videos.txt")
+    private val hidden: MutableSet<String> = try { hiddenFile.readLines().filter { it.isNotEmpty() }.toMutableSet() } catch (_: Exception) { mutableSetOf() }
+    private var inHidden = false
+    private fun saveHidden() { try { hiddenFile.writeText(hidden.joinToString("\n")) } catch (_: Exception) {} }
+    private fun isHidden(v: VideoItem) = v.videoId in hidden
+    private fun visible(): List<VideoItem> = all.filter { !isHidden(it) }
+    /** فتح المجلد المخفي بيعدّي على البوابة دي (المرحلة 3 هتحط فيها النمط/البصمة) */
+    var gate: (open: () -> Unit) -> Unit = { it() }
+    fun hideVideo(v: VideoItem) {
+        hidden.add(v.videoId); saveHidden(); render()
+        toastMsg("🙈 اتخفى — اسحب لتحت وكمّل السحب لحد 🔒 وسيب عشان تفتح المخفي")
+    }
+    fun unhideVideo(v: VideoItem) { hidden.remove(v.videoId); saveHidden(); render(); toastMsg("👁 رجع للقايمة") }
+    fun openHidden() { inHidden = true; secure(true); if (query.isNotEmpty()) searchEt.setText(""); render(); listV.setSelection(0) }
+    /** قفل المخفي تاني (لما التطبيق يقعد في الخلفية فترة) */
+    fun relock() { if (inHidden) { inHidden = false; secure(false); render() } }
+    /** وهو المخفي مفتوح: ممنوع لقطة الشاشة وصورة الأخيرة بتبقى سودا */
+    private fun secure(on: Boolean) { try { if (on) act.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) else act.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) } catch (_: Exception) {} }
+    private val emptyTv = ui.text("", 14f, th.muted).apply { gravity = Gravity.CENTER; setPadding(ui.dp(30), 0, ui.dp(30), 0); visibility = View.GONE }
     private fun keyOf(v: VideoItem) = v.folderKey + "|" + v.name + "|" + v.size
 
     private val ptr = TextView(act).apply {
@@ -144,7 +167,7 @@ class LibraryUi(
         return added
     }
     private fun endPull() {
-        spinner?.cancel(); spinner = null; refreshing = false
+        spinner?.cancel(); spinner = null; refreshing = false; ptr.text = "🔄"
         listV.animate().translationY(0f).setDuration(250).start()
         ptr.animate().alpha(0f).translationY(-ui.dp(50).toFloat()).setDuration(250).start()
     }
@@ -164,7 +187,7 @@ class LibraryUi(
     private fun updateResume() {
         val cf = curFolder
         val target = if (cf == null) Cfg.str("lib_last") else Cfg.str("lib_last_f:$cf")
-        val v = if (target.isEmpty()) null else all.firstOrNull { it.uri == target && (cf == null || it.folderKey == cf) }
+        val v = if (inHidden || target.isEmpty()) null else visible().firstOrNull { it.uri == target && (cf == null || it.folderKey == cf) }
         if (v == null) { resumeBtn.visibility = View.GONE; return }
         resumeBtn.visibility = View.VISIBLE
         resumeBtn.setOnClickListener { markPlayed(v); onPlay(v) }
@@ -220,15 +243,16 @@ class LibraryUi(
         stateBox.addView(stateBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(12) })
         val body = FrameLayout(act)
         body.addView(listV, FrameLayout.LayoutParams(-1, -1)); body.addView(stateBox, FrameLayout.LayoutParams(-1, -1))
+        body.addView(emptyTv, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
         body.addView(ptr, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         body.addView(toastTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         body.addView(resumeBtn, FrameLayout.LayoutParams(ui.dp(58), ui.dp(58), Gravity.BOTTOM or Gravity.LEFT).apply { setMargins(ui.dp(20), 0, 0, ui.dp(24)) })
         // سحب لتحت من أول القايمة = ريفريش
-        var y0 = 0f; var pulling = false; var pd = 0f
-        val thr = ui.dp(60).toFloat(); val cap = ui.dp(95).toFloat()
+        var y0 = 0f; var pulling = false; var pd = 0f; var wasLock = false
+        val thr = ui.dp(60).toFloat(); val lockThr = ui.dp(125).toFloat()
         listV.setOnTouchListener { v, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { y0 = e.rawY; pulling = false; false }
+                MotionEvent.ACTION_DOWN -> { y0 = e.rawY; pulling = false; wasLock = false; false }
                 MotionEvent.ACTION_MOVE -> {
                     if (refreshing) return@setOnTouchListener false
                     val dy = e.rawY - y0
@@ -238,16 +262,25 @@ class LibraryUi(
                         val c = MotionEvent.obtain(e); c.action = MotionEvent.ACTION_CANCEL; listV.onTouchEvent(c); c.recycle()
                     }
                     if (pulling) {
+                        val cap = if (inHidden) ui.dp(95).toFloat() else ui.dp(150).toFloat()
                         pd = ((e.rawY - y0) * 0.5f).coerceIn(0f, cap)
                         listV.translationY = pd; ptr.translationY = pd - ui.dp(50)
-                        ptr.alpha = (pd / ui.dp(40)).coerceIn(0f, 1f); ptr.rotation = pd * 4f
+                        ptr.alpha = (pd / ui.dp(40)).coerceIn(0f, 1f)
+                        val lock = !inHidden && pd >= lockThr
+                        if (lock != wasLock) {
+                            wasLock = lock; ptr.text = if (lock) "🔒" else "🔄"
+                            if (lock) ptr.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                        }
+                        ptr.rotation = if (lock) 0f else pd * 4f
                         true
                     } else false
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (pulling) {
                         pulling = false
-                        if (pd >= thr && e.actionMasked == MotionEvent.ACTION_UP) {
+                        if (wasLock && e.actionMasked == MotionEvent.ACTION_UP) {
+                            wasLock = false; endPull(); gate { openHidden() }
+                        } else if (pd >= thr && e.actionMasked == MotionEvent.ACTION_UP) {
                             refreshing = true; userRefresh = true
                             listV.animate().translationY(ui.dp(56).toFloat()).setDuration(150).start()
                             ptr.animate().translationY(ui.dp(6).toFloat()).alpha(1f).setDuration(150).start()
@@ -256,7 +289,7 @@ class LibraryUi(
                             }
                             onPull()
                             ptr.postDelayed({ if (refreshing) { userRefresh = false; endPull() } }, 20000)
-                        } else endPull()
+                        } else { wasLock = false; endPull() }
                         true
                     } else false
                 }
@@ -282,6 +315,7 @@ class LibraryUi(
     /** رجوع من فولدر للقايمة الرئيسية. بترجّع true لو استهلكت الضغطة */
     fun back(): Boolean {
         if (query.isNotEmpty()) { searchEt.setText(""); return true }
+        if (inHidden) { inHidden = false; secure(false); render(); listV.setSelection(rootPos); return true }
         if (curFolder == null) return false
         curFolder = null; render(); listV.setSelection(rootPos); return true
     }
@@ -294,22 +328,28 @@ class LibraryUi(
             "scan" -> { setState(true, "⏳ جاري فحص التخزين…", null); return }
             "perm" -> { setState(false, "محتاج إذن الوصول للفيديوهات عشان أعرض فولدرات الجهاز.", "السماح بالوصول"); return }
         }
-        if (all.isEmpty()) { setState(false, "مفيش فيديوهات اتلاقت على الجهاز.\nلو فيديوهاتك موجودة دوس 🔄 للفحص من جديد، أو افتح فيديو من 📂.", null); return }
+        if (all.isEmpty()) { emptyTv.visibility = View.GONE; setState(false, "مفيش فيديوهات اتلاقت على الجهاز.\nلو فيديوهاتك موجودة دوس 🔄 للفحص من جديد، أو افتح فيديو من 📂.", null); return }
+        val src = if (inHidden) all.filter { isHidden(it) } else visible()
         val cf = curFolder
-        val folders = VideoLib.group(all)
-        val folder = if (cf != null) folders.firstOrNull { it.key == cf } else null
-        if (cf != null && folder == null) curFolder = null
+        val folders = VideoLib.group(src)
+        val folder = if (!inHidden && cf != null) folders.firstOrNull { it.key == cf } else null
+        if (!inHidden && cf != null && folder == null) curFolder = null
         if (query.isNotEmpty()) {
-            val hits = VideoLib.search(all, query)
+            val hits = VideoLib.search(src, query)
             rows = hits
-            titleTv.text = "🔍 نتائج البحث"; subTv.text = "${hits.size} فيديو"; backV.visibility = View.GONE
+            titleTv.text = "🔍 نتائج البحث"; subTv.text = "${hits.size} فيديو"; backV.visibility = if (inHidden) View.VISIBLE else View.GONE
+        } else if (inHidden) {
+            rows = VideoLib.sortVideos(src, sort)
+            titleTv.text = "🙈 المخفي"; subTv.text = "${src.size} فيديو · ${VideoLib.fmtSize(src.sumOf { it.size })}"; backV.visibility = View.VISIBLE
         } else if (folder != null) {
             rows = VideoLib.sortVideos(folder.videos, sort)
             titleTv.text = "📂 " + folder.name; subTv.text = "${folder.videos.size} فيديو · ${VideoLib.fmtSize(folder.totalSize)}"; backV.visibility = View.VISIBLE
         } else {
-            rows = VideoLib.sortFolders(folders, sort)
-            titleTv.text = "📁 الفيديوهات"; subTv.text = "${folders.size} مجلد · ${all.size} فيديو"; backV.visibility = View.GONE
+            rows = (if (BgJobs.jobs.isNotEmpty()) listOf<Any>(bgFolder) else emptyList<Any>()) + VideoLib.sortFolders(folders, sort)
+            titleTv.text = "📁 الفيديوهات"; subTv.text = "${folders.size} مجلد · ${src.size} فيديو"; backV.visibility = View.GONE
         }
+        emptyTv.text = if (rows.isNotEmpty()) "" else if (inHidden && query.isEmpty()) "مفيش فيديوهات مخفية.\nدوس ⋮ أو اضغط ضغطة مطولة على أي فيديو واختار 🙈 إخفاء الفيديو." else if (query.isEmpty()) "كل الفيديوهات مخفية.\nاسحب لتحت وكمّل لحد 🔒 وسيب عشان تفتح المخفي." else "مفيش نتائج."
+        emptyTv.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
         stateBox.visibility = View.GONE; listV.visibility = View.VISIBLE
         (listV.adapter as BaseAdapter).notifyDataSetChanged()
         updateResume()
@@ -317,7 +357,7 @@ class LibraryUi(
 
     private fun setState(busy: Boolean, msg: String, btn: String?) {
         titleTv.text = "📁 الفيديوهات"; subTv.text = ""; backV.visibility = View.GONE
-        listV.visibility = View.GONE; stateBox.visibility = View.VISIBLE
+        emptyTv.visibility = View.GONE; listV.visibility = View.GONE; stateBox.visibility = View.VISIBLE
         stateBar.visibility = if (busy) View.VISIBLE else View.GONE
         stateTv.text = msg
         stateBtn.visibility = if (btn != null) View.VISIBLE else View.GONE
@@ -349,6 +389,17 @@ class LibraryUi(
     @Suppress("UNCHECKED_CAST")
     private fun bindFolder(v: View, f: FolderItem) {
         val t = v.tag as Array<View>
+        if (f === bgFolder) {
+            val act = BgJobs.jobs.count { it.active }; val run = BgJobs.jobs.firstOrNull { it.state == "running" }
+            (t[0] as TextView).text = "🌙 مجلد الترجمة في الخلفية"
+            (t[1] as TextView).text = "$act في الطابور" + (if (run != null) " · بيترجم: ${run.title} ${run.pct}%" else "")
+            (t[2] as TextView).text = "اللي فوق بيترجم الأول · رتّبهم بـ ⬆ ⬇"
+            (t[4] as TextView).visibility = View.GONE
+            t[5].visibility = View.GONE
+            t[3].setOnClickListener { onQueue() }
+            return
+        }
+        t[5].visibility = View.VISIBLE
         (t[0] as TextView).text = f.name
         (t[1] as TextView).text = "${f.count} فيديو · ${VideoLib.fmtSize(f.totalSize)}"
         (t[2] as TextView).text = f.path
@@ -358,6 +409,7 @@ class LibraryUi(
         t[5].setOnClickListener { v -> popup(v, listOf("🌙 ترجمة كل فيديوهات الفولدر في الخلفية (${f.videos.size})" to { onBgFolder(f) })) }
     }
     private val FolderItem.count: Int get() = videos.size
+    private val bgFolder = FolderItem("__bg__", "مجلد الترجمة في الخلفية", "", emptyList())
 
     // ===== صف الفيديو =====
     private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView, val dots: TextView)
@@ -396,12 +448,30 @@ class LibraryUi(
         return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick, vDots) }
     }
 
+    /** قايمة الفيديو: بتظهر من ⋮ ومن الضغطة المطولة على الفيديو */
+    private fun videoMenu(anchor: View, vi: VideoItem) {
+        val bj = bgJob(vi); val running = bj != null && bj.active
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items += (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 نقل لمجلد الترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) }
+        items += "▶ تشغيل" to { markPlayed(vi); onPlay(vi) }
+        if (inHidden) items += "👁 إظهار الفيديو (يرجع للقايمة)" to { unhideVideo(vi) }
+        else {
+            items += "🙈 إخفاء الفيديو" to { hideVideo(vi) }
+            items += "✏ إعادة تسمية" to { onRename(vi) }
+            items += "📁 نقل" to { onMove(vi) }
+        }
+        items += "ℹ تفاصيل" to { onDetails(vi) }
+        items += "📤 مشاركة" to { onShare(vi) }
+        items += "🗑 حذف" to { onDelete(vi) }
+        popup(anchor, items)
+    }
+
     private fun bindVideo(v: View, vi: VideoItem) {
         val h = v.tag as VH
         h.title.text = vi.title
         h.badge.visibility = if (keyOf(vi) in newKeys) View.VISIBLE else View.GONE
         h.dur.text = VideoLib.fmtDur(vi.durMs); h.dur.visibility = if (vi.durMs > 0) View.VISIBLE else View.GONE
-        h.meta.text = listOf(VideoLib.fmtSize(vi.size), vi.ext.uppercase(), VideoLib.fmtDate(vi.dateMs)).filter { it.isNotEmpty() }.joinToString(" · ")
+        h.meta.text = listOf(if (inHidden) vi.folderName else "", VideoLib.fmtSize(vi.size), vi.ext.uppercase(), VideoLib.fmtDate(vi.dateMs)).filter { it.isNotEmpty() }.joinToString(" · ")
         val r = recMap[vi.videoId]
         val parts = ArrayList<String>()
         if (r != null && r.posSec > 5) parts.add("▶ وقف عند " + PlayerLogic.clock((r.posSec * 1000).toLong()))
@@ -417,18 +487,8 @@ class LibraryUi(
             parts.add(if (bj.state == "queued") "⏳ في طابور الترجمة بالخلفية" else "🌙 بيترجم في الخلفية ${bj.pct}%" + (BgJobs.fmtRemain(bj.remainSec).let { if (it.isEmpty()) "" else " · باقي $it" }))
         } else if (bj != null && bj.state == "failed") parts.add("⚠ ترجمة الخلفية وقفت: " + bj.err)
         h.state.text = parts.joinToString(" · "); h.state.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
-        h.dots.setOnClickListener { v ->
-            val running = bj != null && bj.active
-            popup(v, listOf(
-                (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 ترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) },
-                "▶ تشغيل" to { markPlayed(vi); onPlay(vi) },
-                "✏ إعادة تسمية" to { onRename(vi) },
-                "📁 نقل" to { onMove(vi) },
-                "ℹ تفاصيل" to { onDetails(vi) },
-                "📤 مشاركة" to { onShare(vi) },
-                "🗑 حذف" to { onDelete(vi) }
-            ))
-        }
+        h.dots.setOnClickListener { v -> videoMenu(v, vi) }
+        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); videoMenu(h.dots, vi); true }
         h.iv.tag = vi.uri; h.iv.setImageDrawable(null)
         val c = Thumbs.peek(vi)
         if (c != null) h.iv.setImageBitmap(c)

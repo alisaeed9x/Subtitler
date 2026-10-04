@@ -54,3 +54,6 @@ java $JOPT -cp "$OUT/t8:$CP" BlurTestKt | grep -E "^(PASS|FAIL)|الاختبار
 mkdir -p "$OUT/t9"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t9" "$ROOT/dev-tests/LibraryTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t9:$CP" LibraryTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"
+mkdir -p "$OUT/t5"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t5" "$SRC/LockCore.kt" "$ROOT/dev-tests/LockTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t5:$CP" LockTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
