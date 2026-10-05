@@ -122,44 +122,6 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     }
 }
 
-/** صفوف بتلف (flex-wrap) من اليمين لليسار — زي .fs-subsize-ctrl في الأصل */
-class FlowRow(ctx: Context) : ViewGroup(ctx) {
-    private var xs = IntArray(0); private var ys = IntArray(0)
-    override fun checkLayoutParams(p: LayoutParams?) = p is MarginLayoutParams
-    override fun generateDefaultLayoutParams(): LayoutParams = MarginLayoutParams(-2, -2)
-    override fun generateLayoutParams(p: LayoutParams): LayoutParams = MarginLayoutParams(p)
-    override fun generateLayoutParams(a: android.util.AttributeSet): LayoutParams = MarginLayoutParams(context, a)
-    override fun onMeasure(wSpec: Int, hSpec: Int) {
-        val maxW = MeasureSpec.getSize(wSpec)
-        xs = IntArray(childCount); ys = IntArray(childCount)
-        var x = 0; var y = 0; var rowH = 0; var usedW = 0
-        for (i in 0 until childCount) {
-            val c = getChildAt(i)
-            if (c.visibility == GONE) continue
-            val lp = c.layoutParams as MarginLayoutParams
-            val hs = if (lp.height > 0) MeasureSpec.makeMeasureSpec(lp.height, MeasureSpec.EXACTLY) else MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-            // العرض الثابت (lp.width > 0) لازم يتحترم — View عادي بـ AT_MOST بيتمدد لكل العرض ويكسر الصف
-            val ws = if (lp.width > 0) MeasureSpec.makeMeasureSpec(lp.width, MeasureSpec.EXACTLY) else MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST)
-            c.measure(ws, hs)
-            val cw = c.measuredWidth + lp.leftMargin + lp.rightMargin
-            val ch = c.measuredHeight + lp.topMargin + lp.bottomMargin
-            if (x > 0 && x + cw > maxW) { y += rowH; x = 0; rowH = 0 }
-            xs[i] = x + lp.leftMargin; ys[i] = y + lp.topMargin
-            x += cw; rowH = maxOf(rowH, ch); usedW = maxOf(usedW, x)
-        }
-        setMeasuredDimension(maxW, y + rowH)
-    }
-    override fun onLayout(ch: Boolean, l: Int, t: Int, r: Int, b: Int) {
-        val w = r - l
-        for (i in 0 until childCount) {
-            val c = getChildAt(i)
-            if (c.visibility == GONE) continue
-            val left = w - xs[i] - c.measuredWidth   // اليمين أولًا (RTL)
-            c.layout(left, ys[i], left + c.measuredWidth, ys[i] + c.measuredHeight)
-        }
-    }
-}
-
 /** شارة النسبة وعدد الجمل أعلى يمين الفيديو (.fs-trans-badge) */
 class TransBadge(ctx: Context, th: Theme) : LinearLayout(ctx) {
     private val d = ctx.resources.displayMetrics.density
