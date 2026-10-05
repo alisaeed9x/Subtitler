@@ -362,15 +362,22 @@ class MainActivity : Activity() {
             TabDef("theme", "🎨 المظهر", listOf<View>(themeChips), false, "ثيم البرنامج")
         ), sp.holder) { save(); refreshChip(); if (fromPlayer) finish() }
         // رابط مباشر + المحفوظة (نافذة سفلية): حقل الرابط بيتحط هنا
-        link.hint = "رابط الفيديو (MP4 / M3U8 ...)"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR
-        val linkPlay = ui.button("▶ شغّل الرابط", true) {
+        link.hint = "الصق أي لينك: فيديو مباشر / يوتيوب / صفحة فيها فيديو"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR
+        val linkPlay = ui.button("▶ شغّل / اصطد الرابط", true) {
             save(); val u = link.text.toString().trim()
-            if (u.isEmpty()) Toast.makeText(this, "اكتب الرابط الأول", Toast.LENGTH_SHORT).show() else { recentDlg?.dismiss(); play(u, null) }
+            if (u.isEmpty()) Toast.makeText(this, "الصق الرابط الأول", Toast.LENGTH_SHORT).show() else { recentDlg?.dismiss(); openLink(u) }
         }
         val linkBrowser = ui.button("🌐 افتح المتصفح (لصيد روابط الفيديو)") { save(); recentDlg?.dismiss(); startActivity(Intent(this, BrowserActivity::class.java)) }
         recentDlg = ui.sheet(this, "🔗 رابط · 📼 المحفوظة", listOf<View>(link, linkPlay, linkBrowser,
             ui.text("📼 فيديوهات محفوظة", 13f, th.muted).apply { setPadding(0, ui.dp(10), 0, ui.dp(4)) }, recentBox), false)
-        recentDlg!!.setOnShowListener { rebuildRecents() }
+        recentDlg!!.setOnShowListener {
+            rebuildRecents()
+            // لو في الكليبورد لينك: حطه في الخانة لوحده
+            try {
+                val t = (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                if (link.text.isNullOrBlank()) Regex("https?://\\S+").find(t)?.let { link.setText(it.value) }
+            } catch (_: Exception) {}
+        }
         refreshChip()
 
         // ===== الشاشة الرئيسية: متصفح فيديوهات الجهاز (فولدرات ← فيديوهات بصور مصغّرة) زي MX Player =====
@@ -445,7 +452,7 @@ class MainActivity : Activity() {
         frame.post { permFlow { ensureKeys { keys.setText(Cfg.str("keys")); keyLoadersRef.forEach { it() }; refreshChip(); doScan() } } }
         if (intent?.action == Intent.ACTION_SEND) {
             val t = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
-            Regex("https?://\\S+").find(t)?.let { link.setText(it.value); play(it.value, null) }
+            Regex("https?://\\S+").find(t)?.let { link.setText(it.value); openLink(it.value) }
         }
     }
     class StyleParts(val holder: View, val fonts: List<View>, val anim: List<View>, val look: List<View>)
@@ -473,7 +480,7 @@ class MainActivity : Activity() {
             return LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(tv); addView(sb) }
         }
         fun sw(t: String, k: String, d: Boolean) = ui.switchRow(t, Cfg.bool(k, d)) { put(k, if (it) "1" else "0") }
-        val dualNames = listOf("ترجمة فقط", "أصلي + ترجمة", "إنجليزي + عربي")
+        val dualNames = listOf("ترجمة فقط", "ترجمة فوق + أصلي تحت", "إنجليزي + عربي", "نص أصلي فقط", "أصلي فوق + ترجمة تحت")
         val anims = SubStyle.entrances
         val fonts = SubStyle.fonts
         val fontsV = listOf<View>(
@@ -591,6 +598,11 @@ class MainActivity : Activity() {
 
     fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
     /** landscape: الفيديو من الجهاز بيفتح لاندسكيب مباشرة (زي MX) إلا لو معروف إنه طولي */
+    /** لينك فيديو مباشر → يشتغل على طول؛ أي لينك تاني (يوتيوب / صفحة) → شاشة الصيد بتفتح الصفحة وتلقط الفيديوهات */
+    fun openLink(u0: String) {
+        val u = u0.trim()
+        if (Sniff.isDirect(u)) play(u, null) else startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", u))
+    }
     fun play(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false, noSub: Boolean = false, ask: Boolean = false) {
         if (u.isBlank() && uri == null) return
         if (noSub) startPlayerNow(u, uri, landscape, fresh, true)   // فرجة من غير ترجمة: مش محتاج مفتاح
@@ -639,6 +651,26 @@ class MainActivity : Activity() {
         }
     }
     override fun onStop() { super.onStop(); stoppedAt = System.currentTimeMillis() }
+    /** أندرويد 10+ مابيسمحش بقراءة الكليبورد غير والتطبيق عليه الفوكس — فالفحص بيتعمل هنا */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && !fromPlayer) window.decorView.postDelayed({ if (!isFinishing && !isDestroyed) checkClipboard { playClip(it) } }, 900)
+    }
+    /** «نعم» من بوب-أب الكليبورد: فيديو مباشر يشتغل على طول، يوتيوب بنجيب له أحسن رابط فيه صوت وصورة، وغير كده شاشة الصيد */
+    fun playClip(c: ClipVideo) {
+        fun go(u: String, ref: String, ua: String) {
+            if (ref.isEmpty() && ua.isEmpty()) { play(u, null); return }
+            ensureKeys { startActivity(Intent(this, PlayerActivity::class.java).apply { putExtra("url", u); putExtra("ref", ref); putExtra("ua", ua) }) }
+        }
+        if (c.playUrl.isNotEmpty()) { go(c.playUrl, c.ref, c.ua); return }
+        val id = YtExtract.videoId(c.url)
+        if (id == null) { openLink(c.url); return }
+        Toast.makeText(this, "بجيب الفيديو…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val best = try { YtExtract.fetch(id).filter { it.kind != "HLS" }.maxByOrNull { Regex("(\\d+)p").find(it.kind)?.groupValues?.get(1)?.toIntOrNull() ?: 0 } } catch (_: Throwable) { null }
+            runOnUiThread { if (best != null) go(best.url, best.ref, best.ua) else openLink(c.url) }
+        }.apply { isDaemon = true }.start()
+    }
     override fun onResume() {
         super.onResume()
         // الرجوع من المشغّل أو من إعدادات الإذن: حدّث العرض (تقدم الترجمة) أو أعد الفحص
@@ -650,69 +682,6 @@ class MainActivity : Activity() {
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() { if (!fromPlayer && libUi?.back() == true) return; super.onBackPressed() }
-}
-
-class BrowserActivity : Activity() {
-    lateinit var wv: WebView
-    lateinit var found: Button
-    var foundUrl = ""
-    val h = Handler(Looper.getMainLooper())
-    override fun onCreate(b: Bundle?) {
-        super.onCreate(b)
-        val th = Themes.byId(try { getSharedPreferences("p", 0).getString("theme", "mx") } catch (_: Exception) { "mx" })
-        val ui = Ui(this, th)
-        applyBars(th)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg); setPadding(0, ui.dp(28), 0, 0) }
-        val addr = ui.input("رابط الموقع أو كلمة بحث", "").apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-        val go = ui.button("اذهب", true) { }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2) }
-        val row = LinearLayout(this).apply { addView(addr); addView(go) }
-        wv = WebView(this)
-        found = Button(this).apply { visibility = View.GONE; setTextColor(if (th.isLight) Color.WHITE else Color.BLACK); background = ui.box(th.primary, th.primary, 8); setOnClickListener { openPlayer() } }
-        root.addView(row); root.addView(wv, LinearLayout.LayoutParams(-1, 0, 1f)); root.addView(found)
-        setContentView(root)
-        wv.settings.apply { javaScriptEnabled = true; domStorageEnabled = true; mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW }
-        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
-        val rx = Regex("\\.(mp4|m3u8|webm|mkv)(\\?|$)", RegexOption.IGNORE_CASE)
-        wv.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? {
-                val u = r.url.toString()
-                if (rx.containsMatchIn(u)) h.post { onFound(u) }
-                return null
-            }
-            override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest) = false
-        }
-        fun load() {
-            var u = addr.text.toString().trim()
-            if (!u.startsWith("http")) u = if (u.contains(".") && !u.contains(" ")) "https://$u" else "https://www.google.com/search?q=" + Uri.encode(u)
-            wv.loadUrl(u)
-        }
-        go.setOnClickListener { load() }
-        addr.setOnEditorActionListener { _, _, _ -> load(); true }
-        wv.loadUrl("https://www.google.com")
-        scan()
-    }
-    fun scan() {
-        wv.evaluateJavascript("(function(){var v=document.querySelector('video');return v?(v.currentSrc||v.src||''):''})()") { r ->
-            val s = r?.trim('"') ?: ""
-            if (s.startsWith("http")) onFound(s)
-        }
-        h.postDelayed({ scan() }, 2000)
-    }
-    fun onFound(u: String) {
-        foundUrl = u
-        found.text = "🎬 لقيت فيديو — اضغط للترجمة"
-        found.visibility = View.VISIBLE
-    }
-    fun openPlayer() = ensureKeys { openPlayerNow() }
-    fun openPlayerNow() {
-        startActivity(Intent(this, PlayerActivity::class.java).apply {
-            putExtra("url", foundUrl); putExtra("ref", wv.url ?: "")
-            putExtra("cookie", CookieManager.getInstance().getCookie(foundUrl) ?: "")
-            putExtra("ua", wv.settings.userAgentString)
-        })
-    }
-    override fun onBackPressed() { if (wv.canGoBack()) wv.goBack() else super.onBackPressed() }
-    override fun onDestroy() { h.removeCallbacksAndMessages(null); wv.destroy(); super.onDestroy() }
 }
 
 class PlayerActivity : Activity(), Host {
@@ -1213,6 +1182,14 @@ class PlayerActivity : Activity(), Host {
         giShowFn = { m -> giShow(m, Gravity.CENTER) }
         fun scaleBy(dv: Int) { val n = (Cfg.int("sub_scale", 100) + dv).coerceIn(60, 200); Cfg.put("sub_scale", n.toString()); restyle(); giShow("📏 $n%", Gravity.CENTER) }
         fun fb(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); showChrome() }
+        // زرار تبديل عرض الترجمة: ترجمة ← أصلي ← ترجمة+أصلي تحت ← أصلي فوق+ترجمة تحت
+        val dualCycle = listOf(0, 3, 1, 4); val dualShort = mapOf(0 to "ترجمة", 3 to "أصلي", 1 to "ترجمة/أصلي", 4 to "أصلي/ترجمة", 2 to "إنجليزي")
+        fun dualLabel() = "💬 " + (dualShort[curStyle().dual] ?: "ترجمة")
+        fun cycleDual(v: TextView) {
+            val n = dualCycle[(dualCycle.indexOf(curStyle().dual) + 1) % dualCycle.size]
+            Cfg.put("sub_dual", n.toString()); restyle(); v.text = dualLabel()
+            giShow(dualLabel(), Gravity.CENTER)
+        }
         var fsSpeedB: TextView? = null
         var ccFsB: TextView? = null
         fun cycleSpeed() {
@@ -1346,6 +1323,7 @@ class PlayerActivity : Activity(), Host {
         // صف تحت (فوق شريط الوقت، فوق القفل): A− A+ | ⏱ توقيت | ترجمة (إيقاف/استئناف + اللغة). بيلفّ لسطر تاني لو الشاشة ضيقة
         val auxRow = FlowRow(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
         auxRow.addView(fb("A−") { scaleBy(-10) }); auxRow.addView(fb("A+") { scaleBy(10) })
+        auxRow.addView(fb(dualLabel()) { v -> cycleDual(v) })
         auxRow.addView(grp("⏱ توقيت", gOff, true))
         auxRow.addView(makeTrRow(true))
         fsBar.addView(auxRow, LinearLayout.LayoutParams(-1, -2))

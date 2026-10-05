@@ -20,6 +20,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
     var backdrop: SurfaceView? = null
         set(v) { field = v; startBackdrop() }
     private var sub: Sub? = null
+    private var shownStyle: SubStyle? = null
     /** في وضع PiP الترجمة بتتعرض في شريط خارجي، فمنخفيش/نظهرش الـ View ده */
     var suppressed = false
         set(v) { field = v; if (v) visibility = GONE else if (sub != null) visibility = VISIBLE; startBackdrop() }
@@ -99,8 +100,10 @@ class SubtitleView(ctx: Context) : View(ctx) {
     private val PAD_H = 12 * d; private val PAD_T = 5 * d; private val PAD_B = 7 * d
 
     fun show(s: Sub?, group: List<Sub> = emptyList()) {
-        val same = s === sub || (s != null && sub != null && s.start == sub!!.start && s.translated == sub!!.translated)
+        // لو الستايل اتغيّر (مثلًا وضع الأصلي/الترجمة) لازم يعيد الرسم حتى لو نفس الجملة — كان بيتجاهل التغيير لحد الجملة اللي بعدها
+        val same = (s === sub || (s != null && sub != null && s.start == sub!!.start && s.translated == sub!!.translated && s.original == sub!!.original)) && shownStyle === style
         if (same) return
+        shownStyle = style
         sub = s; lines = if (group.size > 1) group else emptyList()
         if (s == null) { main = null; sec = null; animator.cancel(); emoAnim.cancel(); visibility = INVISIBLE; startBackdrop(); return }
         visibility = if (suppressed) GONE else VISIBLE; relayout(); startBackdrop()
@@ -144,7 +147,7 @@ class SubtitleView(ctx: Context) : View(ctx) {
             lines.forEachIndexed { i, x ->
                 if (i > 0) sb.append('\n')
                 val st0 = sb.length
-                sb.append("- ").append(x.translated.ifBlank { x.original })
+                sb.append("- ").append(style.lineText(x))
                 ranges.add(st0 until sb.length)
             }
             sb.toString()

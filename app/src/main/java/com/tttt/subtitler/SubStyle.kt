@@ -32,7 +32,7 @@ data class SubStyle(
             fun b(k: String, d: Boolean) = get(k, if (d) "1" else "0") == "1"
             val an = get("sub_anim", "default").let { a -> if (entrances.any { it.id == a }) a else "default" }
             return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 100), b("sub_nobg", false), i("sub_blur", 0, 0, 20), i("sub_aspeed", 250, 50, 600),
-                an, get("sub_font", "Cairo"), b("sub_plain", false), i("sub_dual", 0, 0, 2), b("sub_uni_on", false),
+                an, get("sub_font", "Cairo"), b("sub_plain", false), i("sub_dual", 0, 0, 4), b("sub_uni_on", false),
                 get("sub_uni_color", "#FFFFFF"), b("sub_split_on", false), i("sub_split", 8, 3, 30),
                 get("sub_fontstyle", "orig").let { if (it in fontStyles.map { f -> f.first }) it else "orig" }, b("sub_punct", true))
         }
@@ -83,23 +83,26 @@ data class SubStyle(
         s.gender == "female" -> FEMALE
         else -> MALE
     }
-    /** السطر الثانوي: 1 = الأصلي تحت الترجمة، 2 = الإنجليزي (pivot) */
+    /** وضع العرض (dual): 0 = ترجمة فقط، 1 = ترجمة فوق والأصلي تحت، 2 = الإنجليزي (pivot) تحت، 3 = الأصلي فقط، 4 = الأصلي فوق والترجمة تحت */
     fun secondary(s: Sub): String = when (dual) {
         1 -> if (s.original.isNotBlank() && s.original != s.translated) s.original else ""
         2 -> s.pivot
+        4 -> if (s.translated.isNotBlank() && s.original != s.translated) s.translated else ""
         else -> ""
     }
+    /** نص سطر واحد (لما أكتر من متحدث بيتكلموا مع بعض) حسب وضع العرض */
+    fun lineText(s: Sub): String = if (dual >= 3) s.original.ifBlank { s.translated } else s.translated.ifBlank { s.original }
     /** حجم النص الثابت في الوضع العادي (plain)، والتكبير/التصغير التلقائي في الباقي */
     fun sizeFor(wordCount: Int): Float = if (plain) 1f else sizeMult(wordCount)
     fun mainText(s: Sub): String {
         // تقسيم الجمل الطويلة بقى بالتتابع في PlayerLogic.splitParts/partIndex (مش سطور فوق بعض)
-        var t = s.translated
+        var t = if (dual >= 3) s.original.ifBlank { s.translated } else s.translated
         if (s.isContinuation) t += " ⋯"
         return t
     }
     /** مواضع الأسماء/الأماكن جوه النص: (start,end,isPlace) */
     fun highlights(text: String, s: Sub): List<Triple<Int, Int, Boolean>> {
-        if (plain) return emptyList()
+        if (plain || dual >= 3) return emptyList()   // الأسماء متحددة على نص الترجمة بس
         val out = ArrayList<Triple<Int, Int, Boolean>>()
         fun scan(names: List<String>, place: Boolean) = names.filter { it.length > 1 }.forEach { n ->
             var i = text.indexOf(n)
