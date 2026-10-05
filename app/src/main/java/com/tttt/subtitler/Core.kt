@@ -17,9 +17,7 @@ data class Sub(
     /** صوت خافت/همس/خلفية: بيتعرض فوق الكلام العادي */
     val faint: Boolean = false,
     /** اتحوّلت للهجة المختارة (التحويل التلقائي بعد الترجمة الحرفية) */
-    val conv: Boolean = false,
-    /** صوت غير كلامي (همهمة، موسيقى بدون كلمات، ضحك، ضوضاء…): بيتعرض كوصف فوق الفيديو منفصل عن الحوار */
-    val isSound: Boolean = false
+    val conv: Boolean = false
 )
 
 data class Chr(val name: String, val gender: String, val role: String)
@@ -40,17 +38,13 @@ class Conf(
     /** تعديل حدود المقطع لأقرب لحظة صمت */
     val silenceTrim: Boolean = true,
     /** سدّ الفجوات تلقائيًا أثناء المشاهدة */
-    val gapFill: Boolean = false,
-    /** التقاط الأصوات غير الكلامية والخلفية (همهمة/موسيقى/ضحك…) كسطر وصف فوق الفيديو */
-    val soundTags: Boolean = true,
-    /** مفاتيح خاصة بالوضع البصري بس (لو موجودة الوضع البصري مايستخدمش غيرها) */
-    val visKeys: List<String> = emptyList()
+    val gapFill: Boolean = false
 )
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
-    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags",
+    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill",
         "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_punct")
     val INTS = setOf("chunk", "ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
@@ -148,11 +142,10 @@ object Cfg {
         return Conf(
             main, (keys("backup") + bk).distinct(), str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
             str("lang", "فصحى"), str("style", "حرفي"),
-            int("chunk", 100).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
+            int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
-            int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true),
-            bool("soundtags", true), keys("viskeys")
+            int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true)
         )
     }
 }
@@ -166,14 +159,6 @@ class PromptBuilder(private val readAsset: (String) -> String) {
     companion object {
         const val TAIL_MARK = "\n\n\n⏱ مدة هذا المقطع الصوتي"
         /** تعليمات إضافية بتتحط على كل القوالب: التقسيم عند الوقفات الفعلية + المتحدثين المتداخلين (جيميناي هو اللي بيقسّم، مش التطبيق) */
-        /** الأصوات غير الكلامية والخلفية: بتتسجل كعناصر مستقلة (is_sound) وبتتعرض فوق الفيديو */
-        const val SOUND_BLOCK = "\n═══ الأصوات غير الكلامية والخلفية (إلزامي) ═══\n" +
-            "- 🔴 بالإضافة للكلام، التقط كل صوت مسموع غير كلامي أو في الخلفية: همهمة/دندنة، أنين، ضحك، بكاء، تنهيدة، صراخ، سعال، تصفيق، موسيقى خلفية بدون كلمات، أصوات ناس بعيدين غير مفهومة، ضوضاء ملحوظة (باب، تليفون، مطر، سيارات، طلقات...).\n" +
-            "- 🔴 كل صوت = عنصر مستقل في نفس مصفوفة subtitles بتوقيته الفعلي (start/end) و \"is_sound\": true. \"original\": وصف قصير بالإنجليزي بين أقواس مربعة مثل [humming]، و\"translated\": وصف عربي قصير جدًا (من كلمة لتلات) بين أقواس مربعة مثل [همهمة] أو [موسيقى هادية] أو [ضحك].\n" +
-            "- 🔴 الصوت اللي بيحصل في نفس وقت الكلام: سجّله برضو بتوقيته (هيظهر فوق الفيديو منفصل عن الحوار). ممنوع تحط وصف الصوت جوه جملة الحوار.\n" +
-            "- لو الصوت الخلفي كلام مفهوم (حتى لو بعيد أو واطي) ترجمه كحوار عادي مش كوصف صوت، وحط speaker_tag مختلف.\n" +
-            "- الأغاني بكلماتها تفضل is_song زي ما هي؛ الموسيقى من غير كلام بس هي اللي بتتوصف.\n" +
-            "- ماتخترعش صوت مش مسموع. تجاهل الأصوات الأقصر من نص ثانية أو الضعيفة جدًا، وماتكررش نفس الوصف ورا بعضه لو الصوت مستمر (عنصر واحد بمدته كلها).\n"
         const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
@@ -289,7 +274,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (c.soundTags) SOUND_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + glossBlock + tailFinal + langLock(c, strict))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -364,7 +349,7 @@ object Api {
      * طلب generateContent. الصوت (wav) بيتبعت stream على دفعات (من غير ما نبني نص base64 كبير في الرام).
      */
     /** طلب generateContent بصورة JPEG + نص (للوضع البصري) */
-    fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 6000, temp: Double = 0.0): Result {
+    fun generateImage(model: String, key: String, prompt: String, jpeg: ByteArray, maxTokens: Int = 1500, temp: Double = 0.0): Result {
         Quota.hit(model); Stats.req(model, key)
         val b64 = java.util.Base64.getEncoder().encodeToString(jpeg)
         val body = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}},{\"text\":" + JSONObject.quote(prompt) + "}]}]," +
@@ -384,40 +369,6 @@ object Api {
             if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
             return Result(sb.toString(), cand.optString("finishReason", ""))
         } finally { c.disconnect() }
-    }
-
-    class ModelRow(val id: String, val display: String)
-
-    /** كل الموديلات اللي المفتاح ده يقدر يستخدمها في generateContent (بيعدّي على كل الصفحات) */
-    fun listModels(key: String): List<ModelRow> {
-        val out = ArrayList<ModelRow>()
-        var token = ""
-        var pages = 0
-        while (pages++ < 10) {
-            val u = "$base/models?pageSize=200" + (if (token.isNotEmpty()) "&pageToken=" + java.net.URLEncoder.encode(token, "UTF-8") else "")
-            val c = URL(u).openConnection() as HttpURLConnection
-            try {
-                c.requestMethod = "GET"; c.connectTimeout = 20000; c.readTimeout = 30000
-                c.setRequestProperty("x-goog-api-key", key)
-                val code = c.responseCode
-                val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-                if (code >= 300) throw ApiErr(code, try { JSONObject(txt).getJSONObject("error").getString("message") } catch (_: Exception) { "HTTP $code" })
-                val j = JSONObject(txt)
-                val arr = j.optJSONArray("models")
-                if (arr != null) for (i in 0 until arr.length()) {
-                    val m = arr.optJSONObject(i) ?: continue
-                    val id = m.optString("name").removePrefix("models/")
-                    if (id.isEmpty()) continue
-                    val methods = m.optJSONArray("supportedGenerationMethods")
-                    var gen = false
-                    if (methods != null) for (k in 0 until methods.length()) if (methods.optString(k) == "generateContent") gen = true
-                    if (gen) out.add(ModelRow(id, m.optString("displayName")))
-                }
-                token = j.optString("nextPageToken", "")
-            } finally { c.disconnect() }
-            if (token.isEmpty()) break
-        }
-        return out.distinctBy { it.id }.sortedBy { it.id }
     }
 
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
@@ -479,7 +430,6 @@ object LangGuard {
     private fun arabic(t: String) = t.count { Character.isLetter(it) && Character.UnicodeScript.of(it.code) == Character.UnicodeScript.ARABIC }
     /** true لو الترجمة المفروض عربي بس أغلب حروفها مش عربي */
     fun foreign(s: Sub): Boolean {
-        if (s.isSound) return false
         val l = letters(s.translated)
         if (l < 3) return false
         return arabic(s.translated) * 100 < l * 50
@@ -500,33 +450,34 @@ object Parse {
         return null
     }
     private fun strs(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { (a!!.opt(it) as? String)?.trim() }.filter { it.isNotEmpty() }
+    /** ثواني من رقم أو نص: "12.5" / "01:23.5" / "1:02:03" (القديم كان بيقرا "01:23" كصفر فالجملة تظهر في أول المقطع) */
+    fun sec(s: JSONObject, key: String, def: Double): Double {
+        if (!s.has(key)) return def
+        val v = s.opt(key)
+        if (v is Number) return v.toDouble()
+        val t = v?.toString()?.trim()?.replace(',', '.') ?: return def
+        t.toDoubleOrNull()?.let { return it }
+        val m = Regex("^(?:(\\d+):)?(\\d+):(\\d+(?:\\.\\d+)?)$").find(t) ?: return def
+        return (m.groupValues[1].toIntOrNull() ?: 0) * 3600.0 + m.groupValues[2].toInt() * 60.0 + m.groupValues[3].toDouble()
+    }
     fun sub(s: JSONObject, off: Double): Sub {
         val orig = (s.optString("original").ifEmpty { s.optString("text") }).trim()
         val tr = (s.optString("translated").ifEmpty { s.optString("translation") }.ifEmpty { orig }).trim()
         val ad = s.optString("addressee").lowercase().let { if (it in listOf("male", "female", "plural")) it else "unknown" }
         val tg = s.optString("topic_gender").lowercase().let { if (it in listOf("male", "female", "plural")) it else "none" }
         return Sub(
-            off + (if (s.has("start")) s.optDouble("start", 0.0) else 0.0), off + (if (s.has("end")) s.optDouble("end", 1.0) else 1.0),
+            off + sec(s, "start", 0.0), off + sec(s, "end", 1.0),
             orig, tr, if (s.optString("gender") == "female") "female" else "male", ad, tg,
             strs(s.optJSONArray("people")), strs(s.optJSONArray("places")), s.optBoolean("is_song", false), s.optBoolean("low_confidence", false), -1,
             s.optString("emotion").trim().lowercase(), s.optBoolean("overlap", false), s.optString("speaker_tag").trim(),
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
-            s.optBoolean("faint", false), false,
-            s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - "))
+            s.optBoolean("faint", false)
         )
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
-        val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
-            .filter { it.end > it.start && it.original.isNotEmpty() }
-        val ok = all.filter { it.start < off + maxEnd + 1.0 }.map { if (it.end > off + maxEnd + 0.3) it.copy(end = off + maxEnd) else it }.filter { it.end > it.start }
-        if (ok.isEmpty() && all.isNotEmpty() && off > 1.0) {
-            // الموديل ساعات بيرجّع أوقات مطلقة (من أول الفيديو) بدل نسبية لبداية المقطع → الجمل كانت بتتشال كلها والباتش يطلع ✅ فاضي
-            val abs = all.map { it.copy(start = it.start - off, end = it.end - off) }
-                .filter { it.start >= off - 2.0 && it.start < off + maxEnd + 1.0 }
-            if (abs.isNotEmpty()) return abs
-        }
-        return ok
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
+            .filter { it.end > it.start && it.original.isNotEmpty() && it.start < off + maxEnd + 1.0 && !Subs.isMusicLabel(it) }
     }
 }
 
@@ -584,8 +535,7 @@ object Subs {
                 val overlaps = cur.start < prev.end - 0.15 && cur.end > prev.start - 0.15
                 val similar = norm(cur.original) == norm(prev.original) ||
                     (cur.translated.isNotEmpty() && prev.translated.isNotEmpty() && norm(cur.translated) == norm(prev.translated))
-                val sameSpot = cur.chunk != prev.chunk || Math.abs(cur.start - prev.start) < 1.5
-                if (overlaps && similar && sameSpot && cur.faint == prev.faint) { res[res.size - back] = cur; merged = true; break }
+                if (overlaps && similar && cur.faint == prev.faint) { res[res.size - back] = cur; merged = true; break }
                 back++
             }
             if (!merged) res.add(cur)
@@ -603,7 +553,7 @@ object Subs {
             val pw = words(prev.original); val cw = words(cur.original)
             val same = prev.gender == cur.gender && prev.addressee == cur.addressee && prev.topicGender == cur.topicGender
             if (gap >= 0 && gap < 0.5 && same && prev.isSong == cur.isSong && pw <= 6 && cw <= 6 && pw + cw <= 10 &&
-                !prev.lowConf && !cur.lowConf && !Regex("[.!؟?]\\s*$").containsMatchIn(prev.original.trim()) && !prev.translated.startsWith("«") && !cur.translated.startsWith("«") && !prev.isSound && !cur.isSound) {
+                !prev.lowConf && !cur.lowConf && !Regex("[.!؟?]\\s*$").containsMatchIn(prev.original.trim()) && !prev.translated.startsWith("«") && !cur.translated.startsWith("«")) {
                 res[res.size - 1] = prev.copy(end = cur.end, original = "${prev.original} ${cur.original}".trim(), translated = "${prev.translated} ${cur.translated}".trim())
             } else res.add(cur)
         }
@@ -612,22 +562,79 @@ object Subs {
         for (s in res) {
             val p = out.lastOrNull()
             if (p != null && s.end - s.start < 0.6 && s.start - p.end >= -0.05 && s.start - p.end <= 0.35 && p.gender == s.gender && p.addressee == s.addressee &&
-                p.isSong == s.isSong && !p.isSound && !s.isSound && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
+                p.isSong == s.isSong && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
                 out[out.size - 1] = p.copy(end = s.end, original = "${p.original} ${s.original}".trim(), translated = "${p.translated} ${s.translated}".trim())
             } else out.add(s)
         }
         return out
     }
 
+    private val PUNCT_END = Regex("[،,.؟?!:;؛…][\"'»)\\]]*$")
+    /** يقسّم النص لـ n جزء: القطع بيفضّل علامة ترقيم قريبة (±3 كلمات) من النقطة المثالية بدل القطع الأعمى بعدد الكلمات */
     private fun splitN(text: String, n: Int): List<String> {
         val w = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (n <= 1 || w.size <= 1) return listOf(text.trim())
-        val per = Math.ceil(w.size.toDouble() / n).toInt()
+        val total = w.size
+        val cuts = arrayListOf(0)
+        for (k in 1 until n) {
+            val prev = cuts.last()
+            val ideal = Math.round(total.toDouble() * k / n).toInt()
+            var best = ideal; var bd = Int.MAX_VALUE
+            for (c in maxOf(prev + 1, ideal - 3)..minOf(total - 1, ideal + 3)) {
+                if (PUNCT_END.containsMatchIn(w[c - 1])) { val d = Math.abs(c - ideal); if (d < bd) { best = c; bd = d } }
+            }
+            best = minOf(maxOf(best, prev + 1), total - (n - k))
+            if (best <= prev) break
+            cuts.add(best)
+        }
+        cuts.add(total)
         val parts = ArrayList<String>()
-        var i = 0
-        while (i < w.size) { parts.add(w.subList(i, minOf(w.size, i + per)).joinToString(" ")); i += per }
+        for (q in 0 until cuts.size - 1) parts.add(w.subList(cuts[q], cuts[q + 1]).joinToString(" "))
         while (parts.size < n) parts.add("")
         return parts
+    }
+
+    // ----- سطور "موسيقى" اللي النموذج بيكتبها رغم المنع: (تشغيل الموسيقى) [Music] ♪ -----
+    private val MUSIC_RE = Regex("^[\\s(\\[{«\"'♪♫🎵🎶*–—-]*(?:(?:تشغيل|يتم تشغيل|صوت|تعزف|عزف)\\s+)?(?:الموسيقى|موسيقى|موسيقي|music|musik|müzik)?[\\s♪♫🎵🎶]*[\\s)\\]}»\"'♪♫🎵🎶.*–—-]*$", RegexOption.IGNORE_CASE)
+    private val MUSIC_WORD = Regex("(موسيق|music|musik|müzik|♪|♫|🎵|🎶)", RegexOption.IGNORE_CASE)
+    private fun musicish(t0: String): Boolean { val t = t0.trim(); return t.isNotEmpty() && t.length <= 30 && MUSIC_RE.matches(t) && MUSIC_WORD.containsMatchIn(t) }
+    private fun bracketed(t: String) = t.any { it in "([{«♪♫*" } || t.contains("🎵") || t.contains("🎶")
+    /** سطر تسمية موسيقى بس (مش كلام): بين أقواس/♪، أو الأصل والترجمة الاتنين كلمة موسيقى */
+    fun isMusicLabel(s: Sub): Boolean {
+        val o = s.original; val t = s.translated
+        return (musicish(o) && bracketed(o)) || (musicish(t) && bracketed(t)) || (musicish(o) && musicish(t))
+    }
+
+    // ----- توحيد ترجمة السطور المتكررة في الأغاني (الكورَس): كل مقطع كان بيترجم نفس السطر بصيغة مختلفة -----
+    private fun normH(t: String) = t.lowercase().replace(Regex("[\\s.,!?؟،«»\"'()\\-–—…]"), "")
+    fun dice(a: String, b: String): Double {
+        if (a == b) return 1.0
+        if (a.length < 2 || b.length < 2) return 0.0
+        val m = HashMap<String, Int>()
+        for (i in 0 until a.length - 1) m.merge(a.substring(i, i + 2), 1, Int::plus)
+        var hit = 0
+        for (i in 0 until b.length - 1) { val g = b.substring(i, i + 2); val c = m[g] ?: 0; if (c > 0) { hit++; m[g] = c - 1 } }
+        return 2.0 * hit / (a.length + b.length - 2)
+    }
+    fun harmonize(fresh: List<Sub>, existing: List<Sub>): List<Sub> {
+        val pool = existing.filter { it.isSong && it.original.isNotBlank() && it.translated.isNotBlank() && normH(it.original).length >= 12 }
+            .map { it to normH(it.original) }
+        if (pool.isEmpty()) return fresh
+        return fresh.map { n ->
+            if (!n.isSong || n.translated.isBlank() || n.translated.contains('\n')) return@map n
+            val no = normH(n.original); if (no.length < 12) return@map n
+            val votes = HashMap<String, IntArray>()   // الترجمة -> [عدد، أبكر بداية*1000]
+            for ((p, po) in pool) {
+                if (p.start < n.end && p.end > n.start) continue
+                if (dice(no, po) < 0.85) continue
+                val base = p.translated.removePrefix("«").removeSuffix("»").trim()
+                val v = votes.getOrPut(base) { intArrayOf(0, Int.MAX_VALUE) }
+                v[0]++; v[1] = minOf(v[1], (p.start * 1000).toInt())
+            }
+            if (votes.isEmpty()) return@map n
+            val win = votes.entries.sortedWith(compareBy({ -it.value[0] }, { it.value[1] })).first().key
+            n.copy(translated = if (n.translated.startsWith("«")) "«$win»" else win)
+        }
     }
     const val MIN_PART_SEC = 1.0
     /** تقسيم الجملة الطويلة لأجزاء: عدد الأجزاء مايزيدش عن اللي وقت الجملة يسمح بيه (كل جزء ≥ 1ث)، والجزء مابيبقاش فاضي أبدًا
@@ -666,14 +673,4 @@ object Subs {
         return if (res.isEmpty()) listOf(sub) else res
     }
     fun splitAll(l: List<Sub>): List<Sub> = l.flatMap { splitLong(it) }
-
-    /** الموديل ساعات بيدّي جملة قصيرة مدة طويلة جدًا (18ث لسطر غنائي) فتفضل ظاهرة والمتكلم سكت — بنقصّرها على قد كلامها */
-    fun maxDurFor(s: Sub): Double {
-        val w = maxOf(words(s.translated), words(s.original))
-        return maxOf(3.0, w * 0.7 + 1.5)
-    }
-    fun capPace(s: Sub): Sub {
-        val m = maxDurFor(s)
-        return if (s.end - s.start > m + 0.3) s.copy(end = s.start + m) else s
-    }
 }

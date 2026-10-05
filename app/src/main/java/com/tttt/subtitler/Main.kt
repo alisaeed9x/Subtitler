@@ -30,6 +30,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import java.io.File
 import android.content.pm.ActivityInfo
@@ -74,7 +75,6 @@ class MainActivity : Activity() {
         val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
         val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
         val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
-        val vkeys = ui.input("مفاتيح الوضع البصري فقط (مفتاح في كل سطر)", Cfg.str("viskeys"), 2)
         // مفاتيح: كل مفتاح في خانة لوحده + زرار ＋ لإضافة أي عدد (الـ EditText الأصلي بيفضل هو مصدر الحقيقة ومش ظاهر)
         val keyLoaders = ArrayList<() -> Unit>()
         keyLoadersRef = keyLoaders
@@ -156,52 +156,26 @@ class MainActivity : Activity() {
         val keysUi = keyRows("🔑 مفاتيح Gemini الأساسية", keys, "الأساسية")
         val backupUi = keyRows("🛟 مفاتيح احتياطية", backup, "الاحتياطية")
         val extraUi = keyRows("➕ مفاتيح إضافية (بتتضاف للأساسية)", extra, "الإضافية")
-        val visKeysUi = keyRows("👁 مفتاح الوضع البصري", vkeys, "البصري")
         var modelSel = Cfg.str("model", Models.DEFAULT)
         val model = ui.input("الموديل (اكتب يدوي أو اختار من فوق)", modelSel)
         val modelNames = Models.builtin.map { it.id }
         val modelDesc = ui.text("", 12f, th.muted)
         fun descOf(id: String) = (Models.builtin.firstOrNull { it.id == id }?.desc ?: "موديل يدوي") + " — استهلاك النهارده: " + Quota.used(id) + " / " + Models.quotaOf(id) + " (تقريبي، بيتصفّر 00:00 PT)"
         modelDesc.text = descOf(modelSel)
-        lateinit var applyModel: (String) -> Unit
-        val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { applyModel(it) }
-        val fetchModelsBtn = ui.button("🔄 جلب كل الموديلات من جوجل واختيار واحد") {
-            val k = (keys.text.toString() + "\n" + extra.text.toString() + "\n" + backup.text.toString()).lines().map { it.trim() }.firstOrNull { it.length > 10 }
-            if (k == null) { Toast.makeText(this, "ضيف مفتاح API الأول", Toast.LENGTH_SHORT).show(); return@button }
-            Toast.makeText(this, "⏳ بجيب الموديلات…", Toast.LENGTH_SHORT).show()
-            Thread {
-                try {
-                    val rows = Api.listModels(k)
-                    // الأحدث/الأهم فوق: gemini أولًا
-                    val sorted = rows.sortedWith(compareBy({ !it.id.startsWith("gemini") }, { it.id }))
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        if (sorted.isEmpty()) { Toast.makeText(this, "مفيش موديلات رجعت", Toast.LENGTH_LONG).show(); return@runOnUiThread }
-                        val cur = model.text.toString().trim()
-                        val labels = sorted.map { (if (it.id == cur) "✓ " else "") + it.id + (if (it.display.isNotEmpty() && it.display != it.id) "\n" + it.display else "") }.toTypedArray()
-                        android.app.AlertDialog.Builder(this).setTitle("اختار الموديل (${sorted.size})")
-                            .setItems(labels) { _, which -> applyModel(sorted[which].id) }
-                            .setNegativeButton("إلغاء", null).show()
-                    }
-                } catch (e: Exception) {
-                    runOnUiThread { Toast.makeText(this, "⚠ فشل جلب الموديلات: " + (e.message ?: "").take(120), Toast.LENGTH_LONG).show() }
-                }
-            }.start()
-        }
-        var chunkSec = Cfg.int("chunk", 45).coerceIn(10, 600)
+        val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { model.setText(it); modelSel = it; modelDesc.text = descOf(it) }
+        var chunkSec = Cfg.int("chunk", 60).coerceIn(10, 600)
         val chunk = ui.slider("طول المقطع", chunkSec, 10, 600, " ثانية") { chunkSec = it }
         val ahead = ui.input("عدد المقاطع اللي بتترجم قدّام مكان التشغيل", Cfg.str("ahead", "3"))
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true)
+        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true)
         val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
-            "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
-            "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
+            "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
         var parallel = Cfg.int("parallel", 2).coerceIn(1, 4)
         val parallelRow = ui.slider("طلبات متوازية لكل مفتاح", parallel, 1, 4, "×") { parallel = it }
@@ -232,7 +206,7 @@ class MainActivity : Activity() {
                 .putString("model", model.text.toString().trim()).putInt("chunk", chunkSec).putString("extra", extra.text.toString())
                 .putString("roster", roster.text.toString()).putString("gloss", gloss.text.toString())
                 .putString("lang", lang).putString("style", style).putString("theme", themeId)
-                .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes)).putString("viskeys", vkeys.text.toString())
+                .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes))
             ahead.text.toString().trim().toIntOrNull()?.let { e.putInt("ahead", it) }
             atrack.text.toString().trim().toIntOrNull()?.let { e.putInt("atrack", it) }
             flags.keys.forEachIndexed { i, k -> e.putBoolean(k, (flagViews[i] as Switch).isChecked) }
@@ -291,11 +265,6 @@ class MainActivity : Activity() {
             keyPctTv.text = (Quota.used(mid) * 100 / q).toString() + "%"
             modelChipTv.text = "▾ " + mid.removePrefix("gemini-") + " ●"
         }
-        applyModel = { id ->
-            model.setText(id); modelSel = id; modelDesc.text = descOf(id)
-            Cfg.p.edit().putString("model", id).apply()   // يتحفظ فورًا
-            refreshChip()
-        }
         val sp = styleParts(ui, th)
         var settingsDlg0: TabbedDialog? = null; var qui0: QueueUi? = null
         val lk = LockUi(this, ui, th); lockUi = lk
@@ -321,9 +290,9 @@ class MainActivity : Activity() {
                 ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it })), false, "لهجة الترجمة وأسلوبها"),
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
-                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
+                ui.section("🤖 الموديل", true, modelChips, model, modelDesc),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, atrack),
-                ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
+                ui.section("🔊 الصوت والتوقيت", false, *fl("vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
@@ -340,9 +309,7 @@ class MainActivity : Activity() {
                 ui.section("🔑 الأساسية", true, keysUi),
                 ui.section("🛟 الاحتياطية", false, backupUi),
                 ui.section("➕ الإضافية", false, extraUi),
-                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn),
-                ui.section("👁 مفتاح الوضع البصري فقط", false,
-                    ui.text("لو حطيت مفتاح هنا، الوضع البصري (👁) بيستخدمه هو بس ومايستهلكش مفاتيح الترجمة، والترجمة العادية ماتستخدمهوش.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
+                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
             TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
                 ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
@@ -434,7 +401,7 @@ class MainActivity : Activity() {
         frame.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
         if (fromPlayer) {
             setContentView(FrameLayout(this))
-            settingsDlg.show(intent?.getStringExtra("tab"))   // من غير قسم محدد = قايمة الإعدادات كاملة
+            settingsDlg.show(intent?.getStringExtra("tab") ?: "fonts")
             return
         }
         setContentView(frame)
@@ -745,11 +712,10 @@ class PlayerActivity : Activity(), Host {
     // قايمة الجمل (نسخة مرتبة + مصفوفات للبحث الثنائي)
     var list: List<Sub> = emptyList()
     var starts = LongArray(0); var ends = LongArray(0)
-    // الحوار والأصوات الخلفية بيتفصلوا: الحوار تحت، وصف الصوت (همهمة/موسيقى…) فوق الفيديو
-    var spMap = IntArray(0); var spStarts = LongArray(0); var spEnds = LongArray(0)
-    var sdMap = IntArray(0); var sdStarts = LongArray(0); var sdEnds = LongArray(0)
-    lateinit var soundTv: TextView; var soundKey = ""
     var curIdx = -1; var curKey = ""; var lastRefresh = 0L
+    // أشرطة التقدم: كاش مجالات التغطية والجمل المستنية (بيتحدّث لما الجمل أو عدد المستني يتغيّر بس)
+    private var segSubsRef: List<Sub>? = null; private var segPendN = -1
+    private var segCov: List<DoubleArray> = emptyList(); private var segPend: List<DoubleArray> = emptyList()
     var offsetMs = 0L; var speed = 1f; var fit = 0; var fsFit = 2; var ccOn = true; var fitFsB: TextView? = null
     fun isLandNow() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     /** أفقي: وضع الشاشة الكاملة (الافتراضي تمديد) — رأسي: وضع منفصل (الافتراضي احتواء) */
@@ -943,7 +909,7 @@ class PlayerActivity : Activity(), Host {
             if (i == curC) curRow = row
         }
         val content = findViewById<ViewGroup>(android.R.id.content)
-        val maxH = (content.height * 0.26).toInt().coerceAtLeast(ui.dp(84))
+        val maxH = (content.height * 0.42).toInt().coerceAtLeast(ui.dp(110))
         val sv = ScrollView(this).apply { addView(list) }
         col.addView(sv, LinearLayout.LayoutParams(-1, maxH))
         col.addView(selTv)
@@ -952,12 +918,9 @@ class PlayerActivity : Activity(), Host {
         btns.addView(ui.button("☝ ده بس") { val i = sel; go("🔄 بترجم باتش ${i + 1} لوحده…") { engine.redoOnly(i) } }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(btns)
         paint()
-        val w = minOf(ui.dp(250), content.width - ui.dp(24)).coerceAtLeast(ui.dp(200))
-        // شفافة بتغطي الشاشة: أي ضغطة بره القايمة بتقفلها، والفيديو باين وراها. القايمة صغيرة على الحافة (مش نص الشاشة)
-        val scrim = FrameLayout(this).apply { isClickable = true; setOnClickListener { closeBatchPanel() } }
-        scrim.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, ui.dp(8), ui.dp(8), ui.dp(8)) })
-        content.addView(scrim, FrameLayout.LayoutParams(-1, -1))
-        batchPanel = scrim
+        val w = minOf(ui.dp(330), content.width - ui.dp(24)).coerceAtLeast(ui.dp(220))
+        content.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.CENTER))
+        batchPanel = col
         curRow?.let { r -> sv.post { sv.scrollTo(0, (r.top - ui.dp(40)).coerceAtLeast(0)) } }
     }
 
@@ -1051,13 +1014,10 @@ class PlayerActivity : Activity(), Host {
             val a = l[j]; val b = l[j + 1]
             val gap = starts[j + 1] - ends[j]
             val differ = (a.speakerTag.isNotBlank() && b.speakerTag.isNotBlank() && a.speakerTag != b.speakerTag) || a.gender != b.gender
-            if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.isSound && !b.isSound && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
+            if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
                 ends[j] - starts[j] <= 4000 && ends[j + 1] - starts[j + 1] in 600..5000) ends[j] = ends[j + 1]
         }
-        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound }
-        spMap = sp.toIntArray(); spStarts = LongArray(sp.size) { starts[sp[it]] }; spEnds = LongArray(sp.size) { ends[sp[it]] }
-        sdMap = sd.toIntArray(); sdStarts = LongArray(sd.size) { starts[sd[it]] }; sdEnds = LongArray(sd.size) { ends[sd[it]] }
-        if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
+        adapter.notifyDataSetChanged()
     }
 
     override fun onCreate(b: Bundle?) {
@@ -1087,12 +1047,6 @@ class PlayerActivity : Activity(), Host {
         sub.backdrop = sv
         st = TextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
         videoBox.addView(st, FrameLayout.LayoutParams(-2, -2, Gravity.TOP))
-        soundTv = TextView(this).apply {
-            setTextColor(0xFFE8EAED.toInt()); textSize = 13f; typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
-            gravity = Gravity.CENTER; maxLines = 2; layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(4)); background = ui.box(0x99000000.toInt(), 0x00000000, 14); visibility = View.GONE
-        }
-        videoBox.addView(soundTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(28) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (لازم تتضاف قبل درج اللوج وزرار 👁 وإلا بتبلع لمسهم)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -1261,6 +1215,7 @@ class PlayerActivity : Activity(), Host {
         ccFsB = ccB; tb1.addView(ccB)
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
+        tb1.addView(ui.fsCircle("↻") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
         tb1.addView(fb("A−") { scaleBy(-10) })
         tb1.addView(fb("A+") { scaleBy(10) })
         val fitB = fb("⬛ " + PlayerLogic.fitNames[curFit()]) { v ->
@@ -1318,7 +1273,6 @@ class PlayerActivity : Activity(), Host {
         btnRow.addView(mid, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         fsBarFs = ui.fsCircle("⛶") { cycleFitNow(); showChrome() }
-        rightB.addView(ui.fsCircle("↻") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // بورتريت/لاندسكيب في الشريط السفلي مع ⛶ و ⧉
         rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
         rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
         btnRow.addView(rightB, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
@@ -1358,15 +1312,13 @@ class PlayerActivity : Activity(), Host {
         var volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         var briF = window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it }
         var scrollLogged = false
-        var hScrub = false; var scrubBase = 0L; var scrubTarget = 0L; var fast2x = false
+        // ---- تحريك الفيديو لحظيًا مع الصباع (سحب أفقي على الفيديو أو سحب شريط التقدم) ----
+        var swipeSeeking = false; var swipeStartPos = 0L; var swipeTarget = 0L; var lastScrub = 0L
+        fun fastSeek(on: Boolean) { try { player.setSeekParameters(if (on) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT) } catch (_: Exception) {} }
+        fun scrubTo(posMs: Long) { val now = System.currentTimeMillis(); if (now - lastScrub >= 90) { lastScrub = now; player.seekTo(posMs) } }
+        fun deltaTxt(ms: Long) = (if (ms >= 0) "+" else "−") + PlayerLogic.clock(Math.abs(ms))
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; hScrub = false; scrubBase = player.currentPosition; dismissPop(); dismissStrip(); return true }
-            override fun onLongPress(e: MotionEvent) {
-                if (hScrub || fast2x) return
-                fast2x = true; try { player.setPlaybackSpeed(2f) } catch (_: Exception) {}
-                log("👆 ضغطة مطولة: 2×")
-                giShow("2× ⏩", Gravity.CENTER)
-            }
+            override fun onDown(e: MotionEvent): Boolean { scrollLogged = false; swipeSeeking = false; dismissPop(); dismissStrip(); return true }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (!fullMode) { log("👆 ضغطة: تشغيل/إيقاف"); togglePlay() }
                 else {
@@ -1386,15 +1338,15 @@ class PlayerActivity : Activity(), Host {
                 return true
             }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-                if (fast2x) return true
                 if (e1 == null) return false
-                // سحب أفقي في الفيديو = تقديم/ترجيع (عرض الشاشة كله ≈ 90 ثانية)، والتنفيذ لما ترفع صباعك
-                if (hScrub || !scrollLogged && Math.abs(e2.x - e1.x) > ui.dp(16) && Math.abs(e2.x - e1.x) > Math.abs(e2.y - e1.y) * 1.2f) {
-                    if (!hScrub) { hScrub = true; scrubBase = player.currentPosition; log("↔ سحب أفقي: تقديم/ترجيع") }
-                    val span = if (durMs > 0) minOf(durMs.toDouble(), 90000.0) else 90000.0
-                    scrubTarget = (scrubBase + (e2.x - e1.x) / videoBox.width.coerceAtLeast(1) * span).toLong().coerceIn(0L, if (durMs > 0) durMs else Long.MAX_VALUE)
-                    val dl = (scrubTarget - scrubBase) / 1000
-                    giShow(PlayerLogic.clock(scrubTarget) + "  (" + (if (dl >= 0) "+" else "") + dl + "ث)", Gravity.CENTER)
+                // سحب أفقي على الفيديو: الفيديو بيتحرك معاك وانت ماسك (عرض الشاشة كله ≈ 3 دقايق)، ويثبت لما ترفع صباعك
+                val horiz = Math.abs(e2.x - e1.x) > Math.abs(e2.y - e1.y)
+                if (swipeSeeking || (!scrollLogged && horiz && Math.abs(e2.x - e1.x) > ui.dp(16) && durMs > 0)) {
+                    if (!swipeSeeking) { swipeSeeking = true; swipeStartPos = player.currentPosition; fastSeek(true); h.removeCallbacks(hideChrome); log("↔ سحب على الفيديو: تقديم/تأخير") }
+                    val span = minOf(durMs, 180_000L)
+                    val t = (swipeStartPos + (e2.x - e1.x) / videoBox.width.coerceAtLeast(1) * span).toLong().coerceIn(0L, maxOf(0L, durMs))
+                    swipeTarget = t; scrubTo(t)
+                    giShow(PlayerLogic.clock(t) + "  (" + deltaTxt(t - swipeStartPos) + ")", Gravity.CENTER)
                     return true
                 }
                 if (Math.abs(dy) < Math.abs(dx)) return false
@@ -1426,10 +1378,6 @@ class PlayerActivity : Activity(), Host {
                 if (ev.actionMasked == MotionEvent.ACTION_UP && ev.eventTime - ev.downTime < 300) { lockOv.visibility = View.VISIBLE; h.removeCallbacks(hideLockOv); h.postDelayed(hideLockOv, 2500) }
                 return@setOnTouchListener true
             }
-            if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-                if (fast2x) { fast2x = false; try { player.setPlaybackSpeed(speed) } catch (_: Exception) {}; gi.visibility = View.GONE }
-                if (hScrub) { hScrub = false; if (ev.actionMasked == MotionEvent.ACTION_UP && !syncing) { player.seekTo(scrubTarget); showChrome() } }
-            }
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { syncing = false; syncCand = hitSub(ev.x, ev.y); sx = ev.x; syncStart = offsetMs }
                 MotionEvent.ACTION_MOVE -> if (syncCand && (syncing || Math.abs(ev.x - sx) > ui.dp(14))) {
@@ -1446,7 +1394,12 @@ class PlayerActivity : Activity(), Host {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (syncing) { syncing = false; syncCand = false; if (fullMode) showChrome(); return@setOnTouchListener true }
             }
-            gd.onTouchEvent(ev); true
+            gd.onTouchEvent(ev)
+            if (swipeSeeking && (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL)) {
+                swipeSeeking = false; fastSeek(false); player.seekTo(swipeTarget)
+                if (fullMode) showChrome()
+            }
+            true
         }
 
         // ---- الكبسولة تحت الفيديو (الوضع الرأسي) ----
@@ -1465,6 +1418,12 @@ class PlayerActivity : Activity(), Host {
         fun seekFrac(f: Float) { if (durMs > 0) player.seekTo((f * durMs).toLong()) }
         ctl.prog.onSeek = { f -> seekFrac(f) }
         fsProgV.onSeek = { f -> seekFrac(f); showChrome() }
+        // سحب شريط التقدم: الفيديو بيتحرك معاك لحظيًا + بيكتب الوقت والفرق، ويثبت لما ترفع صباعك
+        var barStart = 0L
+        val barDrag: (Boolean) -> Unit = { on -> if (on) { barStart = player.currentPosition; fastSeek(true); h.removeCallbacks(hideChrome) } else fastSeek(false) }
+        val barScrub: (Float) -> Unit = { f -> if (durMs > 0) { val t = (f * durMs).toLong(); scrubTo(t); giShow(PlayerLogic.clock(t) + "  (" + deltaTxt(t - barStart) + ")", Gravity.CENTER) } }
+        ctl.prog.onDrag = barDrag; ctl.prog.onScrub = barScrub
+        fsProgV.onDrag = barDrag; fsProgV.onScrub = barScrub
 
         // ---- الجمل واللوجز (نوافذ سفلية بدل اللوحة اللي تحت الفيديو) ----
         logTv = ui.text("", 11f, th.text).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6)) }
@@ -1493,7 +1452,6 @@ class PlayerActivity : Activity(), Host {
         }
         counters = ui.text("", 10f, th.muted).apply { setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(2)) }
         sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(listView), true)
-        sentDlg.setOnShowListener { adapter.notifyDataSetChanged() }
         val logCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         fun logChip(t: String, f: () -> Unit) = TextView(this).apply {
             text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
@@ -1597,15 +1555,20 @@ class PlayerActivity : Activity(), Host {
                 val cov = if (durMs > 0) (engine.coveredSec() * 1000.0 / durMs).toFloat().coerceIn(0f, 1f) else 0f
                 val pr = if (fullMode) fsProgV else ctl.prog
                 if (!pr.dragging) pr.played = frac
-                pr.translated = cov; pr.invalidate()
+                pr.translated = cov
+                if (durMs > 0) {
+                    val sr = engine.subs; val pn = engine.pendingCount()
+                    if (sr !== segSubsRef || pn != segPendN) { segSubsRef = sr; segPendN = pn; segCov = engine.coverageSegs(); segPend = engine.pendingSegs() }
+                }
+                pr.durSec = durMs / 1000.0; pr.cov = segCov; pr.pend = segPend
+                pr.invalidate()
                 val tEl = PlayerLogic.clock(cur); val tDu = PlayerLogic.clock(durMs)
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
                 visOv.showBoxes(visual.boxesAt(visNow))
-                val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs).map { spMap[it] }
-                val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
+                val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
                 val idx = act.lastOrNull() ?: -1
                 val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
@@ -1628,11 +1591,9 @@ class PlayerActivity : Activity(), Host {
                     }
                     sub.show(shown, gs)
                     if (pipNow()) pipOv?.set(if (shown == null) "" else sub.style.mainText(shown))
-                    if (sentDlg.isShowing) adapter.notifyDataSetChanged()
+                    adapter.notifyDataSetChanged()
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
-                val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { list[it].translated }
-                if (sTxt != soundKey) { soundKey = sTxt; soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE }
                 st.text = status
                 if (now - lastBatch > 700) { lastBatch = now; batchTv.text = engine.batchLines(); updateProblems() }
                 if (now - lastBeat > 20000) { lastBeat = now; LogStore.add("💓 ${LogStore.heapLine()} · ${if (player.isPlaying) "بيشتغل" else "واقف"} @${fmtMs(cur)} · مترجم ${(engine.coveredSec() / 60).toInt()}د · ${engine.subs.size} جملة") }
@@ -1717,7 +1678,7 @@ class PlayerActivity : Activity(), Host {
         engine = Engine(conf, { makeSource() }, store, this, pb)
         engine.convDialect = Cfg.str("conv_dialect", "")
         Live.engine = engine
-        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
+        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
         val savedPos = engine.load()
         if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
         refreshList()
@@ -2065,19 +2026,18 @@ class PlayerActivity : Activity(), Host {
         if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Toast.makeText(this, "مفيش فيديو شغّال", Toast.LENGTH_SHORT).show(); return }
         if (visBusy) { Toast.makeText(this, "👁 لسه بترجم اللقطة اللي فاتت…", Toast.LENGTH_SHORT).show(); return }
         visBusy = true
-        val tok = ++visTok
-        h.postDelayed({ if (visBusy && visTok == tok) { visBusy = false;  } }, 60_000)
         val wasPlaying = try { player.playWhenReady } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         val curUs = player.currentPosition * 1000
         val t0 = (player.currentPosition - offsetMs) / 1000.0
-                val done = { runOnUiThread { visBusy = false; if (wasPlaying && !isFinishing && !isDestroyed) try { player.play() } catch (_: Exception) {} } }
+        Toast.makeText(this, "📸 وقفت الفيديو وبترجم اللقطة…", Toast.LENGTH_SHORT).show()
+        val done = { runOnUiThread { visBusy = false; if (wasPlaying && !isFinishing && !isDestroyed) try { player.play() } catch (_: Exception) {} } }
         fun fallback() {
             Thread {
                 val r = makeRetriever()
                 val b = try { r?.getFrameAtTime(curUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 try { r?.release() } catch (_: Exception) {}
-                if (b != null) visual.snap(b, { t0 }, done) else { done() }
+                if (b != null) visual.snap(b, { t0 }, done) else { runOnUiThread { Toast.makeText(this, "👁 معرفتش ألقط الفريم", Toast.LENGTH_SHORT).show() }; done() }
             }.start()
         }
         val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
@@ -2086,7 +2046,6 @@ class PlayerActivity : Activity(), Host {
         } catch (_: Exception) { fallback() }
     }
     private var visBusy = false
-    private var visTok = 0
 
     fun visualDialog() {
         val d = android.app.Dialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
@@ -2098,7 +2057,7 @@ class PlayerActivity : Activity(), Host {
         box.addView(st)
         box.addView(ui.button(if (visual.running) "⏹ إيقاف" else "▶ تشغيل", true) {
             if (visual.running) visual.stop() else {
-                visual.clear(); visual.start()
+                visual.clear(); visual.start(); say("👁 الوضع البصري شغّال")
             }
             d.dismiss()
         })
@@ -2110,11 +2069,11 @@ class PlayerActivity : Activity(), Host {
     }
 
     /** الإعدادات من المشغّل: بتفتح شاشة الإعدادات فوق الفيديو من غير ما تقفله — الرجوع (Back) بيرجّعك للفيديو */
-    fun openSettings(tab: String? = null) {
+    fun openSettings(tab: String = "fonts") {
         resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
-        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).apply { if (tab != null) putExtra("tab", tab) })
+        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("tab", tab))
     }
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)

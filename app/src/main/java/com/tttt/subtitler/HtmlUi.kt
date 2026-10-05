@@ -32,24 +32,49 @@ import java.io.File
 /** شريط التقدم: أزرق = موضع التشغيل، كهرماني = المترجم (زي fs-progress-played / fs-progress-translated) */
 class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     var played = 0f
+    /** (قديم) نسبة المترجم المتصل — الشريط الأخضر بقى بيتحسب من الجمل الفعلية (cov) */
     var translated = 0f
     var dragging = false
     /** mini = شكل شريط التقدم الرئيسي في الأصل (.progress-bar-bg: خط 4dp بتدرج كهرماني→سماوي + خريطة التغطية تحته) */
     var mini = false
     var onSeek: ((Float) -> Unit)? = null
+    /** أثناء السحب (قبل رفع الصباع): الفيديو بيتحرك معاك */
+    var onScrub: ((Float) -> Unit)? = null
+    var onDrag: ((Boolean) -> Unit)? = null
+    /** مدة الفيديو بالثواني (لتحويل أزمنة الجمل لنسب على الشريط) */
+    var durSec = 0.0
+    /** مجالات الترجمة الفعلية [بداية,نهاية] بالثواني — الشريط الأخضر بيتقطع بين الجمل مش بين الباتشات */
+    var cov: List<DoubleArray> = emptyList()
+    /** مجالات الجمل اللي لسه هتتغير (لهجة / إعادة صياغة / ضمائر) — شريط تالت فوق، بيختفي لما كلها تتغير */
+    var pend: List<DoubleArray> = emptyList()
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val d = ctx.resources.displayMetrics.density
 
     override fun onMeasure(w: Int, h: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(w), ((if (mini) 30 else 26) * d).toInt())
+        setMeasuredDimension(MeasureSpec.getSize(w), ((if (mini) 30 else 34) * d).toInt())
+    }
+
+    private fun strip(c: Canvas, w: Float, y0: Float, hh: Float, segs: List<DoubleArray>, color: Int, trackColor: Int?) {
+        val rad = hh / 2f
+        if (trackColor != null) { p.shader = null; p.color = trackColor; c.drawRoundRect(RectF(0f, y0, w, y0 + hh), rad, rad, p) }
+        if (durSec <= 0.0 || segs.isEmpty()) return
+        p.shader = null; p.color = color
+        for (s in segs) {
+            val a = (w * (s[0] / durSec)).toFloat().coerceIn(0f, w)
+            val b = (w * (s[1] / durSec)).toFloat().coerceIn(0f, w)
+            if (b <= a && a >= w) continue
+            c.drawRoundRect(RectF(a, y0, maxOf(b, a + 1.5f * d).coerceAtMost(w), y0 + hh), rad, rad, p)
+        }
     }
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
+        p.style = Paint.Style.FILL; p.shader = null
         if (mini) {
             val cy = height / 2f - 3f * d
             val tr = 2f * d
-            p.style = Paint.Style.FILL; p.shader = null
+            // الشريط التالت (فوق): الجمل اللي لسه هتتغير — بيظهر بس لما فيه تغيير شغال
+            if (pend.isNotEmpty()) strip(c, w, 3f * d, 3f * d, pend, 0xFFF59E0B.toInt(), 0x33F59E0B)
             p.color = th.border
             c.drawRoundRect(RectF(0f, cy - tr, w, cy + tr), 3f * d, 3f * d, p)
             val px = w * played.coerceIn(0f, 1f)
@@ -58,35 +83,27 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
                 c.drawRoundRect(RectF(0f, cy - tr, px, cy + tr), 3f * d, 3f * d, p)
                 p.shader = null
             }
-            // خريطة تغطية الترجمة (gap-coverage-map): 4dp تحت الخط، أخضر = مترجم
-            val gy = cy + tr + 3f * d
-            p.color = th.border
-            c.drawRoundRect(RectF(0f, gy, w, gy + 4f * d), 2f * d, 2f * d, p)
-            if (translated > 0f) {
-                val tx = w * translated.coerceIn(0f, 1f)
-                p.shader = LinearGradient(0f, 0f, tx.coerceAtLeast(1f), 0f, 0xFF16A34A.toInt(), 0xFF4ADE80.toInt(), Shader.TileMode.CLAMP)
-                c.drawRoundRect(RectF(0f, gy, tx, gy + 4f * d), 2f * d, 2f * d, p)
-                p.shader = null
-            }
+            // الشريط التاني (تحت): أخضر = فيه جملة ترجمة فعلًا (بيتقطع عند الفجوات)
+            strip(c, w, cy + tr + 3f * d, 4f * d, cov, 0xFF22C55E.toInt(), th.border)
             val r = (if (dragging) 5.5f else 3.5f) * d
             val tcx = px.coerceIn(r, w - r)
-            p.color = Color.WHITE
+            p.style = Paint.Style.FILL; p.shader = null; p.color = Color.WHITE
             c.drawCircle(tcx, cy, r, p)
             p.style = Paint.Style.STROKE; p.strokeWidth = 2f * d; p.color = th.accent
             c.drawCircle(tcx, cy, r, p)
             return
         }
         val cy = height / 2f; val th6 = 3f * d
+        if (pend.isNotEmpty()) strip(c, w, 2f * d, 3f * d, pend, 0xFFF59E0B.toInt(), 0x33F59E0B)
         p.style = Paint.Style.FILL
         p.color = 0x2EFFFFFF
         c.drawRoundRect(RectF(0f, cy - th6, w, cy + th6), th6, th6, p)
-        p.color = th.primary
-        if (translated > 0f) c.drawRoundRect(RectF(0f, cy - th6, w * translated.coerceIn(0f, 1f), cy + th6), th6, th6, p)
         p.color = 0xFF3B82F6.toInt()
         val px = w * played.coerceIn(0f, 1f)
         if (px > 0f) c.drawRoundRect(RectF(0f, cy - th6, px, cy + th6), th6, th6, p)
+        strip(c, w, cy + th6 + 4f * d, 3f * d, cov, 0xFF22C55E.toInt(), 0x2EFFFFFF)
         val r = (if (dragging) 8f else 6.5f) * d
-        p.color = Color.WHITE
+        p.style = Paint.Style.FILL; p.color = Color.WHITE
         c.drawCircle(px.coerceIn(r, w - r), cy, r, p)
         p.style = Paint.Style.STROKE; p.strokeWidth = 2f * d; p.color = 0xFF3B82F6.toInt()
         c.drawCircle(px.coerceIn(r, w - r), cy, r, p)
@@ -96,10 +113,10 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
         if (width <= 0) return true
         val f = (e.x / width).coerceIn(0f, 1f)
         when (e.action) {
-            MotionEvent.ACTION_DOWN -> { dragging = true; parent?.requestDisallowInterceptTouchEvent(true); played = f; invalidate() }
-            MotionEvent.ACTION_MOVE -> { played = f; invalidate() }
-            MotionEvent.ACTION_UP -> { dragging = false; played = f; invalidate(); onSeek?.invoke(f) }
-            MotionEvent.ACTION_CANCEL -> { dragging = false; invalidate() }
+            MotionEvent.ACTION_DOWN -> { dragging = true; parent?.requestDisallowInterceptTouchEvent(true); played = f; invalidate(); onDrag?.invoke(true); onScrub?.invoke(f) }
+            MotionEvent.ACTION_MOVE -> { played = f; invalidate(); onScrub?.invoke(f) }
+            MotionEvent.ACTION_UP -> { dragging = false; played = f; invalidate(); onDrag?.invoke(false); onSeek?.invoke(f) }
+            MotionEvent.ACTION_CANCEL -> { dragging = false; invalidate(); onDrag?.invoke(false) }
         }
         return true
     }
