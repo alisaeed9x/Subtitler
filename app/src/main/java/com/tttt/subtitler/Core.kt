@@ -317,6 +317,28 @@ class Pool(private val c: Conf) {
         watchers.firstOrNull { it != avoid && ok(it) }?.let { return it }
         return c.backup.firstOrNull { it != avoid && ok(it) }
     }
+    /** طلبات شغالة دلوقتي على كل مفتاح + متوسط زمن الرد (ms): بنوزّع الباتشات على المفتاح الفاضي/الأسرع بدل التبادل الأعمى (التبادل كان بيحبس الباتشات الزوجية على المفتاح البطيء) */
+    private val load = HashMap<String, Int>()
+    private val lat = HashMap<String, Double>()
+    @Synchronized fun begin(k: String) { load[k] = (load[k] ?: 0) + 1 }
+    @Synchronized fun end(k: String, ms: Long, okReply: Boolean) {
+        load[k] = maxOf(0, (load[k] ?: 1) - 1)
+        val v = if (okReply) ms.toDouble() else 45_000.0   // الفشل/الانتهاء بتايم أوت بيأخّر المفتاح في الترتيب
+        lat[k] = lat[k]?.let { it * 0.6 + v * 0.4 } ?: v
+    }
+    /** الأساسي الأقل شغلًا، ولو متساويين الأسرع؛ وبعدين الاحتياطي (نفس ترتيب pick) */
+    @Synchronized fun pickFree(avoid: String?, rr: Int): String? {
+        val act = mains.filter { it != avoid && ok(it) }
+        if (act.isNotEmpty()) {
+            val minLoad = act.minOf { load[it] ?: 0 }
+            val free = act.filter { (load[it] ?: 0) == minLoad }
+            return free.sortedWith(compareBy<String>({ lat[it] ?: 0.0 }, { Math.floorMod(act.indexOf(it) - rr, act.size) })).first()
+        }
+        watchers.firstOrNull { it != avoid && ok(it) }?.let { return it }
+        return c.backup.firstOrNull { it != avoid && ok(it) }
+    }
+    /** كام مفتاح صالح دلوقتي (عشان نعرف نبعت نسخة تانية من باتش اتأخر على مفتاح مختلف) */
+    @Synchronized fun usableCount(): Int = all().count { ok(it) }
     @Synchronized fun pickBackup(avoid: String?): String? = c.backup.firstOrNull { it != avoid && ok(it) }
     /** مفتاح لسدّ فجوة: المراقبين، بعدين الاحتياطي، بعدين الأساسي — من غير المفاتيح المشغولة */
     @Synchronized fun gapKey(busy: Set<String>, rr: Int): String? {

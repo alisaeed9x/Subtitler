@@ -82,6 +82,16 @@ class Engine(
     private val bounds = ConcurrentHashMap<Int, Double>()      // بداية المقطع بعد تعديلها لأقرب صمت
     private val prepared = ConcurrentHashMap.newKeySet<Int>()
     private val inflight = ConcurrentHashMap.newKeySet<Int>()
+    // ===== توزيع الباتشات على المفاتيح + نسخة احتياطية للباتش المتأخر (كل باتش يتحسب مرة واحدة بس) =====
+    private val startedAt = ConcurrentHashMap<Int, Long>()          // وقت بداية الباتش الشغال
+    private val preps = ConcurrentHashMap<Int, Prep>()              // صوت الباتش الشغال (عشان النسخة الاحتياطية ماتفكوش تاني)
+    private val keyOf = ConcurrentHashMap<Int, String>()            // المفتاح اللي الباتش شغال عليه دلوقتي
+    private val hedged = ConcurrentHashMap.newKeySet<Int>()         // باتشات اتبعتلها نسخة احتياطية
+    private val claimed = ConcurrentHashMap.newKeySet<Int>()        // باتشات نتيجتها اتطبّقت (أول نسخة تخلص تكسب)
+    private val hedgeBusy = AtomicInteger(0)
+    private val recentMs = java.util.concurrent.ConcurrentLinkedDeque<Long>()   // أزمنة آخر باتشات خلصت
+    @Volatile private var maxApplied = -1                           // أعلى باتش اتطبّق (لو في باتش قبله لسه شغال يبقى متأخر)
+    private val hedgeEx = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     @Volatile private var anyApplied = false
     private val gapTried = Ranges()      // بتتحفظ بين الجلسات
     private val gapSession = Ranges()    // لجلسة التشغيل دي بس (للحد الأقصى)
@@ -263,7 +273,7 @@ class Engine(
         synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
         done.remove(a, b); gapTried.remove(a, b)
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
-        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i) }
+        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i); claimed.remove(i) }
         pool.clear(); lastGapTry = 0L; gapScanClean = false
         host.changed(); persist()
     }
@@ -274,7 +284,7 @@ class Engine(
     /** من الأول خالص */
     fun redoAll() { redo(0, -1); onlyChunks = null; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
-    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     fun saveNow() = doPersist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
@@ -312,7 +322,7 @@ class Engine(
     fun run() {
         if (conf.keys.isEmpty() && conf.backup.isEmpty()) { host.status("⚠ ادخل مفتاح Gemini في الإعدادات"); host.log("⚠ مفيش مفاتيح Gemini"); return }
         val cap = pool.capacity(conf.parallelPerKey)
-        val ex = Executors.newFixedThreadPool(cap) { r -> Thread(r).also { it.isDaemon = true } }
+        val ex = Executors.newFixedThreadPool(cap + 2) { r -> Thread(r).also { it.isDaemon = true } }   // +2: باتش اتنسخ واتحسب من نسخته الاحتياطية ممكن يفضل خيطه الأصلي شغال شوية من غير ما يحجز مكان باتش جديد
         exec = ex
         if (cap > 1) host.log("⚡ ترجمة متوازية: لحد $cap طلب في نفس الوقت")
         try {
@@ -323,6 +333,7 @@ class Engine(
                 if (headless && !anyApplied && failedCount() >= 5) { fatal = "المقاطع بتفشل ورا بعض — راجع المفاتيح والنت"; host.log("⛔ " + fatal); host.status("⛔ " + fatal); running = false; break }
                 if (userPaused) { host.status("⏸ الترجمة واقفة مؤقتًا — دوس «إلغاء الإيقاف» تكمّل"); nap(300); continue }
                 if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
+                hedgeTick()
                 var c = if (headless) firstUndone(d) else (host.position() / ch).toInt().coerceAtLeast(0)
                 val fc = forcedCursor
                 if (fc >= 0) {
@@ -437,13 +448,35 @@ class Engine(
         guard(i) {
             val p = prepare(i)
             if (p == null) { failed.remove(i); return@guard }
-            inflight.add(i)
+            inflight.add(i); startedAt[i] = System.currentTimeMillis(); preps[i] = p; hedged.remove(i)
             try {
                 ex.submit {
-                    try { if (guard(i) { send(i, p) }) failed.remove(i) } finally { inflight.remove(i) }
+                    try { if (guard(i) { send(i, p) }) failed.remove(i) } finally { inflight.remove(i); preps.remove(i); startedAt.remove(i); keyOf.remove(i) }
                 }
-            } catch (_: RejectedExecutionException) { inflight.remove(i) }
+            } catch (_: RejectedExecutionException) { inflight.remove(i); preps.remove(i); startedAt.remove(i) }
         }
+    }
+
+    /**
+     * باتش اتأخر (شغال أطول من ~2× المعتاد) وفي باتش بعده خلص: يبقى غالبًا واقع على مفتاح بطيء.
+     * بنبعت نسخة منه على مفتاح تاني — أول نسخة تخلص هي اللي بتتطبّق والتانية بتتجاهل. نسخة واحدة بس في نفس الوقت.
+     */
+    private fun hedgeTick() {
+        if (inflight.isEmpty() || hedgeBusy.get() >= 1 || pool.usableCount() < 2) return
+        val now = System.currentTimeMillis()
+        val ms = recentMs.toList().sorted()
+        val med = if (ms.isEmpty()) 0L else ms[ms.size / 2]
+        val limit = (if (med > 0) med * 22 / 10 else 40_000L).coerceIn(25_000L, 120_000L)
+        val i = inflight.filter { it < maxApplied && it !in hedged && preps.containsKey(it) && (startedAt[it]?.let { s -> now - s > limit } ?: false) }.minOrNull() ?: return
+        val p = preps[i] ?: return
+        if (!hedged.add(i)) return
+        hedgeBusy.incrementAndGet()
+        host.log("⚡ باتش ${i + 1} اتأخر عن اللي بعده — بعتّه على مفتاح تاني (أول نسخة تخلص هي اللي تتحسب)")
+        try {
+            hedgeEx.submit {
+                try { send(i, p, avoidKey = keyOf[i], hedge = true) } catch (_: Exception) {} finally { hedgeBusy.decrementAndGet() }
+            }
+        } catch (_: RejectedExecutionException) { hedgeBusy.decrementAndGet() }
     }
 
     /** إعادة محاولة المقاطع الفاشلة لما نخلص الشغل اللي قدام المشاهد. */
@@ -473,6 +506,7 @@ class Engine(
 
     /** يفك الصوت (ويقصّر المقطع لأقرب لحظة صمت). null = مفيش حاجة تتبعت (صامت / مفيش صوت). */
     private fun prepare(i: Int, force: Boolean = false): Prep? {
+        claimed.remove(i)   // محاولة جديدة للباتش ده من الأول
         val d = currentDur()
         val rawStart = cStart(i)
         var rawEnd = cEnd(i, d)
@@ -510,17 +544,22 @@ class Engine(
         return Prep(w, rawStart, rawEnd)
     }
 
-    private fun send(i: Int, p: Prep, backupFirst: Boolean = false) {
+    private fun send(i: Int, p: Prep, backupFirst: Boolean = false, avoidKey: String? = null, hedge: Boolean = false) {
         val w = p.w; val rawStart = p.rawStart; val rawEnd = p.rawEnd
         val prior = subs
-        fun nextKey(avoid: String?): String? = if (backupFirst) (pool.pickBackup(avoid) ?: pool.pick(avoid, rr.getAndIncrement())) else pool.pick(avoid, rr.getAndIncrement())
-        var key = nextKey(null) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        // المفتاح الأقل شغلًا ثم الأسرع (مش تبادل بالدور): الباتشات بتمشي ورا بعض بدل ما الزوجية تتحبس على مفتاح بطيء
+        fun nextKey(avoid: String?): String? = if (backupFirst) (pool.pickBackup(avoid) ?: pool.pickFree(avoid, rr.getAndIncrement())) else pool.pickFree(avoid, rr.getAndIncrement())
+        var key = nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
         var partial = false
         var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
+            if (claimed.contains(i)) return   // نسخة تانية من الباتش ده خلصت وطُبّقت قبلنا
+            if (!hedge) keyOf[i] = key
             val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0)
             try {
-                val r = Api.generate(conf.model, key, prompt, w.bytes)
+                val t0 = System.currentTimeMillis()
+                pool.begin(key)
+                val r = try { Api.generate(conf.model, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
                 if (r.finish == "MAX_TOKENS" && trunc >= 2) partial = true
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
                 if (r.finish.isNotEmpty() && r.finish != "STOP" && r.finish != "MAX_TOKENS") throw Exception("رد Gemini اتوقف: ${r.finish}")
@@ -542,7 +581,11 @@ class Engine(
                 }
                 if (fresh.isEmpty() && !w.silent) { partial = true; host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة") }
                 pool.good(key)
+                if (!claimed.add(i)) { host.log("↩ باتش ${i + 1}: نسخة تانية خلصته قبلها — اتجاهلت دي"); return }
+                if (i > maxApplied) maxApplied = i
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
+                startedAt[i]?.let { recentMs.addLast(System.currentTimeMillis() - it); while (recentMs.size > 8) recentMs.pollFirst() }
+                if (hedge) { inflight.remove(i); host.log("⚡ باتش ${i + 1}: النسخة الاحتياطية خلصت الأول") }
                 scheduleHoleFill(i, rawStart, rawEnd, w, key)   // برّه خانة الباتش: الباتش الجاي مايستناش سدّ الثغرات
                 if (partial) { incomplete.add(i); host.log("⚠ باتش ${i + 1} رجع ناقص — تقدر تعيده من علامة التحذير") }
                 return

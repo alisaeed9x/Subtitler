@@ -874,20 +874,33 @@ class PlayerActivity : Activity(), Host {
         val hh = ui.dp(if (compact) 32 else 44); val m = ui.dp(if (compact) 3 else 4)
         fun lp(w: Int) = LinearLayout.LayoutParams(w, hh).apply { setMargins(m, m, m, m) }
         val tr = b("▶ ترجمة", 0xFFE53935.toInt()) { beginTranslate() }
-        val ps = b("⏸ إيقاف مؤقت", 0xFF424B57.toInt()) { pauseTranslate() }
-        val rs = b("▶ إلغاء الإيقاف", 0xFF2E7D32.toInt()) { beginTranslate() }
-        row.addView(tr, if (compact) lp(-2) else lp(-1)); row.addView(ps, if (compact) lp(-2) else lp(0).apply { width = 0; weight = 1f })
-        row.addView(rs, if (compact) lp(-2) else lp(0).apply { width = 0; weight = 1f })
         var lgRef: TextView? = null
-        val lgB = b("🌐 لغة الترجمة ▾", 0xFF37474F.toInt()) { lgRef?.let { langPopup(it) } }
+        val lgB = b(if (compact) "🌐 اللغة ▾" else "🌐 لغة الترجمة ▾", 0xFF37474F.toInt()) { lgRef?.let { langPopup(it) } }
         lgRef = lgB
-        row.addView(lgB, if (compact) lp(-2) else lp(0).apply { width = 0; weight = 1.3f })
-        trUpdaters.add {
-            val paused = ::engine.isInitialized && engine.userPaused
-            tr.visibility = if (engineStarted) View.GONE else View.VISIBLE
-            ps.visibility = if (engineStarted) View.VISIBLE else View.GONE
-            rs.visibility = if (engineStarted) View.VISIBLE else View.GONE
-            ps.alpha = if (paused) 0.4f else 1f; rs.alpha = if (paused) 1f else 0.4f
+        if (compact) {
+            // الشريط السفلي: زرار واحد بيتبدّل بين ⏸ إيقاف و ▶ استئناف (بدل زرارين) عشان الصف يفضل صغير
+            val tg = b("⏸ إيقاف", 0xFF424B57.toInt()) { if (::engine.isInitialized && engine.userPaused) beginTranslate() else pauseTranslate() }
+            row.addView(tr, lp(-2)); row.addView(tg, lp(-2)); row.addView(lgB, lp(-2))
+            trUpdaters.add {
+                val paused = ::engine.isInitialized && engine.userPaused
+                tr.visibility = if (engineStarted) View.GONE else View.VISIBLE
+                tg.visibility = if (engineStarted) View.VISIBLE else View.GONE
+                tg.text = if (paused) "▶ استئناف" else "⏸ إيقاف"
+                tg.background = ui.box(if (paused) 0xFF2E7D32.toInt() else 0xFF424B57.toInt(), 0x33FFFFFF, 8)
+            }
+        } else {
+            val ps = b("⏸ إيقاف مؤقت", 0xFF424B57.toInt()) { pauseTranslate() }
+            val rs = b("▶ إلغاء الإيقاف", 0xFF2E7D32.toInt()) { beginTranslate() }
+            row.addView(tr, lp(-1)); row.addView(ps, lp(0).apply { width = 0; weight = 1f })
+            row.addView(rs, lp(0).apply { width = 0; weight = 1f })
+            row.addView(lgB, lp(0).apply { width = 0; weight = 1.3f })
+            trUpdaters.add {
+                val paused = ::engine.isInitialized && engine.userPaused
+                tr.visibility = if (engineStarted) View.GONE else View.VISIBLE
+                ps.visibility = if (engineStarted) View.VISIBLE else View.GONE
+                rs.visibility = if (engineStarted) View.VISIBLE else View.GONE
+                ps.alpha = if (paused) 0.4f else 1f; rs.alpha = if (paused) 1f else 0.4f
+            }
         }
         updateTr()
         return row
@@ -1233,13 +1246,17 @@ class PlayerActivity : Activity(), Host {
         val tb1 = tRow(); val tb2 = tRow()
         val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
         tb.addView(tb1, LinearLayout.LayoutParams(-2, -2)); tb.addView(tb2, LinearLayout.LayoutParams(-2, -2))
-        fun grp(label: String, col: LinearLayout): TextView = ui.fsBtn("$label ▾") { v ->
+        fun grp(label: String, col: LinearLayout, above: Boolean = false): TextView = ui.fsBtn("$label ▾") { v ->
             val had = popupOwner === v; dismissPop()
             if (!had) {
                 (col.parent as? android.view.ViewGroup)?.removeView(col)
                 val pw = android.widget.PopupWindow(col, -2, -2, false)
                 pw.isOutsideTouchable = true; pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
-                pw.showAsDropDown(v, 0, ui.dp(2)); popup = pw; popupOwner = v
+                if (above) {   // زرار في الشريط السفلي: القايمة تفتح فوقه
+                    col.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+                    pw.showAsDropDown(v, 0, -(v.height + col.measuredHeight + ui.dp(2)))
+                } else pw.showAsDropDown(v, 0, ui.dp(2))
+                popup = pw; popupOwner = v
             }
             showChrome(); if (popup != null) h.removeCallbacks(hideChrome)
         }
@@ -1281,18 +1298,19 @@ class PlayerActivity : Activity(), Host {
         ccFsB = ccB; tb1.addView(ccB)
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
-        tb1.addView(fb("A−") { scaleBy(-10) })
-        tb1.addView(fb("A+") { scaleBy(10) })
         val fitB = fb("⬛ " + PlayerLogic.fitNames[curFit()]) { v ->
             if (isLandNow()) { fsFit = (fsFit + 1) % 3; Cfg.p.edit().putString("fs_fit", fsFit.toString()).apply() }
             else { fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply() }
             v.text = "⬛ " + PlayerLogic.fitNames[curFit()]; applyFit(sv, videoBox)
         }
         fitFsB = fitB; tb1.addView(fitB)
-        tb1.addView(fb("تقديم −0.1") { setOff(-100) })
-        val offB = fb(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }   // ضغطة على القيمة = رجوع للصفر
-        offFsB = offB; tb1.addView(offB)
-        tb1.addView(fb("تأخير +0.1") { setOff(100) })
+        tb1.addView(ui.fsBtn("☰ القائمة") { openSide() })
+        // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
+        val gOff = gCol()
+        gOff.addView(pk("تقديم −0.1") { setOff(-100) })
+        val offB = pk(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }
+        offFsB = offB; gOff.addView(offB)
+        gOff.addView(pk("تأخير +0.1") { setOff(100) })
         gTool.addView(pd("📤 تصدير SRT") { doExport() })
         gTool.addView(pd("🔁 سد الفجوات") { engine.retryFailed(); Toast.makeText(this, "بحاول أسد الفجوات", Toast.LENGTH_SHORT).show() })
         gTool.addView(pd("⧉ نافذة صغيرة") { enterPip() })
@@ -1307,10 +1325,7 @@ class PlayerActivity : Activity(), Host {
         gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
         gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Toast.makeText(this, if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة", Toast.LENGTH_SHORT).show(); curIdx = -2 })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
-        tb2.addView(ui.fsBtn("☰ القائمة") { openSide() })
         tb2.addView(grp("🔤 النص", gText)); tb2.addView(grp("✨ لهجة", gAi)); tb2.addView(grp("🧰 أدوات", gTool))
-        tb2.addView(makeTrRow(true))
-        tb2.addView(ui.fsBtn("✦ سريعة") { menu.visibility = if (menu.visibility == View.VISIBLE) View.GONE else View.VISIBLE; showChrome() })
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
@@ -1328,6 +1343,12 @@ class PlayerActivity : Activity(), Host {
         timeRow.addView(fsEl, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(8) })
         timeRow.addView(fsProgV, LinearLayout.LayoutParams(0, -2, 1f))
         timeRow.addView(fsDu, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(8) })
+        // صف تحت (فوق شريط الوقت، فوق القفل): A− A+ | ⏱ توقيت | ترجمة (إيقاف/استئناف + اللغة). بيلفّ لسطر تاني لو الشاشة ضيقة
+        val auxRow = FlowRow(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
+        auxRow.addView(fb("A−") { scaleBy(-10) }); auxRow.addView(fb("A+") { scaleBy(10) })
+        auxRow.addView(grp("⏱ توقيت", gOff, true))
+        auxRow.addView(makeTrRow(true))
+        fsBar.addView(auxRow, LinearLayout.LayoutParams(-1, -2))
         fsBar.addView(timeRow, LinearLayout.LayoutParams(-1, ui.dp(30)))
         val btnRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
         btnRow.addView(ui.fsCircle("🔓") { setLock(true) }, FrameLayout.LayoutParams(ui.dp(40), ui.dp(40), Gravity.START or Gravity.CENTER_VERTICAL))
@@ -2000,12 +2021,16 @@ class PlayerActivity : Activity(), Host {
         val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
         col.measure(View.MeasureSpec.makeMeasureSpec(ui.dp(170), View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2); anchor.getLocationOnScreen(loc)
-        val avail = (resources.displayMetrics.heightPixels - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
-        val pw = android.widget.PopupWindow(scroll, ui.dp(170), minOf(col.measuredHeight, avail), true)
+        val screenH = resources.displayMetrics.heightPixels
+        val up = loc[1] > screenH / 2   // الزرار في النص التحتاني (الشريط السفلي) → القايمة تفتح فوقه
+        val avail = (if (up) loc[1] - ui.dp(12) else screenH - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
+        val popH = minOf(col.measuredHeight, avail)
+        val pw = android.widget.PopupWindow(scroll, ui.dp(170), popH, true)
         pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
         pw.isOutsideTouchable = true
         pw.setOnDismissListener { if (langPop === pw) langPop = null; showChrome() }
-        pw.showAsDropDown(anchor, 0, ui.dp(2)); langPop = pw
+        if (up) pw.showAsDropDown(anchor, 0, -(anchor.height + popH + ui.dp(2))) else pw.showAsDropDown(anchor, 0, ui.dp(2))
+        langPop = pw
         h.removeCallbacks(hideChrome); showChrome(); h.removeCallbacks(hideChrome)   // الشريط يفضل ظاهر وإنت بتختار
     }
 
