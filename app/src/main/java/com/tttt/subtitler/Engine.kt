@@ -38,6 +38,8 @@ class Engine(
         const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
         const val CHAR_MIN_LINES = 12
         const val PRON_MIN_LINES = 20
+        const val HOLE_MIN = 3.0         // أقل ثغرة صوتية من غير ترجمة نعيد طلبها (ثواني)
+        const val HOLE_MAX = 4           // أقصى عدد ثغرات بنسدّها لكل مقطع
     }
 
     private val lock = Any()
@@ -100,6 +102,8 @@ class Engine(
     @Volatile private var lastConvFail = 0L
     /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
     private val incomplete = ConcurrentHashMap.newKeySet<Int>()
+    /** باتشات المستخدم طلب إعادتها بالإيد: نتخطّى فلتر الصمت (VAD) عليها عشان ماتتعلّمش «خلصت» من غير ما تتبعت */
+    private val forceVad = ConcurrentHashMap.newKeySet<Int>()
     private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     private val ch get() = conf.chunkSec.toDouble()
     /** عدد المقاطع قدّام = الأكبر بين الإعداد وعدد الطلبات المتوازية، عشان كل المفاتيح تشتغل مع بعض */
@@ -118,18 +122,16 @@ class Engine(
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
                 i in incomplete -> "⚠"
-                isDone(i, d) -> "✅"
+                isDone(i, d) -> if (subCount(i, d) == 0) "🔇" else "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
             }
             val a = cStart(i).toInt(); val b = cEnd(i, d).toInt()
             sb.append(if (i == c) "▶ " else "  ").append("باتش ").append(i + 1).append(" ")
-                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
+                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁" || mark == "🔇") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
         }
         return sb.toString().trimEnd()
     }
-    fun coveredSec() = done.total()
-
     // ===== أشرطة التقدم (v56) =====
     /** جمل مستنية تتغيّر (تحويل لهجة / إعادة صياغة / تصحيح ضمائر) — مفتاحها start|original */
     private val pend = ConcurrentHashMap.newKeySet<String>()
@@ -139,6 +141,8 @@ class Engine(
     /** مجالات الجمل اللي لسه هتتغير (الشريط التالت)، فاضية لما كل الجمل تتغير */
     fun pendingSegs(): List<DoubleArray> { if (pend.isEmpty()) return emptyList(); return Coverage.spans(subs.filter { pk(it) in pend }, 3.0) }
     fun pendingCount(): Int = pend.size
+
+    fun coveredSec() = done.total()
     fun durationSec(): Double = currentDur()
     fun chunkCount(): Int { val d = currentDur(); if (d <= 0) return 0; var i = 0; while (cStart(i) < d) i++; return i }
     fun awaitStopped(ms: Long) { val t0 = System.currentTimeMillis(); while (!stoppedFlag && System.currentTimeMillis() - t0 < ms) try { Thread.sleep(50) } catch (_: InterruptedException) { return } }
@@ -153,7 +157,7 @@ class Engine(
                 i in inflight -> "⏳"
                 (failed[i] ?: 0) >= MAX_FAILS -> "❌"
                 i in incomplete -> "⚠"
-                isDone(i, d) -> "✅"
+                isDone(i, d) -> if (subCount(i, d) == 0) "🔇" else "✅"
                 (failed[i] ?: 0) > 0 -> "🔁"
                 else -> "▫"
             }
@@ -179,9 +183,9 @@ class Engine(
         Thread {
             try {
                 incomplete.remove(i); failed.remove(i)
-                val p = prepare(i)
-                if (p != null) send(i, p, true)
-                host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة")
+                val p = prepare(i, true)
+                if (p != null) { send(i, p, true); host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة") }
+                else host.log("⚠ باتش ${i + 1}: مفيش صوت اتفك — جرّب تاني بعد شوية")
             } catch (e: Exception) {
                 failed[i] = MAX_FAILS
                 host.log("⚠ إعادة باتش ${i + 1} فشلت: " + (e.message ?: e.toString()).take(160))
@@ -259,19 +263,19 @@ class Engine(
         synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
         done.remove(a, b); gapTried.remove(a, b)
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
-        for (i in from..last) { failed.remove(i); gapPass.remove(i) }
+        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i) }
         pool.clear(); lastGapTry = 0L; gapScanClean = false
         host.changed(); persist()
     }
     /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
     fun redoFrom(i: Int) { redo(i, -1); onlyChunks = null; forcedCursor = i; paused = false }
     /** باتش ده لوحده وخلاص */
-    fun redoOnly(i: Int) { redo(i, i); onlyChunks = i..i; paused = false }
+    fun redoOnly(i: Int) { redo(i, i); forceVad.add(i); onlyChunks = i..i; paused = false }
     /** من الأول خالص */
     fun redoAll() { redo(0, -1); onlyChunks = null; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
-    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow() }
-    fun saveNow() = persist()
+    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    fun saveNow() = doPersist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
     fun retryFailed() {
@@ -346,7 +350,7 @@ class Engine(
                 if (inflight.isEmpty() && retryGaps()) continue
                 if (inflight.isEmpty() && repairForeignTick()) continue
                 if (gapTick(headless || keepGoing)) continue
-                if (headless && inflight.isEmpty() && gapBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
+                if (headless && inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
                     finished = true; host.status("✅ خلصت الترجمة"); break
                 }
                 if (inflight.isEmpty()) maybeConvert(true)
@@ -356,7 +360,7 @@ class Engine(
         } finally {
             ex.shutdownNow()
             try { source?.close() } catch (_: Exception) {}
-            persist()
+            doPersist()
             stoppedFlag = true
             try { onFinished?.invoke(finished && fatal == null) } catch (_: Exception) {}
         }
@@ -468,7 +472,7 @@ class Engine(
     private fun translateChunk(i: Int) { prepare(i)?.let { send(i, it) } }
 
     /** يفك الصوت (ويقصّر المقطع لأقرب لحظة صمت). null = مفيش حاجة تتبعت (صامت / مفيش صوت). */
-    private fun prepare(i: Int): Prep? {
+    private fun prepare(i: Int, force: Boolean = false): Prep? {
         val d = currentDur()
         val rawStart = cStart(i)
         var rawEnd = cEnd(i, d)
@@ -477,9 +481,18 @@ class Engine(
         val t0 = System.currentTimeMillis()
         val s0 = src()
         var w = s0.wav(start, rawEnd)
-        if (w == null) { host.log("… المقطع ${i + 1} مفيهوش صوت"); done.add(rawStart, rawEnd); persist(); return null }
+        // فك الصوت ساعات بيرجع null مؤقتًا (المصدر لسه بيفتح / شبكة) — نعيد قبل ما نعتبر المقطع من غير صوت
+        var retry = 0
+        while (w == null && running && retry++ < 2) { host.log("… المقطع ${i + 1}: الصوت لسه ما طلعش — محاولة ${retry + 1}/3"); nap(700); w = s0.wav(start, rawEnd) }
+        if (w == null) {
+            host.log("… المقطع ${i + 1} مفيهوش صوت")
+            // لو ده مش آخر ذيل الفيديو يبقى غالبًا فشل فك مش صمت حقيقي: نعلّمه ⚠ عشان يتعاد بدل ما يبان ✅ فاضي
+            if (d <= 0 || (rawEnd - rawStart > 5.0 && rawStart < d - 3.0)) { incomplete.add(i); host.log("⚠ باتش ${i + 1}: مقدرتش أفك صوته — أعده من علامة التحذير") }
+            done.add(rawStart, rawEnd); persist(); return null
+        }
         host.log("🎧 صوت المقطع ${i + 1}: ${w.bytes.size / 1024}KB في ${System.currentTimeMillis() - t0}ms")
-        if (conf.vad && w.silent) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى"); done.add(rawStart, rawEnd); persist(); return null }
+        val forced = force || forceVad.remove(i)
+        if (conf.vad && w.silent && !forced && !conf.soundTags) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى (لو غلط: «☝ ده بس» بيبعته غصب)"); done.add(rawStart, rawEnd); persist(); return null }
         val last = d > 0 && rawEnd >= d - 0.01
         val firstTime = prepared.add(i)
         if (conf.silenceTrim && !last && firstTime && !bounds.containsKey(i + 1) && !prepared.contains(i + 1)) {
@@ -528,11 +541,9 @@ class Engine(
                     nap(400); continue
                 }
                 if (fresh.isEmpty() && !w.silent) { partial = true; host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة") }
-                val hadNone = fresh.isEmpty()
-                fresh = rescueUncovered(i, w, fresh, key)
-                if (hadNone && fresh.isNotEmpty()) partial = false
                 pool.good(key)
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
+                scheduleHoleFill(i, rawStart, rawEnd, w, key)   // برّه خانة الباتش: الباتش الجاي مايستناش سدّ الثغرات
                 if (partial) { incomplete.add(i); host.log("⚠ باتش ${i + 1} رجع ناقص — تقدر تعيده من علامة التحذير") }
                 return
             } catch (e: BadReply) {
@@ -563,50 +574,6 @@ class Engine(
             }
         }
         if (running) throw Exception("استنفدت المحاولات")
-    }
-
-    private val rescueCalls = AtomicInteger(0)
-
-    /**
-     * 🛡 فحص التغطية: لو فيه صوت عالي 8ث+ من غير أي جملة بتغطيه (رد ناقص / فاضي / فجوة)، نعيد ترجمة المنطقة دي بس
-     * بقطع ≤30ث. القديم كان بيعتبر أي رد غير فاضي "نجاح كامل" وبيسيب الفجوة. بيشتغل على كل أنواع المحتوى (أغاني/أفلام/مسلسلات/طويل).
-     */
-    private fun rescueUncovered(i: Int, w: WavChunk, fresh0: List<Sub>, key0: String): List<Sub> {
-        try {
-            val runs = Coverage.findRuns(w.bytes, w.startSec, fresh0)
-                .sortedByDescending { it.end - it.start }.take(Coverage.MAX_RANGES).sortedBy { it.start }
-            if (runs.isEmpty()) return fresh0
-            var key = key0
-            val all = ArrayList<Sub>(fresh0); val extra = ArrayList<Sub>()
-            for (r in runs) for (p in Coverage.pieces(r)) {
-                if (!running) return fresh0 + extra
-                if (rescueCalls.incrementAndGet() > Coverage.MAX_CALLS) { host.log("🛡 وصلت سقف إعادة المحاولات (${Coverage.MAX_CALLS}) — هكمّل من غير إنقاذ"); return fresh0 + extra }
-                val pStart = w.startSec + p.start; val pDur = p.end - p.start
-                host.log("🛡 المقطع ${i + 1}: صوت من غير ترجمة ${Coverage.mmss(pStart)} → ${Coverage.mmss(pStart + pDur)} — إعادة ترجمة المنطقة دي")
-                val pw = Coverage.slice(w.bytes, p.start, p.end)
-                var got: List<Sub>? = null; var tries = 0
-                while (running && got == null && tries++ < 2) {
-                    try {
-                        val r2 = Api.generate(conf.model, key, buildPrompt(pDur, pStart), pw)
-                        val j2 = if (r2.text.isBlank()) null else Parse.json(r2.text)
-                        var g = if (j2 == null) emptyList() else Subs.splitAll(Parse.subs(j2, pStart, pDur))
-                        if (g.any { LangGuard.foreign(it) }) g = fixForeign(g)
-                        got = g
-                    } catch (e: ApiErr) {
-                        if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else break
-                        key = pool.pick(key, rr.getAndIncrement()) ?: break
-                    } catch (e: Exception) { break }
-                }
-                for (n in got.orEmpty()) {
-                    val nd = maxOf(0.1, n.end - n.start)
-                    val dup = all.any { e -> minOf(e.end, n.end) - maxOf(e.start, n.start) > 0.5 * minOf(nd, maxOf(0.1, e.end - e.start)) }
-                    if (!dup) { all.add(n); extra.add(n) }
-                }
-                nap(200)
-            }
-            if (extra.isNotEmpty()) host.log("🛡 المقطع ${i + 1}: اتسدّ ${extra.size} جملة ناقصة")
-            return (fresh0 + extra).sortedBy { it.start }
-        } catch (e: Exception) { return fresh0 }
     }
 
     private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false): String {
@@ -652,7 +619,14 @@ class Engine(
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
         }
         if (j != null) applyPrevCorrections(j)
-        val tagged = Subs.harmonize(Subs.splitAll(fresh).map { it.copy(chunk = i) }, subs)
+        val spansAbs = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) }
+        var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i) }
+        if (spansAbs != null) {
+            val n0 = tagged.size
+            tagged = tagged.mapNotNull { Speech.fit(it, spansAbs) }
+            if (tagged.size < n0) host.log("🔕 المقطع ${i + 1}: اتشالت ${n0 - tagged.size} جملة كانت فوق صمت تام")
+        }
+        tagged = Subs.harmonize(tagged, subs)   // توحيد ترجمة سطور الكورَس المتكررة في الأغاني
         synchronized(lock) {
             val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) }
             subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
@@ -1108,6 +1082,63 @@ class Engine(
         return started
     }
 
+    private val holeTried = ConcurrentHashMap.newKeySet<Int>()
+    private val holeBusy = AtomicInteger(0)
+    private val holeEx = Executors.newSingleThreadExecutor { r -> Thread(r).also { it.isDaemon = true; it.name = "holefill" } }
+    /** سدّ الثغرات كان شغال جوه خانة الباتش (inflight) فكل باتش بيستنى طلبات الثغرات قبل ما الباتش اللي بعده يتبعت = تأخير. دلوقتي على خيط لوحده */
+    private fun scheduleHoleFill(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, key: String) {
+        if (holeTried.contains(i)) return
+        holeBusy.incrementAndGet()
+        try {
+            holeEx.submit {
+                try { holeFill(i, rawStart, rawEnd, w, key) }
+                catch (e: Exception) { host.log("⚠ سدّ الثغرات في المقطع ${i + 1} فشل: " + (e.message ?: "").take(80)) }
+                finally { holeBusy.decrementAndGet() }
+            }
+        } catch (_: RejectedExecutionException) { holeBusy.decrementAndGet() }
+    }
+
+    /**
+     * بعد ما المقطع يتطبّق: نقيس الصوت الفعلي ونشوف فيه كلام/غنا مسموع (>= HOLE_MIN ثانية) من غير ولا جملة فوقه.
+     * الموديل بيرجّع جزء من المقطع وبيفوّت الباقي (خصوصًا الكورس المتكرر) — فبنعيد طلب الجزء الناقص بس
+     * على أجزاء صغيرة (<= 20ث) وبسياق الجمل اللي قبله. مرة واحدة لكل مقطع.
+     */
+    private fun holeFill(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, key0: String) {
+        val spans = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) } ?: return
+        if (!holeTried.add(i)) return
+        val holes = Speech.holes(spans, subs, maxOf(rawStart, w.startSec), minOf(rawEnd, w.startSec + w.durSec), HOLE_MIN).take(HOLE_MAX)
+        if (holes.isEmpty()) return
+        host.log("🧩 المقطع ${i + 1}: ${holes.size} ثغرة فيها صوت من غير ترجمة — بعيد طلبها")
+        var key = key0
+        for (h in holes) {
+            for (pt in Gaps.parts(maxOf(0.0, h[0] - 0.5), h[1] + 0.5, 20.0)) {
+                if (!running) return
+                val w2 = src().wav(pt[0], pt[1]) ?: continue
+                if (w2.silent) continue
+                var tries = 0; var got = false
+                while (running && !got && tries++ < 3) {
+                    try {
+                        val r = Api.generate(conf.model, key, buildPrompt(w2.durSec, w2.startSec), w2.bytes)
+                        val j = if (r.text.isBlank()) null else Parse.json(r.text)
+                        var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w2.startSec, w2.durSec)).map { Subs.capPace(it) }
+                        if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
+                        val sp2 = Speech.activeSpans(w2.bytes)?.let { Speech.absolute(it, w2.startSec) }
+                        if (sp2 != null) base = base.mapNotNull { Speech.fit(it, sp2) }
+                        base = base.filter { val m = (it.start + it.end) / 2; m >= h[0] - 0.5 && m <= h[1] + 0.5 }.map { it.copy(chunk = i) }
+                        if (base.isEmpty()) { key = pool.pick(key, rr.getAndIncrement()) ?: key; continue }
+                        synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + base)).sortedBy { it.start } }
+                        pool.good(key); got = true
+                        host.changed(); persist()
+                        host.log("✅ ثغرة ${"%.0f".format(java.util.Locale.US, pt[0])}ث→${"%.0f".format(java.util.Locale.US, pt[1])}ث: اتضاف ${base.size} جملة")
+                    } catch (e: ApiErr) {
+                        if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else { host.log("⚠ ثغرة: " + (e.message ?: "").take(80)); return }
+                        key = pool.pick(key, rr.getAndIncrement()) ?: return
+                    } catch (e: IOException) { host.log("📶 ثغرة: مشكلة اتصال"); return }
+                }
+            }
+        }
+    }
+
     private fun fillGap(a: Double, b: Double, key0: String) {
         val w = src().wav(a, b) ?: return
         if (w.silent) { host.log("🔇 الفجوة ${a.toInt()}ث صامتة — اتخطّيت"); return }
@@ -1116,7 +1147,7 @@ class Engine(
             try {
                 val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec), w.bytes)
                 val j = if (r.text.isBlank()) null else Parse.json(r.text)
-                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec))
+                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).map { Subs.capPace(it) }
                 if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
                 val marked = base.map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
                 if (marked.isEmpty()) {
@@ -1135,7 +1166,16 @@ class Engine(
     }
 
     // ===== الحفظ =====
+    /** حفظ مؤجّل: بيجمّع كل طلبات الحفظ في 3 ثواني في كتابة واحدة على خيط لوحده (بدل ما كل باتش يكتب الملف كله). الحفظ الإجباري (إغلاق/نهاية) بيروح لـ doPersist مباشرة */
+    private val persistPending = AtomicBoolean(false)
+    private val persistEx = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r).also { it.isDaemon = true; it.name = "persist" } }
     private fun persist() {
+        if (store == null) return
+        if (!persistPending.compareAndSet(false, true)) return
+        try { persistEx.schedule({ persistPending.set(false); try { doPersist() } catch (_: Exception) {} }, 3, java.util.concurrent.TimeUnit.SECONDS) }
+        catch (_: RejectedExecutionException) { persistPending.set(false); doPersist() }
+    }
+    private fun doPersist() {
         val st = store ?: return
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }

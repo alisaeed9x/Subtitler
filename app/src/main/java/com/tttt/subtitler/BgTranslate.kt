@@ -191,7 +191,7 @@ class BgService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CH, "ترجمة في الخلفية", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_DONE, "خلصت الترجمة", NotificationManager.IMPORTANCE_DEFAULT))
-        postForeground(null)
+        try { postForeground(null) } catch (_: Exception) { stopSelf(startId); return START_NOT_STICKY }   // النظام رفض الـ foreground (مثلاً من بعد الإقلاع): بلاش انهيار
         // لو النظام رجّع الخدمة بعد ما قتل العملية (intent = null) أو بعد ريستارت: ارجع الطابور المحفوظ
         Cfg.init(applicationContext)
         BgJobs.restore(this)

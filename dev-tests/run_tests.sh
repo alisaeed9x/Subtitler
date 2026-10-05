@@ -24,7 +24,7 @@ echo "== 1) compile-check للتطبيق كله"
 "$KC" -jvm-target 17 -cp "$AJ" -opt-in=kotlin.RequiresOptIn -d "$OUT/all" "$SRC"/*.kt $(find "$ROOT/dev-tests/stubs" -name '*.kt' -o -name '*.java') 2>&1 | grep -E "error" && { echo "FAIL: compile errors"; exit 1; } || echo "OK"
 
 echo "== 2) اختبارات JVM (المنطق بدون Android: Core/Store/AudioCore/Engine)"
-NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt $SRC/Coverage.kt"
+NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt $SRC/Stats.kt $SRC/KeyVault.kt $SRC/Speech.kt $SRC/Coverage.kt"
 "$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep error && exit 1 || true
 CP="$OUT/app:$TOOLS/jsonout:$STD:$AJ"   # jsonout قبل android.jar عشان org.json الحقيقي يتقدم على الـ stubs
 JOPT="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8"
@@ -54,9 +54,15 @@ java $JOPT -cp "$OUT/t8:$CP" BlurTestKt | grep -E "^(PASS|FAIL)|الاختبار
 mkdir -p "$OUT/t9"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t9" "$ROOT/dev-tests/LibraryTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t9:$CP" LibraryTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"
+mkdir -p "$OUT/t10"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t10" "$ROOT/dev-tests/SpeechTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t10:$CP" SpeechTestKt | grep -E "^(PASS|FAIL)|اختبارات"
 mkdir -p "$OUT/t5"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t5" "$SRC/LockCore.kt" "$ROOT/dev-tests/LockTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t5:$CP" LockTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
 mkdir -p "$OUT/t10"
-"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t10" "$ROOT/dev-tests/CoverageTest.kt" 2>&1 | grep error && exit 1 || true
-java $JOPT -cp "$OUT/t10:$CP" CoverageTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t10" "$ROOT/dev-tests/SoundTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t10:$CP" SoundTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
+mkdir -p "$OUT/t11"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t11" "$ROOT/dev-tests/CoverageTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t11:$CP" CoverageTestKt | grep -E "^(PASS|FAIL)|الاختبارات|فشل"
