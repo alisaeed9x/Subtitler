@@ -18,7 +18,6 @@ import android.view.View
 import android.view.Window
 import android.view.WindowManager
 import android.widget.LinearLayout
-import android.widget.Toast
 
 /** شبكة 3×3 لرسم النمط */
 class PatternView(ctx: Context, private val th: Theme) : View(ctx) {

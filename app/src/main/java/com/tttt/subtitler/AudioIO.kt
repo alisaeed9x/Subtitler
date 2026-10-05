@@ -153,78 +153,266 @@ class FileSource(
     @Synchronized override fun close() { try { ex?.release() } catch (_: Exception) {}; ex = null }
 }
 
-/** روابط HLS: بنحمّل الـ segments اللي المقطع محتاجها بس، وبنفك AES-128 لو موجود. */
+/** مصدر الصوت المناسب للرابط: HLS (حتى لو الرابط من غير .m3u8 بنفحص أول بايتات) أو ملف/رابط مباشر */
+object AudioSources {
+    private val MEDIA_EXT = Regex("\\.(mp4|m4v|mov|mkv|webm|mp3|m4a|aac|ogg|opus|wav|flac|3gp|flv|ts)(?=[?#]|$)", RegexOption.IGNORE_CASE)
+    fun looksHls(url: String, hdr: Map<String, String>): Boolean {
+        if (url.contains(".m3u8", true)) return true
+        if (!url.startsWith("http", true) || MEDIA_EXT.containsMatchIn(url)) return false
+        return try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            try {
+                c.connectTimeout = 6000; c.readTimeout = 6000
+                for ((k, v) in hdr) c.setRequestProperty(k, v)
+                c.setRequestProperty("Range", "bytes=0-63")
+                val ct = (c.contentType ?: "").lowercase()
+                if (ct.contains("mpegurl")) return true
+                if (ct.startsWith("video/") || ct.startsWith("audio/")) return false
+                val buf = ByteArray(64); val n = c.inputStream.use { it.read(buf) }
+                n > 0 && String(buf, 0, n, Charsets.ISO_8859_1).trimStart('\uFEFF', ' ', '\n', '\r', '\t').startsWith("#EXTM3U")
+            } finally { c.disconnect() }
+        } catch (_: Throwable) { false }
+    }
+    fun make(ctx: Context, uri: Uri?, url: String?, hdr: Map<String, String>, pref: Int, log: (String) -> Unit): AudioSource =
+        if (uri == null && url != null && looksHls(url, hdr)) HlsSource(ctx, url, hdr, pref, log) else FileSource(ctx, uri, url, hdr, pref, log)
+}
+
+private class HlsBadMedia(m: String) : IOException(m)
+
+/**
+ * روابط HLS (m3u8) — ترجمة على دفعات من غير ما نحمّل الفيلم كله:
+ *  1) المقاطع (segments) اللي الباتش محتاجها بس بتتحمّل (4 مع بعض) وبتتخزّن على الديسك مؤقتًا (مش في الرام).
+ *  2) أول ما باتش يتجهّز، بنبدأ في الخلفية نحمّل مقاطع الـ N باتشات اللي بعده (الافتراضي 3، إعداد «hls_ahead») — فالباتش الجاي بيتفك من الديسك على طول.
+ *  3) الصوت بيتفك من مقاطع كل باتش لوحده ويتبعت لجيميناي؛ ومفيش تحميل لأي حاجة بعد النافذة دي لحد ما الترجمة توصلها.
+ * وبيتعامل مع: صوت منفصل (rendition) أو variant من غير صوت (بيجرّب اللي بعده)، AES-128، BYTERANGE، fMP4،
+ * ترويسات الصور الوهمية قبل TS، تحويلات http↔https، وإعادة محاولة كل مقطع.
+ */
 class HlsSource(
     private val ctx: Context, private val url: String, private val hdr: Map<String, String>,
     private val pref: Int, private val log: (String) -> Unit
 ) : AudioSource {
-    private var media: Hls.Media? = null
-    private var mapBytes: ByteArray? = null
-    private val cache = object : LinkedHashMap<Long, ByteArray>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, ByteArray>?) = size > 6
+    private companion object {
+        const val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        const val CACHE_MAX = 400L * 1024 * 1024
+        val NET: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(4) { r -> Thread(r).also { it.isDaemon = true } }
+        val PRE: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
+        val BG: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r).also { it.isDaemon = true } }
     }
+    private val dir = File(ctx.cacheDir, "hls").apply { mkdirs() }
+    private var media: Hls.Media? = null
+    private var cands: List<String> = emptyList()
+    private var candIdx = 0
+    private var firstText: String? = null
+    private var loadErr: Exception? = null
+    private var loadErrAt = 0L
     private val keys = HashMap<String, ByteArray>()
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    private val mine = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val preGen = java.util.concurrent.atomic.AtomicInteger(0)
     @Volatile private var preRoll = 0.0
+    @Volatile private var lastEvict = 0L
+    private val aheadPatches: Int = (try { Cfg.int("hls_ahead", 3) } catch (_: Throwable) { 3 }).coerceIn(1, 8)
     override fun setPreRoll(sec: Double) { preRoll = sec }
 
-    private fun http(u: String): ByteArray {
-        val c = URL(u).openConnection() as HttpURLConnection
-        try {
-            c.connectTimeout = 20000; c.readTimeout = 60000
-            for ((k, v) in hdr) c.setRequestProperty(k, v)
-            val code = c.responseCode
-            if (code >= 300) throw IOException("HTTP $code من $u")
-            return c.inputStream.use { it.readBytes() }
-        } finally { c.disconnect() }
+    // ---------- شبكة ----------
+    private fun httpOnce(u0: String, off: Long, len: Long): ByteArray {
+        var u = u0
+        for (hop in 0 until 6) {
+            val c = URL(u).openConnection() as HttpURLConnection
+            try {
+                c.connectTimeout = 20000; c.readTimeout = 60000; c.instanceFollowRedirects = false
+                for ((k, v) in hdr) c.setRequestProperty(k, v)
+                if (hdr.keys.none { it.equals("User-Agent", true) }) c.setRequestProperty("User-Agent", UA)
+                if (off >= 0 && len > 0) c.setRequestProperty("Range", "bytes=$off-${off + len - 1}")
+                val code = c.responseCode
+                if (code in 300..399 && code != 304) {
+                    val loc = c.getHeaderField("Location") ?: throw IOException("HTTP $code من غير Location")
+                    u = Hls.resolve(u, loc); continue
+                }
+                if (code >= 300) throw IOException("HTTP $code من ${u.take(90)}")
+                val b = c.inputStream.use { it.readBytes() }
+                if (off >= 0 && len > 0 && code == 200 && b.size > len) { val st = minOf(off.toInt(), b.size); return b.copyOfRange(st, minOf(b.size, st + len.toInt())) }
+                return b
+            } finally { c.disconnect() }
+        }
+        throw IOException("تحويلات (redirect) كتير")
     }
 
-    private fun load(): Hls.Media {
-        media?.let { return it }
-        var u = url
-        var text = String(http(u), Charsets.UTF_8)
-        if (Hls.isMaster(text)) {
-            u = Hls.pick(Hls.parseMaster(text, u)) ?: throw Unsupported("قائمة HLS فاضية")
-            text = String(http(u), Charsets.UTF_8)
+    private fun http(u: String, off: Long = -1, len: Long = -1): ByteArray {
+        var last: IOException? = null
+        for (attempt in 0 until 3) {
+            try { return httpOnce(u, off, len) }
+            catch (e: IOException) {
+                last = e
+                val m = e.message ?: ""
+                if (m.startsWith("HTTP 4") && !m.startsWith("HTTP 429") && !m.startsWith("HTTP 408")) throw e   // 403/404: مفيش فايدة من التكرار
+                try { Thread.sleep(700L * (attempt + 1)) } catch (_: InterruptedException) { throw e }
+            }
         }
-        val m = Hls.parseMedia(text, u)
-        m.unsupported?.let { throw Unsupported(it) }
-        if (m.live) throw Unsupported("البث المباشر (live) مش مدعوم")
-        if (m.segs.isEmpty()) throw Unsupported("قائمة HLS مفيهاش مقاطع")
-        media = m
-        log("📡 HLS: ${m.segs.size} مقطع، ${(m.total / 60).toInt()} دقيقة")
-        return m
+        throw last ?: IOException("فشل التحميل")
+    }
+
+    // ---------- القوائم ----------
+    @Synchronized private fun load(): Hls.Media {
+        media?.let { return it }
+        loadErr?.let { if (System.currentTimeMillis() - loadErrAt < 4000) throw it }
+        try {
+            if (cands.isEmpty()) {
+                val text = String(http(url), Charsets.UTF_8)
+                if (!text.contains("#EXTM3U") && !text.contains("#EXTINF") && !text.contains("#EXT-X-STREAM-INF"))
+                    throw Unsupported("الرابط مرجعش قائمة HLS صالحة (غالبًا اللينك انتهت صلاحيته — اصطاده تاني)")
+                if (Hls.isMaster(text)) cands = Hls.candidates(Hls.parseMaster(text, url)).ifEmpty { throw Unsupported("قائمة HLS فاضية") }
+                else { cands = listOf(url); firstText = text }
+            }
+            val u = cands[candIdx]
+            val text = if (u == url && firstText != null) firstText!! else String(http(u), Charsets.UTF_8)
+            val m = Hls.parseMedia(text, u)
+            m.unsupported?.let { throw Unsupported(it) }
+            if (m.live) throw Unsupported("البث المباشر (live) مش مدعوم")
+            if (m.segs.isEmpty()) throw Unsupported("قائمة HLS مفيهاش مقاطع")
+            media = m; loadErr = null
+            log("📡 HLS: ${m.segs.size} مقطع، ${(m.total / 60).toInt()} دقيقة" + (if (cands.size > 1) " (قائمة ${candIdx + 1}/${cands.size})" else "") +
+                " — بحمّل باتش باتش، ومقدّمًا $aheadPatches باتشات قدّام بس")
+            return m
+        } catch (e: Unsupported) { throw e
+        } catch (e: Exception) { loadErr = e; loadErrAt = System.currentTimeMillis(); throw e }
+    }
+
+    /** القائمة الحالية من غير مسار صوت: جرّب اللي بعدها. بترجّع true لو في بديل (أو حد غيرنا بدّل خلاص) */
+    @Synchronized private fun switchCandidate(from: Hls.Media): Boolean {
+        if (media !== from) return true
+        if (candIdx + 1 >= cands.size) return false
+        candIdx++; media = null; loadErr = null
+        log("🔁 القائمة دي من غير صوت قابل للفك — بجرّب القائمة ${candIdx + 1}/${cands.size}")
+        return true
     }
 
     override fun durationSec(): Double = try { load().total } catch (_: Exception) { 0.0 }
 
-    private fun segBytes(s: Hls.Seg): ByteArray {
-        synchronized(cache) { cache[s.seq]?.let { return it } }
-        var b = http(s.url)
-        val k = s.key
-        if (k != null && k.method == "AES-128") {
-            val ku = k.uri ?: throw Unsupported(DRM_MSG)
-            val kb = synchronized(keys) { keys[ku] } ?: http(ku).also { synchronized(keys) { keys[ku] = it } }
-            val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            c.init(Cipher.DECRYPT_MODE, SecretKeySpec(kb, "AES"), IvParameterSpec(Hls.ivBytes(k.iv, s.seq)))
-            b = c.doFinal(b)
+    // ---------- مقاطع على الديسك ----------
+    private fun sha1(s: String): String = java.security.MessageDigest.getInstance("SHA-1").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
+    private fun segName(s: Hls.Seg) = sha1(s.url + "|" + s.off + "|" + s.len)
+    private fun cached(s: Hls.Seg): Boolean = File(dir, segName(s) + ".seg").let { it.exists() && it.length() > 0 }
+
+    private fun decrypt(b: ByteArray, s: Hls.Seg, k: Hls.KeyInfo): ByteArray {
+        val ku = k.uri ?: throw Unsupported(DRM_MSG)
+        val kb = synchronized(keys) { keys[ku] } ?: http(ku).also { synchronized(keys) { keys[ku] = it } }
+        val iv = IvParameterSpec(Hls.ivBytes(k.iv, s.seq)); val sk = SecretKeySpec(kb, "AES")
+        return try {
+            Cipher.getInstance("AES/CBC/PKCS5Padding").apply { init(Cipher.DECRYPT_MODE, sk, iv) }.doFinal(b)
+        } catch (e: javax.crypto.BadPaddingException) {   // بعض السيرفرات بتشفّر من غير padding
+            Cipher.getInstance("AES/CBC/NoPadding").apply { init(Cipher.DECRYPT_MODE, sk, iv) }.doFinal(b.copyOf(b.size - b.size % 16))
         }
-        synchronized(cache) { cache[s.seq] = b }
-        return b
     }
 
-    @Synchronized override fun wav(startSec: Double, endSec: Double): WavChunk? {
-        val m = load()
+    private fun segFile(s: Hls.Seg, hasMap: Boolean): File {
+        val name = segName(s)
+        val f = File(dir, "$name.seg")
+        if (f.exists() && f.length() > 0) { f.setLastModified(System.currentTimeMillis()); mine.add(name); return f }
+        val lock = locks.getOrPut(name) { Any() }
+        synchronized(lock) {
+            if (f.exists() && f.length() > 0) return f
+            var b = http(s.url, s.off, s.len)
+            val k = s.key
+            if (k != null && k.method == "AES-128") b = decrypt(b, s, k)
+            b = Hls.clean(b, hasMap)
+            if (b.isEmpty()) throw IOException("مقطع HLS فاضي")
+            val part = File(dir, "$name.part")
+            part.writeBytes(b)
+            if (!part.renameTo(f)) { f.writeBytes(b); part.delete() }
+            mine.add(name)
+        }
+        return f
+    }
+
+    private fun mapFile(m: Hls.Media): File? {
+        val mu = m.mapUrl ?: return null
+        val f = File(dir, sha1("map|" + mu + "|" + m.mapOff + "|" + m.mapLen) + ".map")
+        if (f.exists() && f.length() > 0) return f
+        synchronized(locks.getOrPut(f.name) { Any() }) {
+            if (f.exists() && f.length() > 0) return f
+            val part = File(dir, f.name + ".part"); part.writeBytes(http(mu, m.mapOff, m.mapLen))
+            if (!part.renameTo(f)) { f.writeBytes(part.readBytes()); part.delete() }
+            mine.add(f.name.removeSuffix(".map"))
+        }
+        return f
+    }
+
+    /** نزّل المقاطع دي (4 مع بعض) وارجع لما تخلص كلها؛ أول فشل بيتبعت */
+    private fun fetch(list: List<Hls.Seg>, hasMap: Boolean) {
+        val todo = list.filter { !cached(it) }
+        if (todo.isEmpty()) return
+        if (todo.size == 1) { segFile(todo[0], hasMap); return }
+        val fs = todo.map { s -> NET.submit<File> { segFile(s, hasMap) } }
+        var err: Throwable? = null
+        for (f in fs) try { f.get() } catch (e: java.util.concurrent.ExecutionException) { if (err == null) err = e.cause ?: e }
+        err?.let { throw (it as? Exception) ?: IOException(it.toString()) }
+    }
+
+    /** نافذة التحميل المقدّم: مقاطع الـ N باتشات اللي بعد المجال ده، في الخلفية. أي طلب جديد بيلغي القديم. */
+    private fun prefetch(m: Hls.Media, fromSec: Double, patchLen: Double) {
+        val gen = preGen.incrementAndGet()
+        val to = fromSec + maxOf(30.0, patchLen) * aheadPatches
+        val hasMap = m.mapUrl != null
+        val segs = m.segs.filter { it.start >= fromSec - 0.5 && it.start < to && !cached(it) }
+        if (segs.isEmpty()) return
+        BG.execute {
+            try {
+                for (grp in segs.chunked(2)) {
+                    if (preGen.get() != gen) return@execute
+                    val fs = grp.map { s -> PRE.submit<File> { segFile(s, hasMap) } }
+                    for (f in fs) try { f.get() } catch (_: Exception) {}   // الفشل هنا مش مهم: الباتش نفسه هيعيد المحاولة وقت ما يحتاجه
+                }
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun evict() {
+        val now = System.currentTimeMillis()
+        if (now - lastEvict < 20_000) return
+        lastEvict = now
+        try {
+            val all = dir.listFiles() ?: return
+            var total = all.sumOf { it.length() }
+            if (total <= CACHE_MAX) return
+            for (f in all.sortedBy { it.lastModified() }) {
+                if (total <= CACHE_MAX * 7 / 10) break
+                if (now - f.lastModified() < 90_000) continue
+                total -= f.length(); f.delete()
+            }
+        } catch (_: Throwable) {}
+    }
+
+    // ---------- فك الصوت ----------
+    override fun wav(startSec: Double, endSec: Double): WavChunk? {
+        var m = load()
+        while (true) {
+            try { return decodeRange(m, startSec, endSec) }
+            catch (e: Unsupported) {
+                if ((e.message ?: "").contains("ملوش مسار صوت") && switchCandidate(m)) { m = load(); continue }
+                throw e
+            } catch (e: HlsBadMedia) {
+                if (switchCandidate(m)) { m = load(); continue }
+                throw e
+            }
+        }
+    }
+
+    private fun decodeRange(m: Hls.Media, startSec: Double, endSec: Double): WavChunk? {
         val need = m.segs.filter { it.start < endSec && it.start + it.dur > startSec - preRoll }
         if (need.isEmpty()) return null
-        val tmp = File(ctx.cacheDir, "hls_chunk.bin")
-        if (m.mapUrl != null && mapBytes == null) mapBytes = http(m.mapUrl)
-        tmp.outputStream().buffered().use { o ->
-            mapBytes?.let { o.write(it) }
-            for (s in need) o.write(segBytes(s))
-        }
+        val hasMap = m.mapUrl != null
+        evict()
+        fetch(need, hasMap)
+        prefetch(m, endSec, endSec - startSec)
+        val tmp = File.createTempFile("hls_chunk_", ".bin", ctx.cacheDir)
         val e = MediaExtractor()
         try {
-            e.setDataSource(tmp.path)
+            tmp.outputStream().buffered(256 * 1024).use { o ->
+                mapFile(m)?.let { mf -> mf.inputStream().use { it.copyTo(o) } }
+                for (s in need) segFile(s, hasMap).inputStream().use { it.copyTo(o) }
+            }
+            try { e.setDataSource(tmp.path) } catch (t: IOException) { throw HlsBadMedia("مقدرتش أقرأ مقاطع HLS: " + (t.message ?: "").take(80)) }
             val t = Tracks.pick(e, pref, log)
             e.selectTrack(t)
             val f = e.getTrackFormat(t)
@@ -240,5 +428,9 @@ class HlsSource(
         } finally { try { e.release() } catch (_: Exception) {}; tmp.delete() }
     }
 
-    override fun close() { synchronized(cache) { cache.clear() } }
+    override fun close() {
+        preGen.incrementAndGet()
+        for (n in mine) for (ext in listOf("seg", "map", "part")) File(dir, "$n.$ext").delete()
+        mine.clear()
+    }
 }

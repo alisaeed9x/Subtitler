@@ -156,8 +156,10 @@ object ClipWatch {
 }
 
 /**
- * أول ما البرنامج يفتح: لو في الكليبورد لينك (أو أكتر) فيه فيديو، بتظهر صفحة بوب-أب بصورة الفيديو واسمه
- * وسؤال «تشغّله؟» (نعم / لا) لكل واحد. الفحص كله في الخلفية، ومفيش حاجة بتظهر لو اللينك مفيهوش فيديو.
+ * أول ما البرنامج يفتح (أو يرجع له الفوكس): لو في الكليبورد لينك جديد، بيظهر إشعار صغير فوق الشاشة:
+ * «تم التقاط لينك — تروح تصطاد الفيديو اللي جواه؟» [نعم، روح] [لا] — ولو ما حدش ردّ في 5 ثواني بيختفي لوحده.
+ * الفحص بيشتغل في الخلفية بالتوازي: لو «نعم» والفيديو اتعرف خلاص بيشتغل على طول، غير كده بتفتح شاشة الصيد على اللينك.
+ * مفيش بوب-أب ولا توست.
  */
 fun Activity.checkClipboard(onPlay: (ClipVideo) -> Unit) {
     if (ClipWatch.busy) return
@@ -167,45 +169,26 @@ fun Activity.checkClipboard(onPlay: (ClipVideo) -> Unit) {
     val links = ClipWatch.extract(text)
     if (links.isEmpty()) return
     ClipWatch.busy = true
-    val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
-    val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-    var dlg: Dialog? = null
-    val shown = ArrayList<Pair<Int, View>>()
-    fun card(c: ClipVideo): View {
-        val card = ui.card()
-        val img = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP; setBackgroundColor(0xFF111111.toInt())
-            if (c.thumb != null) setImageBitmap(c.thumb)
-            outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, ui.dp(10).toFloat()) } }
-            clipToOutline = true
-        }
-        card.addView(img, LinearLayout.LayoutParams(-1, ui.dp(170)))
-        if (c.thumb == null) card.addView(ui.text(if (c.kind == "HLS") "🎞 بث HLS" else "🎬", 13f, th.muted).apply { gravity = Gravity.CENTER })
-        card.addView(ui.text(c.title, 15f, th.text, true).apply { setPadding(0, ui.dp(8), 0, ui.dp(2)); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
-        card.addView(ui.text(c.url, 11f, th.muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; layoutDirection = View.LAYOUT_DIRECTION_LTR; textDirection = View.TEXT_DIRECTION_LTR })
-        card.addView(ui.text("تشغّل الفيديو ده في البرنامج؟", 13f, th.text).apply { setPadding(0, ui.dp(8), 0, ui.dp(2)) })
-        val row = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        fun drop() { box.removeView(card); shown.removeAll { it.second === card }; if (box.childCount == 0) dlg?.dismiss() }
-        row.addView(ui.button("▶ نعم", true) { dlg?.dismiss(); onPlay(c) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) } })
-        row.addView(ui.button("لا") { drop() }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-        card.addView(row)
-        return card
-    }
-    val total = links.size; var done = 0
+    val results = HashMap<String, ClipVideo?>()
     Thread {
-        links.forEachIndexed { idx, u ->
+        for (u in links) {
             val r = try { ClipWatch.resolve(this, u) } catch (_: Throwable) { null }
-            runOnUiThread {
-                done++
-                if (isFinishing || isDestroyed) { if (done >= total) ClipWatch.busy = false; return@runOnUiThread }
-                if (r != null) {
-                    if (dlg == null) { dlg = ui.sheet(this, "🎬 لقيت فيديو في اللينك اللي نسخته", listOf<View>(box), false) { ClipWatch.busy = false }; dlg!!.show() }
-                    val v = card(r)
-                    val pos = shown.count { it.first < idx }
-                    box.addView(v, pos); shown.add(idx to v)
-                }
-                if (done >= total && dlg == null) ClipWatch.busy = false
-            }
+            synchronized(results) { results[u] = r }
         }
     }.apply { isDaemon = true }.start()
+
+    fun host(u: String) = try { java.net.URL(u).host.removePrefix("www.") } catch (_: Throwable) { u.take(30) }
+    fun next(i: Int) {
+        if (i >= links.size || isFinishing || isDestroyed) { ClipWatch.busy = false; return }
+        val u = links[i]
+        val cnt = if (links.size > 1) "  (${i + 1}/${links.size})" else ""
+        Notice.ask(this, "🔗 تم التقاط لينك من ${host(u)}$cnt\nتروح تصطاد الفيديو اللي جواه؟", "نعم، روح", "لا", 5000L,
+            onYes = {
+                ClipWatch.busy = false
+                val r = synchronized(results) { results[u] }
+                onPlay(r ?: ClipVideo(u, u, null, "", "WEB"))   // لسه مش معروف/مفيش فيديو ثابت: playClip بيفتح شاشة الصيد
+            },
+            onNo = { next(i + 1) })
+    }
+    next(0)
 }

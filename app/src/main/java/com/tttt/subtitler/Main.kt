@@ -192,6 +192,7 @@ class MainActivity : Activity() {
         var chunkSec = Cfg.int("chunk", 60).coerceIn(10, 600)
         val chunk = ui.slider("طول المقطع", chunkSec, 10, 600, " ثانية") { chunkSec = it }
         val ahead = ui.input("عدد المقاطع اللي بتترجم قدّام مكان التشغيل", Cfg.str("ahead", "3"))
+        val hlsAhead = ui.input("روابط m3u8: عدد الباتشات اللي بتتحمّل مقدّمًا قدّام الترجمة (الباقي مابيتحمّلش لحد ما توصله)", Cfg.str("hls_ahead", "3"))
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
@@ -236,6 +237,7 @@ class MainActivity : Activity() {
                 .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes)).putString("viskeys", vkeys.text.toString())
             ahead.text.toString().trim().toIntOrNull()?.let { e.putInt("ahead", it) }
             atrack.text.toString().trim().toIntOrNull()?.let { e.putInt("atrack", it) }
+            hlsAhead.text.toString().trim().toIntOrNull()?.let { e.putInt("hls_ahead", it.coerceIn(1, 8)) }
             flags.keys.forEachIndexed { i, k -> e.putBoolean(k, (flagViews[i] as Switch).isChecked) }
             e.apply()
         }
@@ -323,7 +325,7 @@ class MainActivity : Activity() {
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
-                ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, atrack),
+                ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
@@ -1903,8 +1905,7 @@ class PlayerActivity : Activity(), Host {
     private fun makeSource(): AudioSource {
         val lg: (String) -> Unit = { log(it) }
         val u = url
-        return if (uri == null && u != null && u.contains(".m3u8", true)) HlsSource(applicationContext, u, hdr, conf.audioTrack, lg)
-        else FileSource(applicationContext, uri, u, hdr, conf.audioTrack, lg)
+        return AudioSources.make(applicationContext, uri, u, hdr, conf.audioTrack, lg)
     }
 
     fun fmtMs(ms: Long) = String.format("%02d:%02d:%02d", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60)

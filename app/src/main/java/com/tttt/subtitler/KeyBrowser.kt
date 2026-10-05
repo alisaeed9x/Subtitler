@@ -17,7 +17,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 
 const val KEY_PAGE_URL = "https://aistudio.google.com/apikey"
 

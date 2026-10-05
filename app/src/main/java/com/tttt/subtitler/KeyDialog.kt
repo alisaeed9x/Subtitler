@@ -12,7 +12,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 
 // مفاتيح جوجل: القديم AIza… والجديد (AI Studio دلوقتي) AQ.… وفيه نقط وشرطات
 private val KEY_RE = Regex("AIza[0-9A-Za-z_\\-]{30,}|AQ\\.[0-9A-Za-z_.\\-]{20,}")

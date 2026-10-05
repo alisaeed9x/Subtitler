@@ -52,7 +52,7 @@ class StatsUi(private val act: Activity, private val ui: Ui, private val th: The
             col.addView(line("$m:  اتستخدم $used من $total  ·  فاضل حوالي ${maxOf(0, total - used)}"))
         }
         col.addView(ui.text("الإجمالي = كوتة المفتاح الواحد × عدد المفاتيح ($nKeys)، وده صحيح لو كل مفتاح من مشروع Google مختلف. العدّاد محلي على الجهاز ومش من جوجل.", 11f, th.muted).apply { setPadding(0, ui.dp(6), 0, 0) })
-        col.addView(ui.button("🗑 تصفير الإحصائيات") { Stats.reset(); android.widget.Toast.makeText(act, "اتصفّرت", android.widget.Toast.LENGTH_SHORT).show() }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(14) })
+        col.addView(ui.button("🗑 تصفير الإحصائيات") { Stats.reset(); Toast.makeText(act, "اتصفّرت", Toast.LENGTH_SHORT).show() }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(14) })
         ui.sheet(act, "📊 إحصائية الاستهلاك", listOf<View>(col)).show()
     }
 }

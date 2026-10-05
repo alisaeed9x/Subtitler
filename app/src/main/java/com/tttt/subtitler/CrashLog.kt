@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
 import java.io.File
 
 /** بيسجّل سبب أي كراش (مع آخر سطور اللوج) في ملف، ويعرضه في أول فتح بعدها عشان نعرف نصلّحه */

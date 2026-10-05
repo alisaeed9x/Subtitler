@@ -53,7 +53,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
                     btns.addView(chip("⬆") { BgJobs.moveUp(j) }); btns.addView(chip("⬇") { BgJobs.moveDown(j) })
                     btns.addView(chip("⏫ أول واحد") { BgJobs.moveTop(j) }); btns.addView(chip("▶ ابدأ دلوقتي") { BgJobs.startNow(act, j) })
                 }
-            } else if (j.state != "done" || j.err.isNotEmpty()) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) android.widget.Toast.makeText(act, "بيترجم بالفعل", android.widget.Toast.LENGTH_SHORT).show() })
+            } else if (j.state != "done" || j.err.isNotEmpty()) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) Toast.makeText(act, "بيترجم بالفعل", Toast.LENGTH_SHORT).show() })
             btns.addView(chip("✕ إزالة") { BgJobs.remove(j) })
             val card = LinearLayout(act).apply {
                 orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.box(th.card, th.border, 12)

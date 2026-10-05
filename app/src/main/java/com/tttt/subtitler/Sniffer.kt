@@ -28,7 +28,6 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
