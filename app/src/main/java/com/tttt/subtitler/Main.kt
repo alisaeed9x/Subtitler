@@ -434,7 +434,7 @@ class MainActivity : Activity() {
         frame.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
         if (fromPlayer) {
             setContentView(FrameLayout(this))
-            settingsDlg.show(intent?.getStringExtra("tab") ?: "fonts")
+            settingsDlg.show(intent?.getStringExtra("tab"))   // من غير قسم محدد = قايمة الإعدادات كاملة
             return
         }
         setContentView(frame)
@@ -2110,11 +2110,11 @@ class PlayerActivity : Activity(), Host {
     }
 
     /** الإعدادات من المشغّل: بتفتح شاشة الإعدادات فوق الفيديو من غير ما تقفله — الرجوع (Back) بيرجّعك للفيديو */
-    fun openSettings(tab: String = "fonts") {
+    fun openSettings(tab: String? = null) {
         resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
-        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("tab", tab))
+        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).apply { if (tab != null) putExtra("tab", tab) })
     }
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)
