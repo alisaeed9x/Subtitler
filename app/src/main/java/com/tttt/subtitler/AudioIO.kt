@@ -57,44 +57,70 @@ object Decoder {
             var ch = if (fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
             var enc = 2
             val deadline = System.currentTimeMillis() + 90_000
+            var st = "بداية"; var dg = ""
+            try {
             while (!outDone) {
                 if (System.currentTimeMillis() > deadline) throw IOException("فك الصوت أخد وقت طويل")
                 if (!inDone) {
+                    st = "dequeueInputBuffer"
                     val ii = codec.dequeueInputBuffer(10_000)
                     if (ii >= 0) {
+                        st = "getInputBuffer"
                         val ib = codec.getInputBuffer(ii)
-                        val n = if (ib != null) ex.readSampleData(ib, 0) else -1
+                        st = "readSampleData"; dg = "ii=$ii cap=" + (ib?.capacity() ?: -1) + " lim=" + (ib?.limit() ?: -1) + " pos=" + (ib?.position() ?: -1)
+                        val n = if (ib != null) { ib.clear(); ex.readSampleData(ib, 0) } else -1
+                        st = "sampleTime"; dg = "n=$n"
                         val t = ex.sampleTime
                         if (n < 0 || t < 0 || t >= endUs + 300_000) {
+                            st = "queueInputBuffer(EOS)"; dg = "ii=$ii n=$n t=$t"
                             codec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inDone = true
                         } else {
                             if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED != 0) throw Unsupported(DRM_MSG)
-                            codec.queueInputBuffer(ii, 0, n, t, 0); ex.advance()
+                            st = "queueInputBuffer"; dg = "ii=$ii n=$n t=$t cap=" + (ib?.capacity() ?: -1)
+                            codec.queueInputBuffer(ii, 0, n, t, 0)
+                            st = "advance"; ex.advance()
                         }
                     }
                 }
+                st = "dequeueOutputBuffer"
                 val oi = codec.dequeueOutputBuffer(info, 10_000)
                 if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    st = "outputFormat"
                     val of = codec.outputFormat
                     if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) rate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                     enc = if (of.containsKey("pcm-encoding")) of.getInteger("pcm-encoding") else 2
                 } else if (oi >= 0) {
                     var reached = false
+                    st = "getOutputBuffer"
                     val ob = codec.getOutputBuffer(oi)
                     if (info.size > 0 && ob != null) {
-                        ob.order(ByteOrder.LITTLE_ENDIAN); ob.position(info.offset); ob.limit(info.offset + info.size)
+                        dg = "oi=$oi off=${info.offset} size=${info.size} cap=${ob.capacity()} lim=${ob.limit()} pos=${ob.position()} enc=$enc ch=$ch rate=$rate"
+                        st = "ضبط position/limit للـ output"
+                        // clear الأول عشان الـ limit القديم ما يرميش IAE لما الـ offset أكبر منه
+                        ob.clear(); ob.order(ByteOrder.LITTLE_ENDIAN)
+                        ob.limit(minOf(ob.capacity(), info.offset + info.size)); ob.position(minOf(info.offset, ob.limit()))
                         if (enc == 4) {
+                            st = "قراءة float"
                             val fb = ob.asFloatBuffer(); val a = FloatArray(fb.remaining()); fb.get(a)
+                            st = "sink.addFloats"
                             reached = sink.addFloats(a, ch, rate, info.presentationTimeUs, startUs, endUs)
                         } else if (enc == 2) {
+                            st = "قراءة short"
                             val sb = ob.asShortBuffer(); val a = ShortArray(sb.remaining()); sb.get(a)
+                            st = "sink.addShorts"
                             reached = sink.addShorts(a, ch, rate, info.presentationTimeUs, startUs, endUs)
                         } else throw Exception("نوع PCM غير مدعوم ($enc)")
                     }
+                    st = "releaseOutputBuffer"
                     codec.releaseOutputBuffer(oi, false)
                     if (reached || (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true
                 }
+            }
+            } catch (x: IllegalArgumentException) {
+                throw HlsBadMedia("[$st] " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: "") + " | $dg | " + (x.stackTrace.firstOrNull()?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" } ?: ""))
+            } catch (x: IllegalStateException) {
+                throw HlsBadMedia("[$st] " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: "") + " | $dg")
             }
         } finally {
             try { codec.stop() } catch (_: Exception) {}

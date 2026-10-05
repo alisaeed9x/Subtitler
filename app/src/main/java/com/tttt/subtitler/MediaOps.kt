@@ -222,6 +222,18 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
         } catch (_: Exception) { toast("ماقدرتش أشارك الملف ده") }
     }
 
+    /** مشاركة أكتر من فيديو مرة واحدة */
+    fun shareMany(vs: List<VideoItem>) {
+        if (vs.isEmpty()) return
+        if (vs.size == 1) { share(vs[0]); return }
+        try {
+            val si = Intent(Intent.ACTION_SEND_MULTIPLE).setType("video/*")
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(vs.map { v -> Uri.parse(v.uri) }))
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            act.startActivity(Intent.createChooser(si, "مشاركة ${vs.size} فيديو"))
+        } catch (_: Exception) { toast("ماقدرتش أشارك الملفات دي") }
+    }
+
     // ===== حذف =====
     fun delete(v: VideoItem) {
         if (busy(v)) return

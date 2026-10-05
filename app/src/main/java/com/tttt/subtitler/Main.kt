@@ -413,6 +413,8 @@ class MainActivity : Activity() {
         lib.onRename = { v -> ops.rename(v) }
         lib.onMove = { v -> ops.move(v, lib.allFolders()) }
         lib.onShare = { v -> ops.share(v) }
+        lib.onShareMany = { vs -> ops.shareMany(vs) }
+        lib.onPlayWeb = { w -> save(); playWeb(w) }
         lib.onDelete = { v -> ops.delete(v) }
         lib.onRenameFolder = { f -> ops.renameFolder(f) }
         lib.onDeleteFolder = { f -> ops.deleteFolder(f) }
@@ -661,6 +663,16 @@ class MainActivity : Activity() {
         if (hasFocus && !fromPlayer) window.decorView.postDelayed({ if (!isFinishing && !isDestroyed) checkClipboard { playClip(it) } }, 900)
     }
     /** «نعم» من بوب-أب الكليبورد: فيديو مباشر يشتغل على طول، يوتيوب بنجيب له أحسن رابط فيه صوت وصورة، وغير كده شاشة الصيد */
+    /** فيديو من سجل «المصطادة»: يفتح بنفس الرابط والهيدرز ويكمّل من آخر مكان وقفت عنده. روابط يوتيوب بتنتهي — فبنفتح صفحة الفيديو */
+    fun playWeb(w: WebVid) {
+        if (w.kind == "YT") { if (w.ref.isNotEmpty()) openLink(w.ref) else Toast.makeText(this, "رابط يوتيوب انتهت صلاحيته — افتحه من المتصفح تاني", Toast.LENGTH_LONG).show(); return }
+        ensureKeys {
+            startActivity(Intent(this, PlayerActivity::class.java).apply {
+                putExtra("url", w.url); putExtra("ref", w.ref); putExtra("ua", w.ua); putExtra("cookie", w.cookie)
+                putExtra("title", w.title); putExtra("autotr", true)
+            })
+        }
+    }
     fun playClip(c: ClipVideo) {
         fun go(u: String, ref: String, ua: String) {
             if (ref.isEmpty() && ua.isEmpty()) { play(u, null); return }
@@ -1735,7 +1747,7 @@ class PlayerActivity : Activity(), Host {
                 // تشخيص الشاشة السودا: صوت شغّال ومفيش ولا فريم فيديو اتعرض بعد ٥ ثواني
                 if (p && !firstFrame) h.postDelayed({ if (!firstFrame && !isFinishing) log("⚠️ مفيش فريم فيديو اتعرض بعد ٥ ثواني — غالبًا كودك/بروفايل الفيديو مش مدعوم على الجهاز (مثلًا HEVC 10-bit)") }, 5000)
             }
-            override fun onRenderedFirstFrame() { firstFrame = true }
+            override fun onRenderedFirstFrame() { firstFrame = true; webFirstFrame = true }
             override fun onTracksChanged(t: Tracks) {
                 for (g in t.groups) {
                     if (g.type != C.TRACK_TYPE_VIDEO || g.length == 0) continue
@@ -1767,6 +1779,7 @@ class PlayerActivity : Activity(), Host {
 
     private fun initEngine() {
         vid = videoId()
+        if (uri == null && url != null) webRegister()
         offsetMs = Cfg.str("sub_offset_ms:$vid", "0").toLongOrNull() ?: 0L
         runCatching { offFsB?.text = String.format("%+.1fs", offsetMs / 1000.0) }
         lastSrtN = -1
@@ -1780,9 +1793,52 @@ class PlayerActivity : Activity(), Host {
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_SHORT).show() } }, { })
         val savedPos = engine.load()
         if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
+        else if (uri == null && !freshOnce) {
+            // رابط من الإنترنت: لو مفيش مكان وقوف في الترجمة، كمّل من آخر مكان اتفرجت عليه (من السجل)
+            val rp = try { Recents.parse(File(filesDir, "recent.json").readText()).firstOrNull { it.id == vid }?.posSec ?: 0.0 } catch (_: Exception) { 0.0 }
+            if (rp > 5.0) { player.seekTo((rp * 1000).toLong()); cur = (rp * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
+        }
         refreshList()
         LogStore.add("🎬 فتح فيديو $vid · ${LogStore.heapLine()}")
         maybePrompt(wasBg)
+    }
+
+    // ===== الفيديوهات المصطادة: تسجيل في السجل + لقطة + تعرّف على الاسم =====
+    @Volatile private var webFirstFrame = false
+    private var webSnapTries = 0
+    private fun webRegister() {
+        val u = url ?: return
+        val appCtx = applicationContext; val id = vid
+        val ref = hdr["Referer"] ?: ""; val ua = hdr["User-Agent"] ?: ""; val ck = hdr["Cookie"] ?: ""
+        val t0 = intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Sniff.nameOf(u)
+        val kind = if (u.contains("videoplayback")) "YT" else Sniff.kindOf(u)
+        Thread { WebVideos.register(appCtx, id, u, ref, ua, ck, t0, kind) }.apply { isDaemon = true }.start()
+        h.postDelayed({ webSnap() }, 9000)
+    }
+    private fun webSnap() {
+        if (isFinishing || isDestroyed || !::svRef.isInitialized) return
+        val ready = webFirstFrame && svRef.width > 0 && svRef.height > 0
+        if (!ready) { if (++webSnapTries < 4) h.postDelayed({ webSnap() }, 8000); return }
+        val appCtx = applicationContext; val id = vid
+        val bmp = android.graphics.Bitmap.createBitmap(svRef.width, svRef.height, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            android.view.PixelCopy.request(svRef, bmp, { res ->
+                if (res != android.view.PixelCopy.SUCCESS) return@request
+                Thread {
+                    try {
+                        val cur0 = WebVideos.find(appCtx, id) ?: return@Thread
+                        val jpeg = WebVideos.saveThumb(appCtx, id, bmp)
+                        if (jpeg == null || cur0.named || cur0.tries >= 3) return@Thread
+                        WebVideos.update(appCtx, id) { it.copy(tries = it.tries + 1) }
+                        val t = WebVideos.identify(jpeg)
+                        if (t != null) {
+                            WebVideos.update(appCtx, id) { it.copy(title = t, named = true) }
+                            runOnUiThread { if (!isDestroyed) Toast.makeText(this, "🎬 اتعرف الاسم: $t", Toast.LENGTH_SHORT).show() }
+                        }
+                    } catch (_: Throwable) {}
+                }.apply { isDaemon = true }.start()
+            }, Handler(Looper.getMainLooper()))
+        } catch (_: Exception) {}
     }
 
     fun toggleLog() {

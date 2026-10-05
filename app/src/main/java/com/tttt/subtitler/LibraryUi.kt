@@ -38,6 +38,8 @@ class LibraryUi(
     var onBgStop: (VideoItem) -> Unit = {}
     var onBgFolder: (FolderItem) -> Unit = {}
     var onQueue: () -> Unit = {}
+    var onShareMany: (List<VideoItem>) -> Unit = {}
+    var onPlayWeb: (WebVid) -> Unit = {}
     private lateinit var queueBtn: TextView
     var onRename: (VideoItem) -> Unit = {}
     var onMove: (VideoItem) -> Unit = {}
@@ -50,7 +52,7 @@ class LibraryUi(
     var bgJob: (VideoItem) -> BgJob? = { null }
     fun refreshRows() {
         // ظهور/اختفاء صف «مجلد الترجمة في الخلفية» في الرئيسية
-        val hasBg = rows.firstOrNull() === bgFolder
+        val hasBg = rows.any { it === bgFolder }
         if (mode == "ready" && curFolder == null && !inHidden && query.isEmpty() && hasBg != BgJobs.jobs.isNotEmpty()) render()
         (listV.adapter as? BaseAdapter)?.notifyDataSetChanged()
         if (::queueBtn.isInitialized) { val n = BgJobs.jobs.count { it.active }; queueBtn.text = if (n > 0) "📋$n" else "📋"; queueBtn.textSize = if (n > 0) 13f else 17f }
@@ -74,6 +76,14 @@ class LibraryUi(
     private var recMap: Map<String, Recent> = emptyMap()
     private var rootPos = 0
     private var query = ""
+    // ===== فولدر «المصطادة من الإنترنت» (بلون مميز) + التحديد المتعدد =====
+    private val WEB_KEY = "__web__"
+    private val WEBC = 0xFFB39DDB.toInt()   // لافندر هادي للعين (مش أخضر)
+    private val webFolder = FolderItem(WEB_KEY, "الفيديوهات المصطادة", "", emptyList())
+    private var webList: List<WebVid> = emptyList()
+    private val sel = LinkedHashSet<String>()
+    private var selLevel = ""
+    private val webThumbs = android.util.LruCache<String, android.graphics.Bitmap>(40)
     private val searchEt = EditText(act).apply {
         hint = "🔍 ابحث باسم الفيديو"; textSize = 14f; setSingleLine(); setTextColor(th.text); setHintTextColor(th.muted)
         layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL or Gravity.START
@@ -98,6 +108,10 @@ class LibraryUi(
     private val stateBar = ProgressBar(act)
     private val stateBtn = ui.button("", true) { onGrant() }
     private lateinit var refreshBtn: TextView
+    private lateinit var selAllBtn: TextView
+    private lateinit var selMenuBtn: TextView
+    private lateinit var selCloseBtn: TextView
+    private var normalBtns: List<View> = emptyList()
 
     // ===== ريفريش بالسحب + NEW + إشعار + زرار استكمال =====
     private val knownFile = File(act.filesDir, "known_videos.txt")
@@ -198,7 +212,7 @@ class LibraryUi(
     private fun sortKey() = Cfg.str("lib_sort", VideoLib.SORT_NAME)
 
     private fun hbtn(t: String, f: () -> Unit): TextView = ui.circleBtn(t, false, f).apply {
-        textSize = 17f; layoutParams = LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }
+        textSize = 16f; layoutParams = LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)).apply { setMargins(ui.dp(2), 0, ui.dp(2), 0) }
     }
 
     init {
@@ -207,13 +221,20 @@ class LibraryUi(
         head.addView(backV)
         val tcol = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleTv); addView(subTv) }
         head.addView(tcol, LinearLayout.LayoutParams(0, -2, 1f))
+        // ▣ تحديد الكل (ضغطة مطولة: تحديد / إلغاء) · ⋮ و ✕ بيظهروا بس وفيه تحديد
+        selAllBtn = hbtn("▣") { toggleAll() }
+        selAllBtn.setOnLongClickListener { a -> a.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); popup(a, listOf("☑ تحديد الكل" to { selectAll() }, "☐ إلغاء التحديد" to { clearSel() })); true }
+        selMenuBtn = hbtn("⋮") { }.apply { visibility = View.GONE; setOnClickListener { selMenu(it) } }
+        selCloseBtn = hbtn("✕") { clearSel() }.apply { visibility = View.GONE }
+        head.addView(selAllBtn); head.addView(selMenuBtn); head.addView(selCloseBtn)
         queueBtn = hbtn("📋") { onQueue() }
         head.addView(queueBtn)
-        head.addView(hbtn("🔗") { onLink() })
-        head.addView(hbtn("📂") { onPick() })
-        head.addView(hbtn("⚙️") { onSettings() })
+        val linkBtn = hbtn("🔗") { onLink() }; head.addView(linkBtn)
+        val pickBtn = hbtn("📂") { onPick() }; head.addView(pickBtn)
+        val setBtn = hbtn("⚙️") { onSettings() }; head.addView(setBtn)
         refreshBtn = hbtn("🔄") { refreshBtn.animate().rotationBy(360f).setDuration(600).start(); userRefresh = true; onRefresh() }
         head.addView(refreshBtn)
+        normalBtns = listOf(queueBtn, linkBtn, pickBtn, setBtn, refreshBtn)
         root.addView(head, LinearLayout.LayoutParams(-1, -2))
 
         val labels = VideoLib.sortLabels.map { it.second }
@@ -231,12 +252,15 @@ class LibraryUi(
                 override fun getCount() = rows.size
                 override fun getItem(i: Int): Any = rows[i]
                 override fun getItemId(i: Int) = i.toLong()
-                override fun getViewTypeCount() = 2
-                override fun getItemViewType(i: Int) = if (rows[i] is FolderItem) 0 else 1
+                override fun getViewTypeCount() = 3
+                override fun getItemViewType(i: Int) = when (rows[i]) { is FolderItem -> 0; is WebVid -> 2; else -> 1 }
                 override fun getView(i: Int, cv: View?, p: ViewGroup?): View {
                     val r = rows[i]
-                    return if (r is FolderItem) (cv ?: newFolderRow()).also { bindFolder(it, r) }
-                    else (cv ?: newVideoRow()).also { bindVideo(it, r as VideoItem) }
+                    return when (r) {
+                        is FolderItem -> (cv ?: newFolderRow()).also { bindFolder(it, r) }
+                        is WebVid -> (cv ?: newVideoRow()).also { bindWeb(it, r) }
+                        else -> (cv ?: newVideoRow()).also { bindVideo(it, r as VideoItem) }
+                    }
                 }
             }
         }
@@ -316,6 +340,7 @@ class LibraryUi(
 
     /** رجوع من فولدر للقايمة الرئيسية. بترجّع true لو استهلكت الضغطة */
     fun back(): Boolean {
+        if (sel.isNotEmpty()) { clearSel(); return true }
         if (query.isNotEmpty()) { searchEt.setText(""); return true }
         if (inHidden) { inHidden = false; secure(false); render(); listV.setSelection(rootPos); return true }
         if (curFolder == null) return false
@@ -333,9 +358,11 @@ class LibraryUi(
         if (all.isEmpty()) { emptyTv.visibility = View.GONE; setState(false, "مفيش فيديوهات اتلاقت على الجهاز.\nلو فيديوهاتك موجودة دوس 🔄 للفحص من جديد، أو افتح فيديو من 📂.", null); return }
         val src = if (inHidden) all.filter { isHidden(it) } else visible()
         val cf = curFolder
+        val inWeb = !inHidden && query.isEmpty() && cf == WEB_KEY
+        if (!inHidden && query.isEmpty() && (cf == null || inWeb)) webList = WebVideos.load(act)
         val folders = VideoLib.group(src)
-        val folder = if (!inHidden && cf != null) folders.firstOrNull { it.key == cf } else null
-        if (!inHidden && cf != null && folder == null) curFolder = null
+        val folder = if (!inHidden && cf != null && !inWeb) folders.firstOrNull { it.key == cf } else null
+        if (!inHidden && cf != null && !inWeb && folder == null) curFolder = null
         if (query.isNotEmpty()) {
             val hits = VideoLib.search(src, query)
             rows = hits
@@ -343,17 +370,24 @@ class LibraryUi(
         } else if (inHidden) {
             rows = VideoLib.sortVideos(src, sort)
             titleTv.text = "🙈 المخفي"; subTv.text = "${src.size} فيديو · ${VideoLib.fmtSize(src.sumOf { it.size })}"; backV.visibility = View.VISIBLE
+        } else if (inWeb) {
+            rows = webList
+            titleTv.text = "🌐 المصطادة من الإنترنت"; subTv.text = "${webList.size} فيديو"; backV.visibility = View.VISIBLE
         } else if (folder != null) {
             rows = VideoLib.sortVideos(folder.videos, sort)
             titleTv.text = "📂 " + folder.name; subTv.text = "${folder.videos.size} فيديو · ${VideoLib.fmtSize(folder.totalSize)}"; backV.visibility = View.VISIBLE
         } else {
-            rows = (if (BgJobs.jobs.isNotEmpty()) listOf<Any>(bgFolder) else emptyList<Any>()) + VideoLib.sortFolders(folders, sort)
+            rows = listOf<Any>(webFolder) + (if (BgJobs.jobs.isNotEmpty()) listOf<Any>(bgFolder) else emptyList<Any>()) + VideoLib.sortFolders(folders, sort)
             titleTv.text = "📁 الفيديوهات"; subTv.text = "${folders.size} مجلد · ${src.size} فيديو"; backV.visibility = View.GONE
         }
-        emptyTv.text = if (rows.isNotEmpty()) "" else if (inHidden && query.isEmpty()) "مفيش فيديوهات مخفية.\nدوس ⋮ أو اضغط ضغطة مطولة على أي فيديو واختار 🙈 إخفاء الفيديو." else if (query.isEmpty()) "كل الفيديوهات مخفية.\nاسحب لتحت وكمّل لحد 🔒 وسيب عشان تفتح المخفي." else "مفيش نتائج."
+        val lvl = if (query.isNotEmpty()) "q" else if (inHidden) "h" else if (inWeb) "w" else "f:" + (curFolder ?: "")
+        if (lvl != selLevel) { selLevel = lvl; sel.clear() }
+        sel.retainAll(selectableKeys().toSet())
+        emptyTv.text = if (rows.isNotEmpty()) "" else if (inWeb) "مفيش فيديوهات مصطادة لسه.\nأي فيديو تفتحه من لينك أو من المتصفح بيتسجل هنا لوحده بالاسم والتقدم." else if (inHidden && query.isEmpty()) "مفيش فيديوهات مخفية.\nدوس ⋮ أو اضغط ضغطة مطولة على أي فيديو واختار 🙈 إخفاء الفيديو." else if (query.isEmpty()) "كل الفيديوهات مخفية.\nاسحب لتحت وكمّل لحد 🔒 وسيب عشان تفتح المخفي." else "مفيش نتائج."
         emptyTv.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
         stateBox.visibility = View.GONE; listV.visibility = View.VISIBLE
         (listV.adapter as BaseAdapter).notifyDataSetChanged()
+        applySelHeader()
         updateResume()
     }
 
@@ -368,6 +402,7 @@ class LibraryUi(
 
     // ===== صف الفولدر =====
     private fun newFolderRow(): View {
+        val cb = newCheck()
         val icon = TextView(act).apply { text = "📁"; textSize = 24f; gravity = Gravity.CENTER; background = ui.box(th.surface, th.border, 12) }
         val name = ui.text("", 15f, th.text, true).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val info = ui.text("", 12f, th.primary)
@@ -379,42 +414,62 @@ class LibraryUi(
         val fDots = dots { }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(10), ui.dp(8), ui.dp(10)); background = ui.box(th.card, th.border, 14)
+            addView(cb, LinearLayout.LayoutParams(ui.dp(38), ui.dp(48)))
             addView(icon, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(12) })
             addView(fDots)
             addView(chev)
         }
-        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge, fDots) }
+        val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge, fDots, cb, icon) }
         return wrap
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun bindFolder(v: View, f: FolderItem) {
         val t = v.tag as Array<View>
+        if (f === webFolder) {
+            val n = webList.size
+            (t[7] as TextView).text = "🌐"
+            (t[0] as TextView).text = "الفيديوهات المصطادة من الإنترنت"
+            (t[1] as TextView).text = if (n > 0) "$n فيديو · اللينك والاسم والتقدم محفوظين" else "لسه مفيش — أي فيديو تفتحه من لينك بيتسجل هنا لوحده"
+            (t[2] as TextView).text = "اضغط على أي فيديو يكمّل من آخر مكان وقفت عنده"
+            (t[4] as TextView).visibility = View.GONE
+            t[5].visibility = View.GONE; t[6].visibility = View.GONE
+            t[3].background = GradientDrawable().apply { cornerRadius = ui.dp(14).toFloat(); setColor((WEBC and 0x00FFFFFF) or 0x22000000); setStroke(ui.dp(2), WEBC) }
+            t[3].setOnClickListener { if (sel.isEmpty()) { rootPos = listV.firstVisiblePosition; curFolder = WEB_KEY; render(); listV.setSelection(0) } }
+            t[3].setOnLongClickListener(null)
+            return
+        }
+        (t[7] as TextView).text = if (f === bgFolder) "🌙" else "📁"
         if (f === bgFolder) {
             val act = BgJobs.jobs.count { it.active }; val run = BgJobs.jobs.firstOrNull { it.state == "running" }
             (t[0] as TextView).text = "🌙 مجلد الترجمة في الخلفية"
             (t[1] as TextView).text = "$act في الطابور" + (if (run != null) " · بيترجم: ${run.title} ${run.pct}%" else "")
             (t[2] as TextView).text = "اللي فوق بيترجم الأول · رتّبهم بـ ⬆ ⬇"
             (t[4] as TextView).visibility = View.GONE
-            t[5].visibility = View.GONE
+            t[5].visibility = View.GONE; t[6].visibility = View.GONE
+            t[3].background = ui.box(th.card, th.border, 14)
             t[3].setOnClickListener { onQueue() }
             t[3].setOnLongClickListener(null)
             return
         }
-        t[5].visibility = View.VISIBLE
+        t[5].visibility = View.VISIBLE; t[6].visibility = View.VISIBLE
+        val on = f.key in sel
+        bindCheck(t[6], on) { toggleSel(f.key) }
+        t[3].background = if (on) ui.box(th.card, th.primary, 14, 2) else ui.box(th.card, th.border, 14)
         (t[0] as TextView).text = f.name
         (t[1] as TextView).text = "${f.count} فيديو · ${VideoLib.fmtSize(f.totalSize)}"
         (t[2] as TextView).text = f.path
         val nn = f.videos.count { keyOf(it) in newKeys }
         (t[4] as TextView).apply { text = if (nn > 1) "NEW $nn" else "NEW"; visibility = if (nn > 0) View.VISIBLE else View.GONE }
-        t[3].setOnClickListener { rootPos = listV.firstVisiblePosition; curFolder = f.key; render(); listV.setSelection(0) }
-        t[5].setOnClickListener { v -> folderMenu(v, f) }
-        t[3].setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); folderMenu(t[5], f); true }
+        t[3].setOnClickListener { if (sel.isNotEmpty()) toggleSel(f.key) else { rootPos = listV.firstVisiblePosition; curFolder = f.key; render(); listV.setSelection(0) } }
+        t[5].setOnClickListener { v -> folderMenu(v, f, false) }
+        t[3].setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); if (sel.isNotEmpty()) toggleSel(f.key) else folderMenu(t[5], f, true); true }
     }
     /** قايمة الفولدر (⋮ أو ضغطة مطولة): نفس أفعال قايمة الفيديو بس على الفولدر كله */
-    private fun folderMenu(anchor: View, f: FolderItem) {
+    private fun folderMenu(anchor: View, f: FolderItem, withSel: Boolean) {
         val items = ArrayList<Pair<String, () -> Unit>>()
+        if (withSel) { items += "☑ تحديد" to { toggleSel(f.key) }; items += "☑ تحديد الكل" to { selectAll() } }
         items += "🌙 ترجمة كل فيديوهات الفولدر في الخلفية (${f.videos.size})" to { onBgFolder(f) }
         items += "🙈 إخفاء الفولدر" to { hideFolder(f) }
         items += "✏ إعادة تسمية الفولدر" to { onRenameFolder(f) }
@@ -436,7 +491,7 @@ class LibraryUi(
     private val bgFolder = FolderItem("__bg__", "مجلد الترجمة في الخلفية", "", emptyList())
 
     // ===== صف الفيديو =====
-    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView, val dots: TextView)
+    private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView, val dots: TextView, val cb: View)
 
     private fun newVideoRow(): View {
         val ph = TextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
@@ -463,19 +518,22 @@ class LibraryUi(
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(titleRow); addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(3) }); addView(state, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(2) })
             addView(bar, LinearLayout.LayoutParams(-1, ui.dp(3)).apply { topMargin = ui.dp(5) }) }
         val vDots = dots { }
+        val vcb = newCheck()
         val card = LinearLayout(act).apply {
-            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), ui.dp(8), ui.dp(4), ui.dp(8)); background = ui.box(th.card, th.border, 12)
+            layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(2), ui.dp(8), ui.dp(4), ui.dp(8)); background = ui.box(th.card, th.border, 12)
+            addView(vcb, LinearLayout.LayoutParams(ui.dp(38), ui.dp(48)))
             addView(thumb, LinearLayout.LayoutParams(ui.dp(128), ui.dp(72)))
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
             addView(vDots)
         }
-        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick, vDots) }
+        return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick, vDots, vcb) }
     }
 
     /** قايمة الفيديو: بتظهر من ⋮ ومن الضغطة المطولة على الفيديو */
-    private fun videoMenu(anchor: View, vi: VideoItem) {
+    private fun videoMenu(anchor: View, vi: VideoItem, withSel: Boolean) {
         val bj = bgJob(vi); val running = bj != null && bj.active
         val items = ArrayList<Pair<String, () -> Unit>>()
+        if (withSel) { items += "☑ تحديد" to { toggleSel(vi.videoId) }; items += "☑ تحديد الكل" to { selectAll() } }
         items += (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 نقل لمجلد الترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) }
         items += "▶ تشغيل" to { markPlayed(vi); onPlay(vi) }
         if (inHidden) items += "👁 إظهار الفيديو (يرجع للقايمة)" to { unhideVideo(vi) }
@@ -493,6 +551,10 @@ class LibraryUi(
     private fun bindVideo(v: View, vi: VideoItem) {
         val h = v.tag as VH
         h.title.text = vi.title
+        h.cb.visibility = View.VISIBLE
+        val on = vi.videoId in sel
+        bindCheck(h.cb, on) { toggleSel(vi.videoId) }
+        h.card.background = if (on) ui.box(th.card, th.primary, 12, 2) else ui.box(th.card, th.border, 12)
         h.badge.visibility = if (keyOf(vi) in newKeys) View.VISIBLE else View.GONE
         h.dur.text = VideoLib.fmtDur(vi.durMs); h.dur.visibility = if (vi.durMs > 0) View.VISIBLE else View.GONE
         h.meta.text = listOf(if (inHidden) vi.folderName else "", VideoLib.fmtSize(vi.size), vi.ext.uppercase(), VideoLib.fmtDate(vi.dateMs)).filter { it.isNotEmpty() }.joinToString(" · ")
@@ -511,12 +573,145 @@ class LibraryUi(
             parts.add(if (bj.state == "queued") "⏳ في طابور الترجمة بالخلفية" else "🌙 بيترجم في الخلفية ${bj.pct}%" + (BgJobs.fmtRemain(bj.remainSec).let { if (it.isEmpty()) "" else " · باقي $it" }))
         } else if (bj != null && bj.state == "failed") parts.add("⚠ ترجمة الخلفية وقفت: " + bj.err)
         h.state.text = parts.joinToString(" · "); h.state.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
-        h.dots.setOnClickListener { v -> videoMenu(v, vi) }
-        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); videoMenu(h.dots, vi); true }
+        h.dots.setOnClickListener { v -> videoMenu(v, vi, false) }
+        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); if (sel.isNotEmpty()) toggleSel(vi.videoId) else videoMenu(h.dots, vi, true); true }
         h.iv.tag = vi.uri; h.iv.setImageDrawable(null)
         val c = Thumbs.peek(vi)
         if (c != null) h.iv.setImageBitmap(c)
         else Thumbs.load(act, vi) { b -> if (b != null && h.iv.tag == vi.uri) h.iv.setImageBitmap(b) }
-        h.card.setOnClickListener { markPlayed(vi); onPlay(vi) }
+        h.card.setOnClickListener { if (sel.isNotEmpty()) toggleSel(vi.videoId) else { markPlayed(vi); onPlay(vi) } }
+    }
+
+    // ===== صف فيديو مصطاد (بإطار لافندر) =====
+    private fun webThumb(w: WebVid): android.graphics.Bitmap? {
+        val f = WebVideos.thumbFile(act, w.id); if (!f.exists()) return null
+        val k = f.path + f.lastModified()
+        webThumbs.get(k)?.let { return it }
+        val b = (try { android.graphics.BitmapFactory.decodeFile(f.path) } catch (_: Throwable) { null }) ?: return null
+        webThumbs.put(k, b); return b
+    }
+    private fun bindWeb(v: View, w: WebVid) {
+        val h = v.tag as VH
+        h.cb.visibility = View.GONE
+        h.title.text = if (w.named) w.title else "🔎 " + w.title
+        h.badge.visibility = View.GONE
+        val r = recMap[w.id]
+        val d = r?.durSec ?: 0.0
+        h.dur.text = VideoLib.fmtDur((d * 1000).toLong()); h.dur.visibility = if (d > 0) View.VISIBLE else View.GONE
+        val host = w.url.substringAfter("://").substringBefore('/').removePrefix("www.")
+        h.meta.text = listOf(host, w.kind, VideoLib.fmtDate(w.ts)).filter { it.isNotEmpty() }.joinToString(" · ")
+        val parts = ArrayList<String>()
+        if (r != null && r.posSec > 5) parts.add("▶ وقف عند " + PlayerLogic.clock((r.posSec * 1000).toLong()))
+        if (r != null && r.subs > 0) parts.add("✓ مترجم ${r.percent}%")
+        h.state.text = parts.joinToString(" · "); h.state.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
+        val frac = if (r != null && d > 0) (r.posSec / d).coerceIn(0.0, 1.0) else 0.0
+        val bar = h.fill.parent as View
+        bar.visibility = if (frac > 0.01) View.VISIBLE else View.GONE
+        (h.fill.layoutParams as LinearLayout.LayoutParams).weight = frac.toFloat(); (h.rest.layoutParams as LinearLayout.LayoutParams).weight = (1.0 - frac).toFloat(); bar.requestLayout()
+        h.tick.visibility = if (r != null && r.percent >= 97) View.VISIBLE else View.GONE
+        h.card.background = GradientDrawable().apply { cornerRadius = ui.dp(12).toFloat(); setColor(th.card); setStroke(ui.dp(2), WEBC) }
+        h.iv.tag = w.id; h.iv.setImageBitmap(webThumb(w))
+        h.dots.setOnClickListener { x -> webMenu(x, w) }
+        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); webMenu(h.dots, w); true }
+        h.card.setOnClickListener { onPlayWeb(w) }
+    }
+    private fun webMenu(anchor: View, w: WebVid) {
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items += "▶ تشغيل (من آخر مكان وقفت عنده)" to { onPlayWeb(w) }
+        items += "✏ إعادة تسمية" to { webRename(w) }
+        items += "🔎 إعادة التعرف على الاسم من اللقطة" to { webReid(w) }
+        items += "📋 نسخ الرابط" to {
+            try { (act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("url", w.url)); toastMsg("📋 اتنسخ الرابط") } catch (_: Exception) {}
+        }
+        items += "🗑 مسح من السجل" to {
+            android.app.AlertDialog.Builder(act).setTitle("🗑 مسح من المصطادة").setMessage("هيتمسح «${w.title}» من السجل (الترجمة المحفوظة مش هتتمسح). تمام؟")
+                .setPositiveButton("امسح") { _, _ -> WebVideos.remove(act, w.id); render() }.setNegativeButton("إلغاء", null).show()
+            Unit
+        }
+        popup(anchor, items)
+    }
+    private fun webRename(w: WebVid) {
+        val et = EditText(act).apply { setText(w.title); setSelection(text.length); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)) }
+        android.app.AlertDialog.Builder(act).setTitle("✏ اسم الفيديو").setView(et)
+            .setPositiveButton("حفظ") { _, _ ->
+                val t = et.text.toString().trim()
+                if (t.isNotEmpty()) { WebVideos.update(act, w.id) { it.copy(title = t, named = true) }; render() }
+            }.setNegativeButton("إلغاء", null).show()
+    }
+    private fun webReid(w: WebVid) {
+        val f = WebVideos.thumbFile(act, w.id)
+        if (!f.exists()) { toastMsg("شغّل الفيديو دقيقة الأول عشان ياخد لقطة يتعرف منها"); return }
+        toastMsg("🔎 بدوّر على اسم الفيديو…")
+        Thread {
+            val t = try { WebVideos.identify(f.readBytes()) } catch (_: Throwable) { null }
+            act.runOnUiThread {
+                if (t != null) { WebVideos.update(act, w.id) { it.copy(title = t, named = true) }; render(); toastMsg("🎬 $t") }
+                else toastMsg("ماعرفتش الاسم من اللقطة دي — ممكن تسمّيه بنفسك من ✏")
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    // ===== التحديد المتعدد =====
+    private fun newCheck(): FrameLayout {
+        val tv = TextView(act).apply { textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setTypeface(typeface, android.graphics.Typeface.BOLD) }
+        return FrameLayout(act).apply { addView(tv, FrameLayout.LayoutParams(ui.dp(24), ui.dp(24), Gravity.CENTER)); tag = tv }
+    }
+    private fun bindCheck(w: View, on: Boolean, f: () -> Unit) {
+        val tv = w.tag as TextView
+        tv.text = if (on) "✓" else ""
+        tv.background = GradientDrawable().apply { cornerRadius = ui.dp(7).toFloat(); setStroke(ui.dp(2), if (on) th.primary else th.muted); setColor(if (on) th.primary else Color.TRANSPARENT) }
+        w.setOnClickListener { f() }
+    }
+    private fun selectableKeys(): List<String> =
+        rows.filterIsInstance<FolderItem>().filter { it !== bgFolder && it !== webFolder }.map { it.key } + rows.filterIsInstance<VideoItem>().map { it.videoId }
+    private fun selFolders(): List<FolderItem> = rows.filterIsInstance<FolderItem>().filter { it.key in sel && it !== bgFolder && it !== webFolder }
+    private fun selVideos(): List<VideoItem> = rows.filterIsInstance<VideoItem>().filter { it.videoId in sel }
+    private fun toggleSel(key: String) { if (!sel.remove(key)) sel.add(key); render() }
+    private fun selectAll() { sel.clear(); sel.addAll(selectableKeys()); render() }
+    private fun clearSel() { sel.clear(); render() }
+    private fun toggleAll() { val all = selectableKeys(); if (all.isNotEmpty() && sel.size >= all.size) clearSel() else selectAll() }
+    private fun applySelHeader() {
+        val on = sel.isNotEmpty()
+        normalBtns.forEach { it.visibility = if (on) View.GONE else View.VISIBLE }
+        selMenuBtn.visibility = if (on) View.VISIBLE else View.GONE
+        selCloseBtn.visibility = if (on) View.VISIBLE else View.GONE
+        selAllBtn.visibility = if (selectableKeys().isEmpty()) View.GONE else View.VISIBLE
+        if (on) {
+            val fs = selFolders(); val vs = selVideos()
+            titleTv.text = "☑ " + sel.size + (if (fs.isNotEmpty()) " فولدر محدد" else " فيديو محدد")
+            subTv.text = "▣ تحديد الكل · ⋮ الخيارات · ✕ إلغاء"
+        }
+    }
+    private fun hideMany(vs: List<VideoItem>) {
+        vs.forEach { hidden.add(it.videoId) }; saveHidden(); sel.clear(); render()
+        toastMsg("🙈 اتخفى ${vs.size} فيديو — اسحب لتحت وكمّل السحب لحد 🔒 وسيب عشان تفتح المخفي")
+    }
+    private fun unhideMany(vs: List<VideoItem>) { vs.forEach { hidden.remove(it.videoId) }; saveHidden(); sel.clear(); render(); toastMsg("👁 رجع ${vs.size} فيديو للقايمة") }
+    private fun selDetails(vids: List<VideoItem>, folders: Int) {
+        val tr = vids.count { recMap[it.videoId]?.let { r -> r.subs > 0 } == true }
+        val dur = vids.sumOf { it.durMs }
+        android.app.AlertDialog.Builder(act).setTitle("ℹ تفاصيل المحدد")
+            .setMessage((if (folders > 0) "الفولدرات: $folders\n" else "") + "عدد الفيديوهات: ${vids.size}\nالحجم: ${VideoLib.fmtSize(vids.sumOf { it.size })}\nالمدة الكلية: ${VideoLib.fmtDur(dur)}\nالمترجم منهم (كله أو جزء): $tr")
+            .setPositiveButton("تمام", null).show()
+    }
+    /** ⋮ العلوي وقت التحديد: نفس قايمة الفولدر/الفيديو بس على كل المحدد */
+    private fun selMenu(anchor: View) {
+        val fs = selFolders(); val vs = selVideos()
+        val vids = if (fs.isNotEmpty()) fs.flatMap { it.videos } else vs
+        if (vids.isEmpty()) return
+        val synth = FolderItem("__sel__", if (fs.isNotEmpty()) "المحدد (${fs.size} فولدر)" else "المحدد (${vs.size} فيديو)", "", vids)
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items += "🌙 ترجمة المحدد في الخلفية (${vids.size})" to { clearSel(); onBgFolder(synth) }
+        if (inHidden) items += "👁 إظهار المحدد (يرجع للقايمة)" to { unhideMany(vids) }
+        else items += "🙈 إخفاء المحدد" to { hideMany(vids) }
+        if (fs.size == 1 && vs.isEmpty()) items += "✏ إعادة تسمية الفولدر" to { clearSel(); onRenameFolder(fs[0]) }
+        if (fs.isEmpty() && vs.size == 1 && !inHidden) {
+            items += "✏ إعادة تسمية" to { clearSel(); onRename(vs[0]) }
+            items += "📁 نقل" to { clearSel(); onMove(vs[0]) }
+        }
+        items += "ℹ تفاصيل" to { if (fs.isEmpty() && vs.size == 1) { clearSel(); onDetails(vs[0]) } else selDetails(vids, fs.size) }
+        if (fs.isEmpty()) items += "📤 مشاركة" to { clearSel(); onShareMany(vids) }
+        items += "🗑 مسح المحدد" to { clearSel(); onDeleteFolder(synth) }
+        popup(anchor, items)
     }
 }
