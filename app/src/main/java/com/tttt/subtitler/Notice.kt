@@ -68,30 +68,44 @@ object Notice {
             val d = act.resources.displayMetrics.density
             fun dp(v: Int) = (v * d).toInt()
             val onPrimary = if (th.isLight) Color.WHITE else Color.BLACK
+            val maxW = (act.resources.displayMetrics.widthPixels * 0.82f).toInt()
 
+            // كبسولة على قد الكلام بس (زي إشعارات سامسونج): بتنزل من فوق في النص وبتطلع تاني
             val pill = LinearLayout(act).apply {
                 orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
-                background = ui.box(th.card, th.border, 12)
-                setPadding(dp(12), dp(8), dp(12), dp(if (yes != null) 6 else 8)); elevation = dp(10).toFloat()
+                background = ui.box(th.card, th.border, 20)
+                setPadding(dp(16), dp(8), dp(16), dp(if (yes != null) 8 else 8)); elevation = dp(10).toFloat()
             }
             pill.addView(TextView(act).apply {
                 text = msg; textSize = 12.5f; setTextColor(th.text); maxLines = 3; ellipsize = TextUtils.TruncateAt.END
-            })
+                gravity = Gravity.CENTER; maxWidth = maxW - dp(32)
+            }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
             var done = false
-            fun finish(cb: (() -> Unit)?) { if (done) return; done = true; removeNow(); cb?.invoke() }
+            lateinit var wrapRef: View
+            fun finish(cb: (() -> Unit)?) {
+                if (done) return; done = true
+                timeout?.let { main.removeCallbacks(it) }; timeout = null
+                cb?.invoke()
+                // خروج بحركة لفوق ثم الإزالة (لو إشعار تاني حل مكانه قبل كده بيتشال فورًا من removeNow)
+                val mine = removeCur
+                try {
+                    wrapRef.animate().alpha(0f).translationY(-(wrapRef.height + dp(12)).toFloat()).setDuration(170)
+                        .withEndAction { if (removeCur === mine) removeNow() else try { mine?.invoke() } catch (_: Throwable) {} }.start()
+                } catch (_: Throwable) { removeNow() }
+            }
 
             if (yes != null && no != null) {
                 fun chip(t: String, primary: Boolean, f: () -> Unit) = TextView(act).apply {
                     text = t; textSize = 12.5f; gravity = Gravity.CENTER
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setPadding(dp(14), dp(6), dp(14), dp(6))
                     setTextColor(if (primary) onPrimary else th.text)
                     background = ui.box(if (primary) th.primary else th.surface, if (primary) th.primary else th.border, 16)
                     setOnClickListener { f() }
                 }
-                val row = LinearLayout(act).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, dp(7), 0, dp(6)) }
-                row.addView(chip(yes, true) { finish(onYes) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-                row.addView(chip(no, false) { finish(onNo) }, LinearLayout.LayoutParams(0, -2, 1f))
-                pill.addView(row)
+                val row = LinearLayout(act).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER; setPadding(0, dp(7), 0, dp(6)) }
+                row.addView(chip(yes, true) { finish(onYes) }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+                row.addView(chip(no, false) { finish(onNo) }, LinearLayout.LayoutParams(-2, -2))
+                pill.addView(row, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
                 val bar = View(act).apply { setBackgroundColor(th.primary) }
                 pill.addView(bar, LinearLayout.LayoutParams(-1, dp(2)))
                 bar.post {
@@ -102,8 +116,9 @@ object Notice {
                 pill.setOnClickListener { finish(null) }
             }
 
-            val wrap = FrameLayout(act).apply { setPadding(dp(10), dp(6), dp(10), 0); addView(pill, FrameLayout.LayoutParams(-1, -2)) }
-            wrap.alpha = 0f; wrap.translationY = -dp(16).toFloat()
+            val wrap = FrameLayout(act).apply { setPadding(dp(8), dp(6), dp(8), dp(6)); addView(pill, FrameLayout.LayoutParams(-2, -2)) }
+            wrapRef = wrap
+            wrap.alpha = 0f; wrap.translationY = -dp(60).toFloat()
 
             val tok = try { act.window.decorView.windowToken } catch (_: Throwable) { null }
             var added = false
@@ -111,11 +126,11 @@ object Notice {
                 try {
                     val wm = act.windowManager
                     val lp = WindowManager.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                         WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                         PixelFormat.TRANSLUCENT
-                    ).apply { gravity = Gravity.TOP; token = tok; y = statusBarH(act) }
+                    ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; token = tok; y = statusBarH(act) }
                     wm.addView(wrap, lp)
                     removeCur = { try { wm.removeViewImmediate(wrap) } catch (_: Throwable) {} }
                     added = true
@@ -124,11 +139,11 @@ object Notice {
             if (!added) {
                 try {
                     val content = act.findViewById<ViewGroup>(android.R.id.content)
-                    content.addView(wrap, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+                    content.addView(wrap, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
                     removeCur = { try { content.removeView(wrap) } catch (_: Throwable) {} }
                 } catch (_: Throwable) { onNo?.invoke(); return@post }
             }
-            wrap.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            wrap.animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
             val t = Runnable { finish(onNo) }
             timeout = t; main.postDelayed(t, ms)
         }

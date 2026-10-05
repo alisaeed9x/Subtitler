@@ -414,6 +414,8 @@ class MainActivity : Activity() {
         lib.onMove = { v -> ops.move(v, lib.allFolders()) }
         lib.onShare = { v -> ops.share(v) }
         lib.onDelete = { v -> ops.delete(v) }
+        lib.onRenameFolder = { f -> ops.renameFolder(f) }
+        lib.onDeleteFolder = { f -> ops.deleteFolder(f) }
         lib.onDetails = { v -> ops.details(v, Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }).firstOrNull { it.id == v.videoId }) }
         val qui = QueueUi(this, ui, th); queueUi = qui; qui0 = qui; settingsDlg0 = settingsDlg
         // رجّع الطابور المحفوظ (لو التطبيق اتقفل/اتمسح) وكمّل الترجمة
@@ -1124,12 +1126,20 @@ class PlayerActivity : Activity(), Host {
         }, LinearLayout.LayoutParams(-2, ui.dp(30)).apply { marginStart = ui.dp(4) })
         videoBox.addView(chip, FrameLayout.LayoutParams(-2, -2, Gravity.LEFT or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(10), 0, 0, 0) })
         trChipV = chip; trUpdaters.add { updateTrChip() }; updateTrChip()
+        // كبسولة جانبية للباتشات الفاشلة (زي اللوج): مخفية خالص لحد ما باتش يفشل، وبعدها بيظهر لسان ⚠ على الحافة الشمال — دوس عليه يفرد الكبسولة ودوس تاني يلمّها
         probBar = TextView(this).apply {
-            textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(ui.dp(12), ui.dp(5), ui.dp(12), ui.dp(5)); background = ui.box(0xE6B71C1C.toInt(), 0x33FFFFFF, 14); visibility = View.GONE
+            textSize = 11f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(ui.dp(10), ui.dp(5), ui.dp(10), ui.dp(5)); background = ui.box(0xE6B71C1C.toInt(), 0x33FFFFFF, 12)
             setOnClickListener { askRetryProblem() }
         }
-        videoBox.addView(probBar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { setMargins(0, ui.dp(8), 0, 0) })
+        probHandle = TextView(this).apply {
+            text = "⚠"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+            background = ui.box(0xE6B71C1C.toInt(), 0x33FFFFFF, 8); setOnClickListener { toggleProb() }
+        }
+        probDrawer = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE
+            addView(probBar, LinearLayout.LayoutParams(-2, -2)); addView(probHandle, LinearLayout.LayoutParams(ui.dp(26), ui.dp(40)).apply { marginStart = ui.dp(2) }) }
+        probBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!probOn) probDrawer.translationX = -(probBar.width + ui.dp(2)).toFloat() }
+        videoBox.addView(probDrawer, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(0, 0, 0, ui.dp(84)) })
 
         // زرار التشغيل الأوسط (بيظهر وقت الإيقاف) + شارة النسبة (شاشة كاملة) + فلاش السيك/الصوت/السطوع
         centerPlay = TextView(this).apply {
@@ -1863,7 +1873,7 @@ class PlayerActivity : Activity(), Host {
         if (inPipNow) { try {
             closeSide(); dismissPopFn()
             h.removeCallbacks(hideChrome); chromeShown = false
-            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; batchBtn.visibility = View.GONE; trChipV?.visibility = View.GONE; closeBatchPanel(); logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
+            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; batchBtn.visibility = View.GONE; trChipV?.visibility = View.GONE; closeBatchPanel(); probDrawer.visibility = View.GONE; logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
             fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
             visOv.showBoxes(emptyList())
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
@@ -1905,7 +1915,9 @@ class PlayerActivity : Activity(), Host {
     private fun makeSource(): AudioSource {
         val lg: (String) -> Unit = { log(it) }
         val u = url
-        return AudioSources.make(applicationContext, uri, u, hdr, conf.audioTrack, lg)
+        val src = AudioSources.make(applicationContext, uri, u, hdr, conf.audioTrack, lg)
+        lg("🎙 مصدر الصوت: " + (if (uri != null) "ملف محلي" else if (src is HlsSource) "رابط HLS" else "رابط مباشر"))
+        return src
     }
 
     fun fmtMs(ms: Long) = String.format("%02d:%02d:%02d", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60)
@@ -2013,23 +2025,36 @@ class PlayerActivity : Activity(), Host {
         h.removeCallbacks(hideChrome); showChrome(); h.removeCallbacks(hideChrome)   // الشريط يفضل ظاهر وإنت بتختار
     }
 
-    /** بانر تحذير: باتش ما اترجمش / رجع ناقص + زرار إعادة على المفاتيح الاحتياطية */
+    /** كبسولة جانبية: باتش ما اترجمش / رجع ناقص + إعادة على المفاتيح الاحتياطية. مخفية لحد ما يحصل فشل */
     lateinit var probBar: TextView
+    lateinit var probHandle: TextView
+    lateinit var probDrawer: LinearLayout
+    private var probOn = false
     private var probIdx = -1
+    fun toggleProb() {
+        probOn = !probOn
+        probDrawer.animate().translationX(if (probOn) 0f else -(probBar.width + ui.dp(2)).toFloat()).setDuration(220).start()
+        probHandle.text = if (probOn) "◂" else "⚠"
+    }
     fun updateProblems() {
         val p = try { engine.problems() } catch (_: Exception) { emptyList() }
-        if (p.isEmpty()) { probIdx = -1; probBar.visibility = View.GONE; return }
+        if (p.isEmpty() || pipNow()) {
+            probIdx = -1
+            if (probDrawer.visibility != View.GONE) { probDrawer.visibility = View.GONE; probOn = false; probHandle.text = "⚠" }
+            return
+        }
         val b = p[0]; probIdx = b.idx
         val what = if (b.mark == "❌") "ما اترجمش" else "رجع ناقص"
-        probBar.text = "⚠ باتش ${b.idx + 1} $what" + (if (p.size > 1) " (+${p.size - 1})" else "") + " · 🔁 إعادة؟"
-        probBar.visibility = View.VISIBLE
+        probBar.text = "باتش ${b.idx + 1} $what" + (if (p.size > 1) " (+${p.size - 1})" else "") + " · 🔁 إعادة؟"
+        if (probDrawer.visibility != View.VISIBLE) {
+            probDrawer.visibility = View.VISIBLE; probOn = false; probHandle.text = "⚠"
+            probDrawer.post { probDrawer.translationX = -(probBar.width + ui.dp(2)).toFloat() }
+        }
     }
     fun askRetryProblem() {
         val i = probIdx; if (i < 0) return
-        android.app.AlertDialog.Builder(this).setTitle("إعادة ترجمة باتش ${i + 1}؟")
-            .setMessage("هيتبعت على المفاتيح الاحتياطية.")
-            .setPositiveButton("موافق") { _, _ -> engine.retryOnBackup(i); say("🔁 بعيد ترجمة باتش ${i + 1}…") }
-            .setNegativeButton("لاحقًا", null).show()
+        Notice.ask(this, "إعادة ترجمة باتش ${i + 1} على المفاتيح الاحتياطية؟", "🔁 إعادة", "لاحقًا", 6000L,
+            onYes = { engine.retryOnBackup(i); if (probOn) toggleProb() }, onNo = { })
     }
 
     fun liveDialectDialog() {

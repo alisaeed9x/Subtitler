@@ -41,13 +41,16 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
     }
 
     /** بينفّذ العملية؛ لو النظام رفض (SecurityException) بيطلب الموافقة ويعيد التنفيذ بعدها */
-    private fun access(uri: Uri, delete: Boolean, op: () -> Unit, afterSystemDelete: () -> Unit = {}) {
+    private fun access(uri: Uri, delete: Boolean, op: () -> Unit, afterSystemDelete: () -> Unit = {}) = accessMany(listOf(uri), delete, op, afterSystemDelete)
+
+    /** نفس اللي فوق بس لأكتر من ملف في طلب موافقة واحد (أندرويد 11+) — للعمليات على فولدر كامل */
+    private fun accessMany(uris: List<Uri>, delete: Boolean, op: () -> Unit, afterSystemDelete: () -> Unit = {}) {
         try { op(); return } catch (e: SecurityException) {
             try {
                 val cr = act.contentResolver
                 val sender = when {
-                    Build.VERSION.SDK_INT >= 30 -> (if (delete) MediaStore.createDeleteRequest(cr, listOf(uri)) else MediaStore.createWriteRequest(cr, listOf(uri))).intentSender
-                    Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException -> e.userAction.actionIntent.intentSender
+                    Build.VERSION.SDK_INT >= 30 -> (if (delete) MediaStore.createDeleteRequest(cr, uris) else MediaStore.createWriteRequest(cr, uris)).intentSender
+                    Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException && uris.size == 1 -> e.userAction.actionIntent.intentSender
                     else -> throw e
                 }
                 pending = if (delete && Build.VERSION.SDK_INT >= 30) afterSystemDelete else op
@@ -112,16 +115,76 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
     }
 
     // ===== نقل =====
+    private fun relOf(key: String): String? {
+        val r = when {
+            key.startsWith("rel:") -> key.removePrefix("rel:")
+            key.startsWith("/storage/emulated/0/") -> key.removePrefix("/storage/emulated/0/")
+            else -> return null
+        }.trim('/')
+        return if (r.isEmpty()) null else "$r/"
+    }
+
+    // ===== عمليات الفولدر كله (من ⋮ الفولدر) =====
+    private fun folderBusy(f: FolderItem): Boolean = f.videos.any { busy(it) }
+
+    /** إعادة تسمية الفولدر: بتنقل كل فيديوهاته للمسار الجديد (الترجمات مربوطة بالاسم+الحجم فمابتتأثرش) */
+    fun renameFolder(f: FolderItem) {
+        if (f.videos.isEmpty()) { toast("الفولدر فاضي"); return }
+        if (folderBusy(f)) return
+        val rel = relOf(f.key) ?: run { toast("مقدرش أغيّر اسم الفولدر ده (مش على الذاكرة الداخلية)"); return }
+        val parent = rel.trimEnd('/').substringBeforeLast('/', "")
+        val cur = rel.trimEnd('/').substringAfterLast('/')
+        askText("✏ إعادة تسمية الفولدر", cur, "الاسم الجديد", "تغيير") { nn ->
+            val clean = nn.replace(Regex("[\\\\/:*?\"<>|]"), "").trim()
+            if (clean.isEmpty()) { toast("الاسم فاضي أو فيه رموز ممنوعة"); return@askText }
+            if (clean == cur) return@askText
+            val newRel = (if (parent.isEmpty()) "" else "$parent/") + clean + "/"
+            val uris = f.videos.map { Uri.parse(it.uri) }
+            val op = {
+                if (f.videos.all { fileOps(it) }) {
+                    val root = Environment.getExternalStorageDirectory()
+                    val old = File(root, rel); val nw = File(root, newRel)
+                    if (nw.exists() || !old.renameTo(nw)) throw Exception("ماقدرتش أغيّر اسم الفولدر")
+                    android.media.MediaScannerConnection.scanFile(act, f.videos.flatMap { listOf(File(old, it.name).path, File(nw, it.name).path) }.toTypedArray(), null, null)
+                } else {
+                    for (u in uris) {
+                        val cv = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, newRel) }
+                        if (act.contentResolver.update(u, cv, null, null) <= 0) throw Exception("النظام ماقدرش ينقل الملفات")
+                    }
+                }
+                toast("✅ اتغير اسم الفولدر: $clean"); onChanged()
+            }
+            accessMany(uris, false, op)
+        }
+    }
+
+    /** مسح الفولدر بكل فيديوهاته (ومعاهم الترجمات المحفوظة) */
+    fun deleteFolder(f: FolderItem) {
+        if (f.videos.isEmpty()) { toast("الفولدر فاضي"); return }
+        if (folderBusy(f)) return
+        AlertDialog.Builder(act).setTitle("🗑 مسح الفولدر").setMessage("هتمسح «${f.name}» بكل اللي فيه (${f.videos.size} فيديو) من الجهاز نهائيًا ومعاهم الترجمات المحفوظة. متأكد؟")
+            .setPositiveButton("امسح الكل") { _, _ ->
+                val uris = f.videos.map { Uri.parse(it.uri) }
+                val cleanup = {
+                    for (v in f.videos) {
+                        try { File(File(act.filesDir, "progress"), Store.keyFor(v.videoId) + ".json").delete() } catch (_: Exception) {}
+                        Recents.drop(act, v.videoId)
+                    }
+                    toast("🗑 اتمسح الفولدر"); onChanged()
+                }
+                val op = {
+                    for (v in f.videos) {
+                        if (!fileOps(v)) { if (act.contentResolver.delete(Uri.parse(v.uri), null, null) <= 0) throw Exception("النظام ماحذفش ${v.name}") }
+                        else { val ff = File(v.folderKey, v.name); if (!ff.delete()) throw Exception("ماقدرتش أمسح ${v.name}"); android.media.MediaScannerConnection.scanFile(act, arrayOf(ff.path), null, null) }
+                    }
+                    cleanup()
+                }
+                accessMany(uris, true, op, cleanup)
+            }.setNegativeButton("إلغاء", null).show()
+    }
+
     fun move(v: VideoItem, folders: List<FolderItem>) {
         if (busy(v)) return
-        fun relOf(key: String): String? {
-            val r = when {
-                key.startsWith("rel:") -> key.removePrefix("rel:")
-                key.startsWith("/storage/emulated/0/") -> key.removePrefix("/storage/emulated/0/")
-                else -> return null
-            }.trim('/')
-            return if (r.isEmpty()) null else "$r/"
-        }
         val cur = relOf(v.folderKey)
         val opts = folders.mapNotNull { f -> relOf(f.key)?.let { f.name to it } }.filter { it.second != cur }.distinctBy { it.second }
         val labels = (opts.map { "📁 " + it.first + "   (" + it.second + ")" } + "➕ مجلد جديد…").toTypedArray()

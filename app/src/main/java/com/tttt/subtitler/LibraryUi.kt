@@ -44,6 +44,8 @@ class LibraryUi(
     var onDetails: (VideoItem) -> Unit = {}
     var onShare: (VideoItem) -> Unit = {}
     var onDelete: (VideoItem) -> Unit = {}
+    var onRenameFolder: (FolderItem) -> Unit = {}
+    var onDeleteFolder: (FolderItem) -> Unit = {}
     fun allFolders(): List<FolderItem> = VideoLib.group(visible())
     var bgJob: (VideoItem) -> BgJob? = { null }
     fun refreshRows() {
@@ -397,6 +399,7 @@ class LibraryUi(
             (t[4] as TextView).visibility = View.GONE
             t[5].visibility = View.GONE
             t[3].setOnClickListener { onQueue() }
+            t[3].setOnLongClickListener(null)
             return
         }
         t[5].visibility = View.VISIBLE
@@ -406,7 +409,28 @@ class LibraryUi(
         val nn = f.videos.count { keyOf(it) in newKeys }
         (t[4] as TextView).apply { text = if (nn > 1) "NEW $nn" else "NEW"; visibility = if (nn > 0) View.VISIBLE else View.GONE }
         t[3].setOnClickListener { rootPos = listV.firstVisiblePosition; curFolder = f.key; render(); listV.setSelection(0) }
-        t[5].setOnClickListener { v -> popup(v, listOf("🌙 ترجمة كل فيديوهات الفولدر في الخلفية (${f.videos.size})" to { onBgFolder(f) })) }
+        t[5].setOnClickListener { v -> folderMenu(v, f) }
+        t[3].setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); folderMenu(t[5], f); true }
+    }
+    /** قايمة الفولدر (⋮ أو ضغطة مطولة): نفس أفعال قايمة الفيديو بس على الفولدر كله */
+    private fun folderMenu(anchor: View, f: FolderItem) {
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items += "🌙 ترجمة كل فيديوهات الفولدر في الخلفية (${f.videos.size})" to { onBgFolder(f) }
+        items += "🙈 إخفاء الفولدر" to { hideFolder(f) }
+        items += "✏ إعادة تسمية الفولدر" to { onRenameFolder(f) }
+        items += "ℹ تفاصيل الفولدر" to { folderDetails(f) }
+        items += "🗑 مسح الفولدر بكل اللي فيه" to { onDeleteFolder(f) }
+        popup(anchor, items)
+    }
+    private fun hideFolder(f: FolderItem) {
+        f.videos.forEach { hidden.add(it.videoId) }; saveHidden(); render()
+        toastMsg("🙈 اتخفى الفولدر (${f.videos.size} فيديو) — اسحب لتحت وكمّل السحب لحد 🔒 وسيب عشان تفتح المخفي")
+    }
+    private fun folderDetails(f: FolderItem) {
+        val tr = f.videos.count { recMap[it.videoId]?.let { r -> r.subs > 0 } == true }
+        android.app.AlertDialog.Builder(act).setTitle("ℹ " + f.name)
+            .setMessage("المسار: ${f.path}\nعدد الفيديوهات: ${f.videos.size}\nالحجم: ${VideoLib.fmtSize(f.totalSize)}\nالمترجم منهم (كله أو جزء): $tr")
+            .setPositiveButton("تمام", null).show()
     }
     private val FolderItem.count: Int get() = videos.size
     private val bgFolder = FolderItem("__bg__", "مجلد الترجمة في الخلفية", "", emptyList())
