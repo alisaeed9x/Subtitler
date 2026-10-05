@@ -49,6 +49,11 @@ object Decoder {
         val mime = fmt.getString(MediaFormat.KEY_MIME) ?: throw Unsupported("صيغة صوت غير معروفة")
         val codec = try { MediaCodec.createDecoderByType(mime) } catch (e: Exception) { throw Unsupported("مفيش decoder لصيغة $mime") }
         try {
+            // الحد الافتراضي لبفر الإدخال 8192 بايت — عينات HLS/TS ممكن تعدّيه فـ readSampleData يرمي IAE من غير رسالة. نكبّره قبل configure
+            try {
+                val curMax = if (fmt.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) fmt.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else 0
+                if (curMax < (1 shl 20)) fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1 shl 20)
+            } catch (_: Exception) {}
             try { codec.configure(fmt, null, null, 0) } catch (x: IllegalArgumentException) { throw HlsBadMedia("configure فشل لصيغة الصوت: $fmt") }
             codec.start()
             val info = MediaCodec.BufferInfo()
@@ -67,7 +72,9 @@ object Decoder {
                     if (ii >= 0) {
                         st = "getInputBuffer"
                         val ib = codec.getInputBuffer(ii)
-                        st = "readSampleData"; dg = "ii=$ii cap=" + (ib?.capacity() ?: -1) + " lim=" + (ib?.limit() ?: -1) + " pos=" + (ib?.position() ?: -1)
+                        val ss = try { ex.sampleSize } catch (_: Exception) { -2L }
+                        st = "readSampleData"; dg = "ii=$ii cap=" + (ib?.capacity() ?: -1) + " lim=" + (ib?.limit() ?: -1) + " pos=" + (ib?.position() ?: -1) + " sampleSize=$ss mime=$mime"
+                        if (ib != null && ss > ib.capacity()) throw HlsBadMedia("عينة الصوت ($ss بايت) أكبر من بفر الكودك (${ib.capacity()} بايت) | mime=$mime")
                         val n = if (ib != null) { ib.clear(); ex.readSampleData(ib, 0) } else -1
                         st = "sampleTime"; dg = "n=$n"
                         val t = ex.sampleTime
