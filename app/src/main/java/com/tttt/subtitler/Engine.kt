@@ -435,7 +435,8 @@ class Engine(
             if (!running) return false
             val n = (failed[i] ?: 0) + 1
             failed[i] = n
-            host.log("⚠ مقطع ${i + 1} فشل ($n/$MAX_FAILS): " + (e.message ?: e.toString()).take(160))
+            val where = e.stackTrace.filter { it.className.startsWith("com.tttt") || it.className.startsWith("android.media") }.take(3).joinToString(" ← ") { it.className.substringAfterLast('.') + "." + it.methodName + ":" + it.lineNumber }
+            host.log("⚠ مقطع ${i + 1} فشل ($n/$MAX_FAILS): " + (e.message ?: e.javaClass.simpleName).take(160) + (if (where.isNotEmpty()) " [$where]" else ""))
             if (n >= MAX_FAILS) host.log("🕳 المقطع ${i + 1} اتسجل كفجوة — هعيد محاولته تلقائيًا بعد شوية")
             persist()
             nap(4000)

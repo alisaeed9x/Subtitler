@@ -3,6 +3,7 @@ package com.tttt.subtitler
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecList
+import android.media.MediaDataSource
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
@@ -48,7 +49,8 @@ object Decoder {
         val mime = fmt.getString(MediaFormat.KEY_MIME) ?: throw Unsupported("صيغة صوت غير معروفة")
         val codec = try { MediaCodec.createDecoderByType(mime) } catch (e: Exception) { throw Unsupported("مفيش decoder لصيغة $mime") }
         try {
-            codec.configure(fmt, null, null, 0); codec.start()
+            try { codec.configure(fmt, null, null, 0) } catch (x: IllegalArgumentException) { throw HlsBadMedia("configure فشل لصيغة الصوت: $fmt") }
+            codec.start()
             val info = MediaCodec.BufferInfo()
             var inDone = false; var outDone = false
             var rate = if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
@@ -113,9 +115,16 @@ class FileSource(
     override fun setPreRoll(sec: Double) { preRollUs = (sec * 1_000_000).toLong() }
 
     private fun open() {
-        val e = MediaExtractor()
+        var e = MediaExtractor()
         try {
-            if (uri != null) e.setDataSource(ctx, uri, null) else e.setDataSource(url!!, hdr)
+            if (uri != null) e.setDataSource(ctx, uri, null)
+            else try { e.setDataSource(url!!, hdr) } catch (t: Throwable) {
+                // الـ HTTP الداخلي بتاع MediaExtractor بيضيّع الهيدرز (كوكيز/Referer/UA) بعد التحويلات وبيفشل مع سيرفرات كتير — نقرأ بالـ HTTP بتاعنا
+                try { e.release() } catch (_: Exception) {}
+                log("⚠ فتح الرابط المباشر فشل (" + (t.message ?: t.javaClass.simpleName).take(70) + ") — بجرّب القراءة بالـ HTTP بتاعي")
+                e = MediaExtractor()
+                e.setDataSource(HttpRangeSource(url!!, hdr))
+            }
             val t = Tracks.pick(e, pref, log)
             e.selectTrack(t)
             val f = e.getTrackFormat(t)
@@ -151,6 +160,67 @@ class FileSource(
     }
 
     @Synchronized override fun close() { try { ex?.release() } catch (_: Exception) {}; ex = null }
+}
+
+/** قراءة عشوائية من رابط http بطلبات Range وبنفس الهيدرز (كوكيز/Referer/UA) — احتياطي لما MediaExtractor يفشل يفتح الرابط بنفسه */
+class HttpRangeSource(private val url: String, private val hdr: Map<String, String>) : MediaDataSource() {
+    @Volatile private var total = -2L
+    @Volatile private var finalUrl = url
+
+    private fun connect(pos: Long, len: Int): HttpURLConnection {
+        var u = finalUrl
+        for (hop in 0 until 6) {
+            val c = URL(u).openConnection() as HttpURLConnection
+            c.connectTimeout = 20000; c.readTimeout = 40000; c.instanceFollowRedirects = false
+            for ((k, v) in hdr) c.setRequestProperty(k, v)
+            c.setRequestProperty("Range", "bytes=$pos-${pos + len - 1}")
+            val code = c.responseCode
+            if (code in 300..399 && code != 304) {
+                val loc = c.getHeaderField("Location"); c.disconnect()
+                if (loc == null) throw IOException("HTTP $code من غير Location")
+                u = Hls.resolve(u, loc); finalUrl = u; continue
+            }
+            if (code >= 400) { c.disconnect(); finalUrl = url; throw IOException("HTTP $code") }
+            return c
+        }
+        throw IOException("تحويلات (redirect) كتير")
+    }
+
+    override fun getSize(): Long {
+        if (total != -2L) return total
+        val c = connect(0, 1)
+        try {
+            val cr = c.getHeaderField("Content-Range")
+            total = if (cr != null && cr.contains('/')) (cr.substringAfter('/').trim().toLongOrNull() ?: -1L)
+                    else if (c.responseCode == 200) c.contentLengthLong else -1L
+        } finally { c.disconnect() }
+        return total
+    }
+
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (size <= 0) return 0
+        val t = if (total == -2L) getSize() else total
+        if (t >= 0 && position >= t) return -1
+        var attempt = 0
+        while (true) {
+            try {
+                val c = connect(position, size)
+                try {
+                    c.inputStream.use { ins ->
+                        if (c.responseCode == 200 && position > 0) { var left = position; while (left > 0) { val k = ins.skip(left); if (k <= 0) break; left -= k } }
+                        var got = 0
+                        while (got < size) { val n = ins.read(buffer, offset + got, size - got); if (n < 0) break; got += n }
+                        return if (got == 0) -1 else got
+                    }
+                } finally { c.disconnect() }
+            } catch (e: IOException) {
+                if (++attempt > 2) throw e
+                try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) { throw e }
+            }
+        }
+    }
+
+    override fun close() {}
 }
 
 /** مصدر الصوت المناسب للرابط: HLS (حتى لو الرابط من غير .m3u8 بنفحص أول بايتات) أو ملف/رابط مباشر */
@@ -392,6 +462,7 @@ class HlsSource(
                 if ((e.message ?: "").contains("ملوش مسار صوت") && switchCandidate(m)) { m = load(); continue }
                 throw e
             } catch (e: HlsBadMedia) {
+                log("⚠ " + (e.message ?: "").take(220))
                 if (switchCandidate(m)) { m = load(); continue }
                 throw e
             }
@@ -407,12 +478,16 @@ class HlsSource(
         prefetch(m, endSec, endSec - startSec)
         val tmp = File.createTempFile("hls_chunk_", ".bin", ctx.cacheDir)
         val e = MediaExtractor()
+        var step = "بداية"
         try {
+            step = "كتابة الملف المؤقت"
             tmp.outputStream().buffered(256 * 1024).use { o ->
                 mapFile(m)?.let { mf -> mf.inputStream().use { it.copyTo(o) } }
                 for (s in need) segFile(s, hasMap).inputStream().use { it.copyTo(o) }
             }
+            step = "فتح المقاطع"
             try { e.setDataSource(tmp.path) } catch (t: IOException) { throw HlsBadMedia("مقدرتش أقرأ مقاطع HLS: " + (t.message ?: "").take(80)) }
+            step = "اختيار مسار الصوت"
             val t = Tracks.pick(e, pref, log)
             e.selectTrack(t)
             val f = e.getTrackFormat(t)
@@ -420,11 +495,15 @@ class HlsSource(
             val base = need.first().start
             val startUs = first + ((startSec - base) * 1_000_000).toLong()
             val endUs = first + ((endSec - base) * 1_000_000).toLong()
+            step = "seek"
             e.seekTo(maxOf(startUs - (preRoll * 1_000_000).toLong(), first), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            step = "فك الصوت"
             val sink = PcmSink(endSec - startSec)
             Decoder.decode(e, f, startUs, endUs, sink)
             if (sink.isEmpty()) return null
             return sink.finish(base + (sink.firstPtsUs - first) / 1_000_000.0)
+        } catch (x: IllegalArgumentException) { throw HlsBadMedia("فك الصوت فشل [خطوة: $step]: " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: ""))
+        } catch (x: IllegalStateException) { throw HlsBadMedia("فك الصوت فشل [خطوة: $step]: " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: ""))
         } finally { try { e.release() } catch (_: Exception) {}; tmp.delete() }
     }
 

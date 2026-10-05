@@ -430,7 +430,7 @@ class BrowserActivity : Activity() {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             putExtra("url", f.url); putExtra("ref", f.ref)
             putExtra("cookie", try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" })
-            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("nosub", noSub)
+            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("nosub", noSub); putExtra("autotr", !noSub)
         })
     }
     @Suppress("DEPRECATION")

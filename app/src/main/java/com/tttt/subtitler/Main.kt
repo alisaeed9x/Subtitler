@@ -703,6 +703,16 @@ class PlayerActivity : Activity(), Host {
     lateinit var batchTv: TextView
     lateinit var logDrawer: LinearLayout
     lateinit var logHandle: TextView
+    private lateinit var leftCol: LinearLayout
+    /** الأزرار العايمة وإنت بتتفرج: شبه شفافة (75% شفافية)، ولما تدوس عليها بتبقى 100% وبترجع شفافة لما تتقفل */
+    private val REST_A = 0.25f
+    private val PROB_A = 0.45f
+    private fun fadeTo(v: View, a: Float) { try { v.animate().alpha(a).setDuration(180).start() } catch (_: Exception) {} }
+    private var floatFade: Runnable? = null
+    private fun flashFloat(v: View, ms: Long = 3500L) {
+        fadeTo(v, 1f); floatFade?.let { h.removeCallbacks(it) }
+        val r = Runnable { fadeTo(v, REST_A) }; floatFade = r; h.postDelayed(r, ms)
+    }
     var logOn = false   // اللوج مخفي افتراضيًا — اللسان ▸ بيفرده
     lateinit var logTv: TextView
     lateinit var logSv: ScrollView
@@ -766,6 +776,7 @@ class PlayerActivity : Activity(), Host {
     private lateinit var lockOv: TextView
     private val hideLockOv = Runnable { if (::lockOv.isInitialized) lockOv.visibility = View.GONE }
     private var askSaved = false
+    private var autoTr = false
     private var stripV: View? = null
     private val hideStrip = Runnable { dismissStrip() }
     fun dismissStrip() { h.removeCallbacks(hideStrip); stripV?.let { try { (it.parent as? ViewGroup)?.removeView(it) } catch (_: Exception) {} }; stripV = null }
@@ -886,6 +897,7 @@ class PlayerActivity : Activity(), Host {
     fun closeBatchPanel() {
         batchPanel?.let { p -> try { (p.parent as? ViewGroup)?.removeView(p) } catch (_: Exception) {} }
         batchPanel = null
+        if (::batchBtn.isInitialized) fadeTo(batchBtn, REST_A)
     }
     /** زرار 🔄 العايم: لوحة صغيرة فوق الفيديو — «من الأول خالص» + باتشات الفيديو (📍 يوديك للباتش) + «ابدأ من هنا» / «ده بس» */
     fun batchDialog() {
@@ -951,6 +963,7 @@ class PlayerActivity : Activity(), Host {
         scrim.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.RIGHT or Gravity.CENTER_VERTICAL).apply { setMargins(0, ui.dp(8), ui.dp(70), ui.dp(8)) })   // RIGHT صريحة (END كانت بتتقلب لشمال جنب اللوج) + جنب زرار 🔄 مش فوقه
         content.addView(scrim, FrameLayout.LayoutParams(-1, -1))
         batchPanel = scrim
+        fadeTo(batchBtn, 1f)
         curRow?.let { r -> sv.post { sv.scrollTo(0, (r.top - ui.dp(40)).coerceAtLeast(0)) } }
     }
 
@@ -1062,7 +1075,7 @@ class PlayerActivity : Activity(), Host {
         applyBars(th)
         speed = Cfg.str("speed", "1").toFloatOrNull() ?: 1f; fit = Cfg.int("fit", 0).coerceIn(0, 2); fsFit = Cfg.int("fs_fit", 2).coerceIn(0, 2); offsetMs = 0L
         uri = intent.data; url = intent.getStringExtra("url")
-        noSub = intent.getBooleanExtra("nosub", false); askSaved = intent.getBooleanExtra("ask", false)
+        noSub = intent.getBooleanExtra("nosub", false); askSaved = intent.getBooleanExtra("ask", false); autoTr = intent.getBooleanExtra("autotr", false)
         intent.getStringExtra("ua")?.takeIf { it.isNotEmpty() }?.let { hdr["User-Agent"] = it }
         intent.getStringExtra("ref")?.takeIf { it.isNotEmpty() }?.let { hdr["Referer"] = it }
         intent.getStringExtra("cookie")?.takeIf { it.isNotEmpty() }?.let { hdr["Cookie"] = it }
@@ -1098,21 +1111,24 @@ class PlayerActivity : Activity(), Host {
         }
         // درج اللوج: اللوج + لسان صغير في نص حافته. الضغط على اللسان بيدخّل اللوج أقصى الشمال ويفرده تاني
         logHandle = TextView(this).apply {
-            text = "◂"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); alpha = 0.85f
+            text = "◂"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); alpha = REST_A
             background = ui.box(0xCC14171C.toInt(), 0x33FFFFFF, 8); setOnClickListener { toggleLog() }
         }
         logHandle.text = if (logOn) "◂" else "▸"
         logDrawer = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL
             addView(batchTv, LinearLayout.LayoutParams(-2, -2)); addView(logHandle, LinearLayout.LayoutParams(ui.dp(22), ui.dp(46)).apply { marginStart = ui.dp(2) }) }
         batchTv.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!logOn) logDrawer.translationX = -(batchTv.width + ui.dp(2)).toFloat() }
-        videoBox.addView(logDrawer, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
+        // عمود الشمال: كبسولة الباتش الفاشل (لو في) فوق، واللوج تحتها
+        leftCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; clipChildren = false; clipToPadding = false }
+        leftCol.addView(logDrawer, LinearLayout.LayoutParams(-2, -2))
+        videoBox.addView(leftCol, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
         // 👁 بصري: دايرة عايمة فوق دايرة ✦
-        floatBar = ui.fsCircle("👁") { visualSnap() }.apply {
-            textSize = 20f; alpha = 0.95f; setOnLongClickListener { visualDialog(); true }
+        floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualSnap() }.apply {
+            textSize = 20f; alpha = REST_A; setOnLongClickListener { visualDialog(); true }
         }
         videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
         // 🔄 ترجم باتش معين: دايرة عايمة فوق 👁
-        batchBtn = ui.fsCircle("🔄") { batchDialog() }.apply { textSize = 20f; alpha = 0.88f; translationY = -ui.dp(60).toFloat() }
+        batchBtn = ui.fsCircle("🔄") { batchDialog() }.apply { textSize = 20f; alpha = REST_A; translationY = -ui.dp(60).toFloat() }
         videoBox.addView(batchBtn, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
         // ▶ ترجمة خفيف وثابت من أول دخول الفيديو (من غير ما يحتاج الشريط يكون ظاهر) + ✕ جنبه تخفيه — بيختفي لوحده لما تدوس ترجمة
         val chip = LinearLayout(this).apply {
@@ -1134,12 +1150,12 @@ class PlayerActivity : Activity(), Host {
         }
         probHandle = TextView(this).apply {
             text = "⚠"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
-            background = ui.box(0xE6B71C1C.toInt(), 0x33FFFFFF, 8); setOnClickListener { toggleProb() }
+            background = ui.box(0xE6B71C1C.toInt(), 0x33FFFFFF, 8); alpha = PROB_A; setOnClickListener { toggleProb() }
         }
         probDrawer = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE
             addView(probBar, LinearLayout.LayoutParams(-2, -2)); addView(probHandle, LinearLayout.LayoutParams(ui.dp(26), ui.dp(40)).apply { marginStart = ui.dp(2) }) }
         probBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!probOn) probDrawer.translationX = -(probBar.width + ui.dp(2)).toFloat() }
-        videoBox.addView(probDrawer, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(0, 0, 0, ui.dp(84)) })
+        leftCol.addView(probDrawer, 0, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(4) })
 
         // زرار التشغيل الأوسط (بيظهر وقت الإيقاف) + شارة النسبة (شاشة كاملة) + فلاش السيك/الصوت/السطوع
         centerPlay = TextView(this).apply {
@@ -1687,6 +1703,8 @@ class PlayerActivity : Activity(), Host {
         })
         engineStarted = false; updateTr()
         if (askSaved) videoBoxRef.post { showResumeStrip() }
+        // «🌐 ترجمة وفرجة» من المتصفح: الترجمة تبدأ لوحدها من غير ما تدوس ▶ ترجمة
+        if (autoTr && !noSub && !askSaved) videoBoxRef.post { if (!engineStarted && !isFinishing && !isDestroyed) beginTranslate() }
     }
 
     private fun buildPlayer() {
@@ -1771,6 +1789,7 @@ class PlayerActivity : Activity(), Host {
         logOn = !logOn
         logDrawer.animate().translationX(if (logOn) 0f else -(batchTv.width + ui.dp(2)).toFloat()).setDuration(220).start()
         logHandle.text = if (logOn) "◂" else "▸"
+        fadeTo(logHandle, if (logOn) 1f else REST_A)
     }
 
     /** الحلقة اللي بعدها (+1) أو اللي قبلها (-1) من نفس الفولدر: بيوقف ترجمة الحالية ويبدأ ترجمة الجديدة */
@@ -1822,7 +1841,7 @@ class PlayerActivity : Activity(), Host {
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
-        if (::logDrawer.isInitialized) { (logDrawer.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); logDrawer.visibility = View.VISIBLE; logDrawer.requestLayout() }
+        if (::logDrawer.isInitialized) { (leftCol.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); logDrawer.visibility = View.VISIBLE; leftCol.requestLayout() }
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else (if (Build.VERSION.SDK_INT >= 23 && th.isLight) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0)
         placeCard()
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
@@ -2035,6 +2054,7 @@ class PlayerActivity : Activity(), Host {
         probOn = !probOn
         probDrawer.animate().translationX(if (probOn) 0f else -(probBar.width + ui.dp(2)).toFloat()).setDuration(220).start()
         probHandle.text = if (probOn) "◂" else "⚠"
+        fadeTo(probHandle, if (probOn) 1f else PROB_A)
     }
     fun updateProblems() {
         val p = try { engine.problems() } catch (_: Exception) { emptyList() }
