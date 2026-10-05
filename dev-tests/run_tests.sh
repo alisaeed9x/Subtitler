@@ -60,3 +60,6 @@ java $JOPT -cp "$OUT/t10:$CP" SpeechTestKt | grep -E "^(PASS|FAIL)|اختبار�
 mkdir -p "$OUT/t5"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t5" "$SRC/LockCore.kt" "$ROOT/dev-tests/LockTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t5:$CP" LockTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
+mkdir -p "$OUT/t10"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t10" "$ROOT/dev-tests/SoundTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t10:$CP" SoundTestKt | grep -E "^(PASS|FAIL)|الاختبارات"

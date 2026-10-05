@@ -17,7 +17,9 @@ data class Sub(
     /** صوت خافت/همس/خلفية: بيتعرض فوق الكلام العادي */
     val faint: Boolean = false,
     /** اتحوّلت للهجة المختارة (التحويل التلقائي بعد الترجمة الحرفية) */
-    val conv: Boolean = false
+    val conv: Boolean = false,
+    /** صوت غير كلامي (همهمة، موسيقى بدون كلمات، ضحك، ضوضاء…): بيتعرض كوصف فوق الفيديو منفصل عن الحوار */
+    val isSound: Boolean = false
 )
 
 data class Chr(val name: String, val gender: String, val role: String)
@@ -38,13 +40,17 @@ class Conf(
     /** تعديل حدود المقطع لأقرب لحظة صمت */
     val silenceTrim: Boolean = true,
     /** سدّ الفجوات تلقائيًا أثناء المشاهدة */
-    val gapFill: Boolean = false
+    val gapFill: Boolean = false,
+    /** التقاط الأصوات غير الكلامية والخلفية (همهمة/موسيقى/ضحك…) كسطر وصف فوق الفيديو */
+    val soundTags: Boolean = true,
+    /** مفاتيح خاصة بالوضع البصري بس (لو موجودة الوضع البصري مايستخدمش غيرها) */
+    val visKeys: List<String> = emptyList()
 )
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
-    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill",
+    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags",
         "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_punct")
     val INTS = setOf("chunk", "ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
@@ -145,7 +151,8 @@ object Cfg {
             int("chunk", 100).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
-            int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true)
+            int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true),
+            bool("soundtags", true), keys("viskeys")
         )
     }
 }
@@ -159,6 +166,14 @@ class PromptBuilder(private val readAsset: (String) -> String) {
     companion object {
         const val TAIL_MARK = "\n\n\n⏱ مدة هذا المقطع الصوتي"
         /** تعليمات إضافية بتتحط على كل القوالب: التقسيم عند الوقفات الفعلية + المتحدثين المتداخلين (جيميناي هو اللي بيقسّم، مش التطبيق) */
+        /** الأصوات غير الكلامية والخلفية: بتتسجل كعناصر مستقلة (is_sound) وبتتعرض فوق الفيديو */
+        const val SOUND_BLOCK = "\n═══ الأصوات غير الكلامية والخلفية (إلزامي) ═══\n" +
+            "- 🔴 بالإضافة للكلام، التقط كل صوت مسموع غير كلامي أو في الخلفية: همهمة/دندنة، أنين، ضحك، بكاء، تنهيدة، صراخ، سعال، تصفيق، موسيقى خلفية بدون كلمات، أصوات ناس بعيدين غير مفهومة، ضوضاء ملحوظة (باب، تليفون، مطر، سيارات، طلقات...).\n" +
+            "- 🔴 كل صوت = عنصر مستقل في نفس مصفوفة subtitles بتوقيته الفعلي (start/end) و \"is_sound\": true. \"original\": وصف قصير بالإنجليزي بين أقواس مربعة مثل [humming]، و\"translated\": وصف عربي قصير جدًا (من كلمة لتلات) بين أقواس مربعة مثل [همهمة] أو [موسيقى هادية] أو [ضحك].\n" +
+            "- 🔴 الصوت اللي بيحصل في نفس وقت الكلام: سجّله برضو بتوقيته (هيظهر فوق الفيديو منفصل عن الحوار). ممنوع تحط وصف الصوت جوه جملة الحوار.\n" +
+            "- لو الصوت الخلفي كلام مفهوم (حتى لو بعيد أو واطي) ترجمه كحوار عادي مش كوصف صوت، وحط speaker_tag مختلف.\n" +
+            "- الأغاني بكلماتها تفضل is_song زي ما هي؛ الموسيقى من غير كلام بس هي اللي بتتوصف.\n" +
+            "- ماتخترعش صوت مش مسموع. تجاهل الأصوات الأقصر من نص ثانية أو الضعيفة جدًا، وماتكررش نفس الوصف ورا بعضه لو الصوت مستمر (عنصر واحد بمدته كلها).\n"
         const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
@@ -274,7 +289,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + glossBlock + tailFinal + langLock(c, strict))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (c.soundTags) SOUND_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -464,6 +479,7 @@ object LangGuard {
     private fun arabic(t: String) = t.count { Character.isLetter(it) && Character.UnicodeScript.of(it.code) == Character.UnicodeScript.ARABIC }
     /** true لو الترجمة المفروض عربي بس أغلب حروفها مش عربي */
     fun foreign(s: Sub): Boolean {
+        if (s.isSound) return false
         val l = letters(s.translated)
         if (l < 3) return false
         return arabic(s.translated) * 100 < l * 50
@@ -495,7 +511,8 @@ object Parse {
             strs(s.optJSONArray("people")), strs(s.optJSONArray("places")), s.optBoolean("is_song", false), s.optBoolean("low_confidence", false), -1,
             s.optString("emotion").trim().lowercase(), s.optBoolean("overlap", false), s.optString("speaker_tag").trim(),
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
-            s.optBoolean("faint", false)
+            s.optBoolean("faint", false), false,
+            s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - "))
         )
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
@@ -586,7 +603,7 @@ object Subs {
             val pw = words(prev.original); val cw = words(cur.original)
             val same = prev.gender == cur.gender && prev.addressee == cur.addressee && prev.topicGender == cur.topicGender
             if (gap >= 0 && gap < 0.5 && same && prev.isSong == cur.isSong && pw <= 6 && cw <= 6 && pw + cw <= 10 &&
-                !prev.lowConf && !cur.lowConf && !Regex("[.!؟?]\\s*$").containsMatchIn(prev.original.trim()) && !prev.translated.startsWith("«") && !cur.translated.startsWith("«")) {
+                !prev.lowConf && !cur.lowConf && !Regex("[.!؟?]\\s*$").containsMatchIn(prev.original.trim()) && !prev.translated.startsWith("«") && !cur.translated.startsWith("«") && !prev.isSound && !cur.isSound) {
                 res[res.size - 1] = prev.copy(end = cur.end, original = "${prev.original} ${cur.original}".trim(), translated = "${prev.translated} ${cur.translated}".trim())
             } else res.add(cur)
         }
@@ -595,7 +612,7 @@ object Subs {
         for (s in res) {
             val p = out.lastOrNull()
             if (p != null && s.end - s.start < 0.6 && s.start - p.end >= -0.05 && s.start - p.end <= 0.35 && p.gender == s.gender && p.addressee == s.addressee &&
-                p.isSong == s.isSong && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
+                p.isSong == s.isSong && !p.isSound && !s.isSound && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
                 out[out.size - 1] = p.copy(end = s.end, original = "${p.original} ${s.original}".trim(), translated = "${p.translated} ${s.translated}".trim())
             } else out.add(s)
         }

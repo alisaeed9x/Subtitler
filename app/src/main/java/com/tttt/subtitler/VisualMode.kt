@@ -107,8 +107,10 @@ class VisualMode(
     }
     fun stop() { running = false; th?.interrupt(); th = null }
 
-    /** الوضع البصري بيستخدم المفاتيح الاحتياطية بس عشان ما يستهلكش كوتة الترجمة الأساسية. لو مفيش احتياطي بيرجع للأساسية. */
+    /** الوضع البصري: مفتاحه الخاص أولًا (إعداد «مفتاح الوضع البصري فقط»)، وبعده الاحتياطية، وبعده الأساسية — عشان ما يستهلكش كوتة الترجمة */
     private fun keyList(): List<String> {
+        val v = conf.visKeys.filter { it.isNotBlank() }.distinct()
+        if (v.isNotEmpty()) return v
         val b = conf.backup.filter { it.isNotBlank() }.distinct()
         return if (b.isNotEmpty()) b else conf.keys.filter { it.isNotBlank() }.distinct()
     }

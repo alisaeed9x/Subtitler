@@ -74,6 +74,7 @@ class MainActivity : Activity() {
         val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
         val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
         val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
+        val vkeys = ui.input("مفاتيح الوضع البصري فقط (مفتاح في كل سطر)", Cfg.str("viskeys"), 2)
         // مفاتيح: كل مفتاح في خانة لوحده + زرار ＋ لإضافة أي عدد (الـ EditText الأصلي بيفضل هو مصدر الحقيقة ومش ظاهر)
         val keyLoaders = ArrayList<() -> Unit>()
         keyLoadersRef = keyLoaders
@@ -155,6 +156,7 @@ class MainActivity : Activity() {
         val keysUi = keyRows("🔑 مفاتيح Gemini الأساسية", keys, "الأساسية")
         val backupUi = keyRows("🛟 مفاتيح احتياطية", backup, "الاحتياطية")
         val extraUi = keyRows("➕ مفاتيح إضافية (بتتضاف للأساسية)", extra, "الإضافية")
+        val visKeysUi = keyRows("👁 مفتاح الوضع البصري", vkeys, "البصري")
         var modelSel = Cfg.str("model", Models.DEFAULT)
         val model = ui.input("الموديل (اكتب يدوي أو اختار من فوق)", modelSel)
         val modelNames = Models.builtin.map { it.id }
@@ -192,13 +194,14 @@ class MainActivity : Activity() {
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true)
+        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true)
         val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
-            "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)")
+            "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
+            "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
         var parallel = Cfg.int("parallel", 2).coerceIn(1, 4)
         val parallelRow = ui.slider("طلبات متوازية لكل مفتاح", parallel, 1, 4, "×") { parallel = it }
@@ -229,7 +232,7 @@ class MainActivity : Activity() {
                 .putString("model", model.text.toString().trim()).putInt("chunk", chunkSec).putString("extra", extra.text.toString())
                 .putString("roster", roster.text.toString()).putString("gloss", gloss.text.toString())
                 .putString("lang", lang).putString("style", style).putString("theme", themeId)
-                .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes))
+                .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes)).putString("viskeys", vkeys.text.toString())
             ahead.text.toString().trim().toIntOrNull()?.let { e.putInt("ahead", it) }
             atrack.text.toString().trim().toIntOrNull()?.let { e.putInt("atrack", it) }
             flags.keys.forEachIndexed { i, k -> e.putBoolean(k, (flagViews[i] as Switch).isChecked) }
@@ -320,7 +323,7 @@ class MainActivity : Activity() {
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, atrack),
-                ui.section("🔊 الصوت والتوقيت", false, *fl("vad", "strim", "hitiming")),
+                ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
@@ -337,7 +340,9 @@ class MainActivity : Activity() {
                 ui.section("🔑 الأساسية", true, keysUi),
                 ui.section("🛟 الاحتياطية", false, backupUi),
                 ui.section("➕ الإضافية", false, extraUi),
-                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
+                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn),
+                ui.section("👁 مفتاح الوضع البصري فقط", false,
+                    ui.text("لو حطيت مفتاح هنا، الوضع البصري (👁) بيستخدمه هو بس ومايستهلكش مفاتيح الترجمة، والترجمة العادية ماتستخدمهوش.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
             TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
                 ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
@@ -740,6 +745,10 @@ class PlayerActivity : Activity(), Host {
     // قايمة الجمل (نسخة مرتبة + مصفوفات للبحث الثنائي)
     var list: List<Sub> = emptyList()
     var starts = LongArray(0); var ends = LongArray(0)
+    // الحوار والأصوات الخلفية بيتفصلوا: الحوار تحت، وصف الصوت (همهمة/موسيقى…) فوق الفيديو
+    var spMap = IntArray(0); var spStarts = LongArray(0); var spEnds = LongArray(0)
+    var sdMap = IntArray(0); var sdStarts = LongArray(0); var sdEnds = LongArray(0)
+    lateinit var soundTv: TextView; var soundKey = ""
     var curIdx = -1; var curKey = ""; var lastRefresh = 0L
     var offsetMs = 0L; var speed = 1f; var fit = 0; var fsFit = 2; var ccOn = true; var fitFsB: TextView? = null
     fun isLandNow() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -1042,9 +1051,12 @@ class PlayerActivity : Activity(), Host {
             val a = l[j]; val b = l[j + 1]
             val gap = starts[j + 1] - ends[j]
             val differ = (a.speakerTag.isNotBlank() && b.speakerTag.isNotBlank() && a.speakerTag != b.speakerTag) || a.gender != b.gender
-            if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
+            if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.isSound && !b.isSound && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
                 ends[j] - starts[j] <= 4000 && ends[j + 1] - starts[j + 1] in 600..5000) ends[j] = ends[j + 1]
         }
+        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound }
+        spMap = sp.toIntArray(); spStarts = LongArray(sp.size) { starts[sp[it]] }; spEnds = LongArray(sp.size) { ends[sp[it]] }
+        sdMap = sd.toIntArray(); sdStarts = LongArray(sd.size) { starts[sd[it]] }; sdEnds = LongArray(sd.size) { ends[sd[it]] }
         if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
     }
 
@@ -1075,6 +1087,12 @@ class PlayerActivity : Activity(), Host {
         sub.backdrop = sv
         st = TextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
         videoBox.addView(st, FrameLayout.LayoutParams(-2, -2, Gravity.TOP))
+        soundTv = TextView(this).apply {
+            setTextColor(0xFFE8EAED.toInt()); textSize = 13f; typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
+            gravity = Gravity.CENTER; maxLines = 2; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(4)); background = ui.box(0x99000000.toInt(), 0x00000000, 14); visibility = View.GONE
+        }
+        videoBox.addView(soundTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(28) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (لازم تتضاف قبل درج اللوج وزرار 👁 وإلا بتبلع لمسهم)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
@@ -1586,7 +1604,8 @@ class PlayerActivity : Activity(), Host {
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
                 visOv.showBoxes(visual.boxesAt(visNow))
-                val act = PlayerLogic.activeIndices(starts, ends, cur, offsetMs)
+                val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs).map { spMap[it] }
+                val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
                 val idx = act.lastOrNull() ?: -1
                 val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
@@ -1612,6 +1631,8 @@ class PlayerActivity : Activity(), Host {
                     if (sentDlg.isShowing) adapter.notifyDataSetChanged()
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
+                val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { list[it].translated }
+                if (sTxt != soundKey) { soundKey = sTxt; soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE }
                 st.text = status
                 if (now - lastBatch > 700) { lastBatch = now; batchTv.text = engine.batchLines(); updateProblems() }
                 if (now - lastBeat > 20000) { lastBeat = now; LogStore.add("💓 ${LogStore.heapLine()} · ${if (player.isPlaying) "بيشتغل" else "واقف"} @${fmtMs(cur)} · مترجم ${(engine.coveredSec() / 60).toInt()}د · ${engine.subs.size} جملة") }
