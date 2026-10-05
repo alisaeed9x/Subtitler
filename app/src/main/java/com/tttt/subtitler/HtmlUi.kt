@@ -314,11 +314,11 @@ fun Ui.sideBtn(icon: String, label: String, f: () -> Unit): LinearLayout = Linea
 
 /** .fs-subsize-btn: مربع 32dp داكن شفاف بحدود خفيفة (radius 10، 12sp bold) */
 fun Ui.fsBtn(t: String, f: (TextView) -> Unit): TextView = TextView(ctx).apply {
-    text = t; textSize = 12f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setSingleLine()
+    text = t; textSize = 13f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setSingleLine()
     typeface = android.graphics.Typeface.DEFAULT_BOLD
-    minimumWidth = dp(32); setPadding(dp(9), 0, dp(9), 0)
-    background = box(0xE0141418.toInt(), 0x1FFFFFFF, 10)
-    layoutParams = LinearLayout.LayoutParams(-2, dp(32)).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+    minimumWidth = dp(40); setPadding(dp(10), 0, dp(10), 0)
+    background = box(0xE0141418.toInt(), 0x1FFFFFFF, 12)
+    layoutParams = LinearLayout.LayoutParams(-2, dp(40)).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
     setOnClickListener { f(this) }
 }
 

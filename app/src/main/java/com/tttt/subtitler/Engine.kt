@@ -187,20 +187,52 @@ class Engine(
             .map { BatchInfo(it, cStart(it), cEnd(it, d), if ((failed[it] ?: 0) >= MAX_FAILS) "❌" else "⚠", 0) }
     }
     /** إعادة ترجمة باتش واحد على المفاتيح الاحتياطية */
-    fun retryOnBackup(i: Int) {
-        if (!inflight.add(i)) return
-        host.log("🔁 إعادة باتش ${i + 1} على المفاتيح الاحتياطية…")
+    fun retryOnBackup(i: Int) = retryOnBackupSeq(listOf(i))
+
+    /** إعادة مجموعة باتشات على المفاتيح الاحتياطية بالتوالي (واحد ورا التاني: الأقدم فالأحدث) في خيط واحد — مش كلهم في نفس الوقت */
+    fun retryOnBackupSeq(list: List<Int>) {
+        val todo = list.distinct().sorted().filter { inflight.add(it) }
+        if (todo.isEmpty()) return
+        host.log("🔁 إعادة ${todo.size} باتش على المفاتيح الاحتياطية بالتوالي (الأقدم فالأحدث): " + todo.joinToString("، ") { (it + 1).toString() })
         Thread {
-            try {
-                incomplete.remove(i); failed.remove(i)
-                val p = prepare(i, true)
-                if (p != null) { send(i, p, true); host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة") }
-                else host.log("⚠ باتش ${i + 1}: مفيش صوت اتفك — جرّب تاني بعد شوية")
-            } catch (e: Exception) {
-                failed[i] = MAX_FAILS
-                host.log("⚠ إعادة باتش ${i + 1} فشلت: " + (e.message ?: e.toString()).take(160))
-            } finally { inflight.remove(i); host.changed(); persist() }
+            for (i in todo) {
+                try {
+                    if (!running) { continue }
+                    incomplete.remove(i); failed.remove(i)
+                    host.log("🔁 إعادة باتش ${i + 1} على المفاتيح الاحتياطية…")
+                    val p = prepare(i, true)
+                    if (p != null) { send(i, p, true); host.log("✅ باتش ${i + 1}: خلصت إعادة الترجمة") }
+                    else host.log("⚠ باتش ${i + 1}: مفيش صوت اتفك — جرّب تاني بعد شوية")
+                } catch (e: Exception) {
+                    failed[i] = MAX_FAILS
+                    host.log("⚠ إعادة باتش ${i + 1} فشلت: " + (e.message ?: e.toString()).take(160))
+                } finally { inflight.remove(i); host.changed(); persist() }
+            }
         }.apply { isDaemon = true }.start()
+    }
+
+    /** باتشات فاشلة/ناقصة مطلوب إعادتها بالأولوية على المفاتيح الأساسية (لما تكون أكتر من 3) */
+    private val priorityRetry = java.util.concurrent.ConcurrentSkipListSet<Int>()
+    /** عدد الباتشات اللي مستنية دورها في الإعادة بالأولوية */
+    fun priorityPending(): Int = priorityRetry.size
+
+    /**
+     * زرار «إعادة» في الشريط الأحمر: بيعيد كل الباتشات المشكلة.
+     * - 3 أو أقل: على المفاتيح الاحتياطية بالتوالي (الأقدم فالأحدث).
+     * - أكتر من 3: مش هتتزحم على الاحتياطي — الترجمة العادية بتقف عن إرسال باتشات جديدة (اللي شغّال بيخلص)،
+     *   والفاشلين بيتترجموا الأول على المفاتيح الأساسية بالترتيب، وبعدها الترجمة بتكمّل باقي الباتشات.
+     * بيرجّع عدد الباتشات.
+     */
+    fun retryProblems(): Int {
+        val idx = problems().map { it.idx }.sorted()
+        if (idx.isEmpty()) return 0
+        if (idx.size <= 3 || !running) retryOnBackupSeq(idx)   // لو حلقة الترجمة مش شغالة مفيش مين يستلم الأولوية، فبالتوالي على الاحتياطي
+        else {
+            for (i in idx) { failed.remove(i); incomplete.remove(i); priorityRetry.add(i) }
+            host.log("🔁 ${idx.size} باتش فاشل: هترجمهم الأول على المفاتيح الأساسية بالترتيب وبعدها أكمّل باقي الباتشات")
+            host.changed(); persist()
+        }
+        return idx.size
     }
 
     /** اختيار لهجة التحويل. existing=true: بيحوّل كمان اللي اتترجم قبل كده */
@@ -334,6 +366,15 @@ class Engine(
                 if (userPaused) { host.status("⏸ الترجمة واقفة مؤقتًا — دوس «إلغاء الإيقاف» تكمّل"); nap(300); continue }
                 if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
                 hedgeTick()
+                // إعادة الباتشات الفاشلة بالأولوية (أكتر من 3): مفيش باتشات جديدة تتبعت لحد ما الفاشلين يتبعتوا، وبعدين الترجمة تكمّل عادي
+                if (priorityRetry.isNotEmpty()) {
+                    val nx = priorityRetry.firstOrNull { it !in inflight }
+                    if (nx == null) { nap(150); continue }
+                    if (inflight.size >= cap) { nap(150); continue }
+                    priorityRetry.remove(nx)
+                    host.log("🔁 باتش ${nx + 1} (أولوية) — على المفاتيح الأساسية، باقي ${priorityRetry.size}")
+                    dispatch(nx, ex, true); continue
+                }
                 var c = if (headless) firstUndone(d) else (host.position() / ch).toInt().coerceAtLeast(0)
                 val fc = forcedCursor
                 if (fc >= 0) {
@@ -445,9 +486,9 @@ class Engine(
     }
 
     /** فك صوت المقطع هنا (بالترتيب)، وبعدين الإرسال لجيميناي في خيط من الحوض */
-    private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService) {
+    private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService, force: Boolean = false) {
         guard(i) {
-            val p = prepare(i)
+            val p = prepare(i, force)
             if (p == null) { failed.remove(i); return@guard }
             inflight.add(i); startedAt[i] = System.currentTimeMillis(); preps[i] = p; hedged.remove(i)
             try {
