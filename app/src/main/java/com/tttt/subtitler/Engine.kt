@@ -38,8 +38,8 @@ class Engine(
         const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
         const val CHAR_MIN_LINES = 12
         const val PRON_MIN_LINES = 20
-        const val HOLE_MIN = 3.0         // أقل ثغرة صوتية من غير ترجمة نعيد طلبها (ثواني)
-        const val HOLE_MAX = 4           // أقصى عدد ثغرات بنسدّها لكل مقطع
+        const val HOLE_MIN = 1.6         // أقل ثغرة صوتية من غير ترجمة نعيد طلبها (ثواني)
+        const val HOLE_MAX = 6           // أقصى عدد ثغرات بنسدّها لكل مقطع
     }
 
     private val lock = Any()
@@ -331,7 +331,7 @@ class Engine(
     fun load(): Double {
         val s = store?.load() ?: return 0.0
         synchronized(lock) {
-            subs = if (s.chunkSec == conf.chunkSec) s.subs else s.subs.map { it.copy(chunk = -1) }
+            subs = Subs.unifyOverlaps(if (s.chunkSec == conf.chunkSec) s.subs else s.subs.map { it.copy(chunk = -1) })
             for (r in s.done) done.add(r[0], r[1])
             for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
             chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
@@ -713,7 +713,8 @@ class Engine(
         }
         tagged = Subs.harmonize(tagged, subs)   // توحيد ترجمة سطور الكورَس المتكررة في الأغاني
         synchronized(lock) {
-            val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) }
+            tagged = Subs.dropOverlapZone(tagged, subs.filter { it.chunk != i }, rawStart)
+            val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) && !Subs.inMyZone(it, tagged, i, rawEnd) }
             subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
         }
         done.add(rawStart, rawEnd)

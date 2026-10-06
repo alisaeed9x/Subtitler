@@ -52,7 +52,7 @@ object Speech {
 
     /** الأجزاء اللي فيها صوت (داخل from..to) ومفيش ولا جملة فوقها، وطولها >= minSec */
     fun holes(spansAbs: List<DoubleArray>, subs: List<Sub>, from: Double, to: Double, minSec: Double): List<DoubleArray> {
-        val cov = subs.filter { it.end > from - 1.0 && it.start < to + 1.0 }.sortedBy { it.start }
+        val cov = subs.filter { !it.isSound && it.end > from - 1.0 && it.start < to + 1.0 }.sortedBy { it.start }   // وصف الصوت [موسيقى] مايغطيش كلام تحته
         val out = ArrayList<DoubleArray>()
         for (sp in spansAbs) {
             var cur = maxOf(sp[0], from); val end = minOf(sp[1], to)

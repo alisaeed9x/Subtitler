@@ -188,6 +188,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴 ممنوع تتجاهل أي جزء لأنه خافت أو متداخل أو قصير أو لأن فيه موسيقى. لو سمعت كلام (حتى لو مش متأكد منه) اكتبه واحط low_confidence=true — ده أحسن بكتير من إنك تسيبه.\n" +
             "- 🔴 قبل ما ترد: اعمل مراجعة أخيرة على المقطع من الأول للآخر وتأكد إن مفيش أي فجوة فيها كلام مسموع من غير subtitle (خصوصًا أول ثانيتين وآخر ثانيتين من المقطع وبعد كل وقفة طويلة). لو لقيت فجوة فيها صوت بشري ارجع اسمعها تاني وسجّلها.\n" +
             "- ممنوع تلخّص أو تختصر أو تدمج جمل عشان توفّر. كل جملة منطوقة ليها subtitle خاص بيها وترجمتها كاملة.\n" +
+            "- 🔴 كلام جاي من راديو/تلفزيون/تليفون/إذاعة داخلية/مكبّر صوت (مذيع، نشرة، إعلان): ممنوع تكتبه كوصف صوت زي [واحد بيتكلم في الراديو]. ترجم كلامه كامل كجملة حوار عادية (is_sound=false) وابدأ translated بـ \"📻 \" وبعدها الكلام المترجم، مثال: \"📻 النهاردة يوم عظيم للأمريكان\". وصف الصوت بين أقواس للأصوات غير الكلامية بس.\n" +
             "\n" +
             "═══ الصوت الخافت / الهمس / كلام الخلفية ═══\n" +
             "- أضف لكل subtitle حقل \"faint\" (true أو false).\n" +
@@ -500,8 +501,19 @@ object LangGuard {
     private fun letters(t: String) = t.count { Character.isLetter(it) }
     private fun arabic(t: String) = t.count { Character.isLetter(it) && Character.UnicodeScript.of(it.code) == Character.UnicodeScript.ARABIC }
     /** true لو الترجمة المفروض عربي بس أغلب حروفها مش عربي */
+    private val MIXED = Regex("[\\u0600-\\u06FF][A-Za-z]|[A-Za-z][\\u0600-\\u06FF]")
+    /** حروف من كتابة غريبة (تايلاندي/صيني/سيريلي…) أو كلمة فيها عربي ولاتيني مدموجين = هلوسة من الموديل */
+    private fun stray(t: String): Boolean {
+        if (MIXED.containsMatchIn(t)) return true
+        return t.any { c ->
+            Character.isLetter(c) && Character.UnicodeScript.of(c.code).let {
+                it != Character.UnicodeScript.ARABIC && it != Character.UnicodeScript.LATIN && it != Character.UnicodeScript.COMMON && it != Character.UnicodeScript.INHERITED
+            }
+        }
+    }
     fun foreign(s: Sub): Boolean {
         if (s.isSound) return false
+        if (stray(s.translated)) return true
         val l = letters(s.translated)
         if (l < 3) return false
         return arabic(s.translated) * 100 < l * 50
@@ -686,8 +698,64 @@ object Subs {
                 out[out.size - 1] = p.copy(end = s.end, original = "${p.original} ${s.original}".trim(), translated = "${p.translated} ${s.translated}".trim())
             } else out.add(s)
         }
-        return out
+        return unifyOverlaps(out)
     }
+
+    // ===== متحدثين في نفس الوقت =====
+    const val UNIFY_MAX_SEC = 9.0
+    private fun otherSpeaker(a: Sub, b: Sub): Boolean {
+        val ta = a.speakerTag.trim(); val tb = b.speakerTag.trim()
+        if (ta.isNotEmpty() && tb.isNotEmpty() && ta != tb) return true
+        return a.overlap || b.overlap || a.gender != b.gender
+    }
+    private fun ovLen(a: Sub, b: Sub) = minOf(a.end, b.end) - maxOf(a.start, b.start)
+    /** جملتين لشخصين مختلفين بيتكلموا فوق بعض: الاتنين ياخدوا نفس التوقيت (من بداية أول واحد لنهاية آخر واحد)،
+     *  فيظهروا مع بعض طول المدة دي بدل ما الأول يظهر لوحده وبعدين التاني يدخل وبعدين الأول يختفي.
+     *  بيغيّر التوقيت بس — العدد والترتيب زي ما هم. */
+    fun unifyOverlaps(l: List<Sub>): List<Sub> {
+        if (l.size < 2) return l
+        val res = l.toMutableList()
+        val idx = l.indices.sortedBy { l[it].start }
+        val used = BooleanArray(l.size)
+        for (i in idx.indices) {
+            val f = idx[i]
+            if (used[f] || l[f].isSound || l[f].faint) continue
+            val mem = arrayListOf(f); var lo = l[f].start; var hi = l[f].end
+            var j = i + 1
+            while (j < idx.size && mem.size < 3) {
+                val k = idx[j]; val b = l[k]
+                if (b.start >= hi - 0.05) break
+                if (!used[k] && !b.isSound && !b.faint) {
+                    val ok = mem.any { m ->
+                        val a = l[m]
+                        val shorter = minOf(a.end - a.start, b.end - b.start)
+                        val flagged = a.overlap || b.overlap
+                        val need = if (flagged) minOf(0.3, 0.5 * shorter) else maxOf(0.6, 0.5 * shorter)
+                        otherSpeaker(a, b) && ovLen(a, b) >= need
+                    }
+                    if (ok && maxOf(hi, b.end) - minOf(lo, b.start) <= UNIFY_MAX_SEC) { mem.add(k); lo = minOf(lo, b.start); hi = maxOf(hi, b.end) }
+                }
+                j++
+            }
+            if (mem.size > 1) for (m in mem) { used[m] = true; res[m] = l[m].copy(start = lo, end = hi) }
+        }
+        return res
+    }
+
+    // ===== منطقة التداخل بين المقاطع (الـ OVERLAP) =====
+    private fun coversMost(n: Sub, o: Sub): Boolean = ovLen(n, o) >= 0.4 * maxOf(0.1, minOf(n.end - n.start, o.end - o.start))
+    /** جملة من المقطع الجديد وقعت قبل بدايته الحقيقية (في ذيل المقطع اللي قبله) وفوق جملة اتترجمت قبل كده = بتتشال.
+     *  المنطقة دي ملك المقطع السابق؛ الجديد كان بيطلّع نفس الكلام بصياغة/توقيت مختلف فيظهر مكرر نص ثانية. */
+    fun dropOverlapZone(fresh: List<Sub>, existing: List<Sub>, rawStart: Double): List<Sub> {
+        if (existing.isEmpty()) return fresh
+        return fresh.filter { n ->
+            if (n.isSound || (n.start + n.end) / 2 >= rawStart) true
+            else existing.none { o -> !o.isSound && coversMost(n, o) }
+        }
+    }
+    /** عكس اللي فوق: مقطع لاحق خلّص قبل السابق، فجمله اللي في ذيل المقطع الحالي (قبل rawEnd) وفوق جمل جديدة بتتشال */
+    fun inMyZone(o: Sub, mine: List<Sub>, i: Int, rawEnd: Double): Boolean =
+        o.chunk > i && !o.isSound && (o.start + o.end) / 2 < rawEnd && mine.any { n -> !n.isSound && coversMost(n, o) }
 
     private val PUNCT_END = Regex("[،,.؟?!:;؛…][\"'»)\\]]*$")
     /** يقسّم النص لـ n جزء: القطع بيفضّل علامة ترقيم قريبة (±3 كلمات) من النقطة المثالية بدل القطع الأعمى بعدد الكلمات */

@@ -78,6 +78,7 @@ data class SubStyle(
     }
 
     fun colorFor(s: Sub): Int = when {
+        s.translated.startsWith("📻") -> WHITE   // كلام من راديو/إذاعة: أبيض عادي من غير لون جنس
         plain -> WHITE
         uniOn -> runCatching { Theme.parse(uniColor) }.getOrDefault(WHITE)
         s.gender == "female" -> FEMALE

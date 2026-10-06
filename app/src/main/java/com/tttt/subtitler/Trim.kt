@@ -61,7 +61,7 @@ object Silence {
 
 /** كشف الفجوات: مناطق اتترجمت (done) بس مفيهاش جمل لمدة طويلة */
 object Gaps {
-    const val MIN_SEC = 8.0
+    const val MIN_SEC = 5.0
     const val LOOKAHEAD = 8.0
     const val COOLDOWN_MS = 3000L
     const val MAX_PARALLEL = 3

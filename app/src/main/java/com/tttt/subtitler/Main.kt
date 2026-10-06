@@ -741,6 +741,8 @@ class PlayerActivity : Activity(), Host {
     // قايمة الجمل (نسخة مرتبة + مصفوفات للبحث الثنائي)
     var list: List<Sub> = emptyList()
     var starts = LongArray(0); var ends = LongArray(0)
+    private val seenKeys = HashSet<String>(); private val warnedKeys = HashSet<String>(); private var lastChkT = -1L
+    private fun sentKey(q: Sub) = "${q.start}|${q.end}|${q.translated.hashCode()}"
     // الحوار والأصوات الخلفية بيتفصلوا: الحوار تحت، وصف الصوت (همهمة/موسيقى…) فوق الفيديو
     var spMap = IntArray(0); var spStarts = LongArray(0); var spEnds = LongArray(0)
     var sdMap = IntArray(0); var sdStarts = LongArray(0); var sdEnds = LongArray(0)
@@ -1793,6 +1795,22 @@ class PlayerActivity : Activity(), Host {
                 visOv.showBoxes(visual.boxesAt(visNow))
                 val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs).map { spMap[it] }
                 val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
+                // مراقبة العرض: لو جملة عدّى وقتها وأنا شغّال عادي ومظهرتش في act → اتسجلت في اللوج بتوقيتها ونصها
+                run {
+                    val tNow = cur - offsetMs
+                    for (ix in act) seenKeys.add(sentKey(list[ix]))
+                    val pv = lastChkT
+                    if (player.isPlaying && pv >= 0 && tNow - pv in 1L..1500L) {
+                        for (q in list.indices) {
+                            if (list[q].isSound || ends[q] <= pv || ends[q] > tNow || ends[q] - starts[q] < 600L) continue
+                            val k = sentKey(list[q])
+                            if (k !in seenKeys && warnedKeys.add(k)) LogStore.add("⚠ جملة #${q + 1} عدّى وقتها ومظهرتش في المشغّل (${fmtMs(starts[q] + offsetMs)} → ${fmtMs(ends[q] + offsetMs)}): ${list[q].translated.take(60)} | ظاهر وقتها: ${act.map { it + 1 }}")
+                        }
+                    }
+                    lastChkT = tNow
+                    if (seenKeys.size > 6000) seenKeys.clear()
+                    if (warnedKeys.size > 2000) warnedKeys.clear()
+                }
                 val idx = act.lastOrNull() ?: -1
                 val gs = PlayerLogic.orderSpeakers(act.map { list[it] })
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
