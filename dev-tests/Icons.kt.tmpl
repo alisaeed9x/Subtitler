@@ -104,6 +104,22 @@ object Icons {
         }
     }
 
+    /** (v96) لو النص كله أيقونة واحدة (زي ⏮ ▶ ☰ ⛶) بيرجّع اسمها ومقياسها — الزرار بيرسمها مباشرة من غير Span (الـ Span كان بيطلّع الرموز المفردة فاضية/سودا) */
+    fun singleIcon(cs: CharSequence?): Pair<String, Float>? {
+        if (cs == null || cs.isEmpty() || cs.length > 4) return null
+        val s = cs.toString()
+        var i = 0; var name: String? = null
+        while (i < s.length) {
+            val cp = s.codePointAt(i); val cc = Character.charCount(cp)
+            if (cp == 0xFE0F || cp == 0xFE0E || cp == 0x200D) { i += cc; continue }
+            val nm = CP[cp] ?: return null
+            if (name != null) return null
+            name = nm; i += cc
+        }
+        val n = name ?: return null
+        return n to (SC[n] ?: DEFAULT_SCALE)
+    }
+
     fun has(cs: CharSequence?): Boolean {
         if (cs == null) return false
         var i = 0; val n = cs.length
@@ -158,6 +174,17 @@ object Icons {
 /** TextView بيرسم الإيموجي كأيقونات تلقائيًا (بديل TextView العادي في كل البرنامج) */
 open class IconTextView(ctx: Context) : TextView(ctx) {
     override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
+    /** (v96) نص = أيقونة واحدة بس → بنرسمها في نص الزرار مباشرة بلون النص (أبيض) بدل الـ Span */
+    override fun onDraw(canvas: Canvas) {
+        val one = Icons.singleIcon(text)
+        if (one == null || width <= 0 || height <= 0) { super.onDraw(canvas); return }
+        val aw = (width - paddingLeft - paddingRight).toFloat(); val ah = (height - paddingTop - paddingBottom).toFloat()
+        var s = textSize * one.second
+        val cap = minOf(aw, ah) * 0.9f
+        if (cap > 0f && s > cap) s = cap
+        val cx = paddingLeft + aw / 2f; val cy = paddingTop + ah / 2f
+        Icons.draw(canvas, one.first, cx - s / 2f, cy - s / 2f, s, currentTextColor)
+    }
     override fun append(text: CharSequence?, start: Int, end: Int) {
         super.append(text, start, end)
         (getText() as? Spannable)?.let { Icons.applyInPlace(it) }

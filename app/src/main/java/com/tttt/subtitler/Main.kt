@@ -1450,19 +1450,12 @@ class PlayerActivity : Activity(), Host {
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
         // ===== الصف العلوي: الأساسي ظاهر دايمًا (☰ 📝 CC وضع-الترجمة Aa) والباقي بيتفرد بسهم ❮ وبيتلم بعد 5 ثواني =====
         fun tip(v: TextView, name: String): TextView { v.setOnLongClickListener { giShow(name, Gravity.CENTER); true }; return v }   // ضغطة طويلة = اسم الزرار
-        val tbExtra = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; visibility = View.GONE }
+        // (v96) الزرار ❮ اتشال: كل أزرار الصف العلوي ظاهرة على طول (☰ القائمة + 🔤 النص)
+        val tbExtra = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         fun exAdd(v: View) { tbExtra.addView(v, 0) }
-        var tbOpen = false
-        val moreB = ui.fsBtn("❮") { }
-        fun setMore(open: Boolean) {
-            tbOpen = open; tbExtra.visibility = if (open) View.VISIBLE else View.GONE; moreB.text = if (open) "❯" else "❮"
-            tb.post { if (open) tb.smoothScrollTo(0, 0) else tb.smoothScrollTo(tbRow.width, 0) }
-        }
-        val collapseR = object : Runnable { override fun run() { if (!tbOpen) return; if (popup != null && chromeShown) h.postDelayed(this, 2000) else setMore(false) } }
-        moreB.setOnClickListener { setMore(!tbOpen); h.removeCallbacks(collapseR); if (tbOpen) h.postDelayed(collapseR, 5000); showChrome() }
-        tbCollapseFn = { if (tbOpen) setMore(false) }
-        tbAdd(tip(menuB, "القائمة"))
-        tbAdd(tip(moreB, "المزيد")); tbAdd(tbExtra)
+        tbCollapseFn = { }
+        tbAdd(tip(menuB, "القائمة")); tbAdd(tbExtra)
+
         exAdd(tip(grp("🔤", gText), "النص"))
 
         fsPlayB = IconTextView(this).apply {
@@ -1503,45 +1496,40 @@ class PlayerActivity : Activity(), Host {
         fsBar.addView(toolRow, LinearLayout.LayoutParams(-1, ui.dp(36)))
         // (v90) شمال: 🔓 ✨ 🧰 جنب بعض · النص: ⏮ ⏯ ⏭ كبار وموزّعين على عرض الشريط · يمين: 🔄(لاندسكيب/بورتريت) ⧉ ⛶ (⛶ على الحافة)
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
-        val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        // (v96) ثلاث أعمدة: شمال (وزن 1) | نص (⏮ ▶ ⏭ متسنطرين فعلًا على عرض الشاشة) | يمين (وزن 1) — فالنص دايمًا في نص الشريط بالظبط
+        val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.START or Gravity.CENTER_VERTICAL }
         leftB.addView(ui.fsCircle("🔓") { setLock(true) }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) })
         leftB.addView(aiB); leftB.addView(toolsB)
-        btnRow.addView(leftB, LinearLayout.LayoutParams(-2, -2))
+        btnRow.addView(leftB, LinearLayout.LayoutParams(0, -2, 1f))
         val pillBg = { ui.box(0xE00F0F12.toInt(), 0x29FFFFFF, 24) }
-        val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 22f; background = pillBg() }
-        val nextB = ui.fsCircle("⏭") { stepEpisode(1); showChrome() }.apply { textSize = 22f; background = pillBg() }
-        fsPlayB.textSize = 38f
-        val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(6), 0, ui.dp(6), 0) }
-        // (v91) ⏮ ⏯ ⏭ قريبين من بعض في النص؛ ⏮ و⏭ بيكبروا بالعرض بس (الارتفاع ثابت)
-        mid.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        mid.addView(prevB, LinearLayout.LayoutParams(ui.dp(84), ui.dp(46)).apply { marginEnd = ui.dp(8) })
-        mid.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(60), ui.dp(60)))
-        mid.addView(nextB, LinearLayout.LayoutParams(ui.dp(84), ui.dp(46)).apply { marginStart = ui.dp(8) })
-        mid.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        mid.addOnLayoutChangeListener { _, l, _, r, _, ol, _, rr, _ ->
-            if (r - l != rr - ol) {
-                val avail = (r - l) - mid.paddingLeft - mid.paddingRight
-                val w = (avail / 4).coerceIn(ui.dp(34), ui.dp(120))
-                for (v in listOf<View>(prevB, nextB)) { val lp = v.layoutParams; if (lp.width != w) { lp.width = w; v.layoutParams = lp } }
-            }
-        }
-        btnRow.addView(mid, LinearLayout.LayoutParams(0, -2, 1f))
-        val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
+        val nextB = ui.fsCircle("⏭") { stepEpisode(1); showChrome() }.apply { textSize = 20f; background = pillBg() }
+        fsPlayB.textSize = 30f
+        fsPlayB.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x29FFFFFF) }
+        val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER; setPadding(ui.dp(6), 0, ui.dp(6), 0) }
+        mid.addView(prevB, LinearLayout.LayoutParams(ui.dp(60), ui.dp(44)).apply { marginEnd = ui.dp(8) })
+        mid.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(56), ui.dp(56)))
+        mid.addView(nextB, LinearLayout.LayoutParams(ui.dp(60), ui.dp(44)).apply { marginStart = ui.dp(8) })
+        btnRow.addView(mid, LinearLayout.LayoutParams(-2, -2))
+        val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         fsBarFs = ui.fsCircle("⛶") { cycleFitNow(); showChrome() }
         rightB.addView(ui.fsCircle(Icons.ROT) { toggleFs(); showChrome() }.apply { textSize = 19f }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // لاندسكيب/بورتريت (أيقونة الروتيشن زي MX)
         rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
         rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
-        btnRow.addView(rightB, LinearLayout.LayoutParams(-2, -2))
+        btnRow.addView(rightB, LinearLayout.LayoutParams(0, -2, 1f))
         fsBar.addView(btnRow, LinearLayout.LayoutParams(-1, ui.dp(72)))
         // (v91) في العرض الواسع (لاندسكيب): ⏱ 📋 📝 CC 💬 بتتنقل للصف السفلي جنب 🔄؛ في الضيق (بورتريت) بتفضل في صفها
         var toolsWide = false
         fun placeTools(wide: Boolean) {
             if (toolsWide == wide) return; toolsWide = wide
             toolBtns.forEach { (it.parent as? ViewGroup)?.removeView(it) }
-            toolBtns.forEachIndexed { i, v ->
-                val lp = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(34), ui.dp(if (i == 0) 34 else 34)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }
-                if (wide) rightB.addView(v, i, lp) else toolR.addView(v, lp)
-            }
+            // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 💬 وضع الترجمة]
+            fun lp(i: Int) = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(34), ui.dp(34)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }
+            if (wide) {
+                // (v96) توزيع متوازن: شمال 🔓 ✨ 🧰 ⏱ CC · يمين 📋 📝 💬 🔄 ⧉ ⛶
+                leftB.addView(toolBtns[0], lp(0)); leftB.addView(toolBtns[3], lp(3))
+                rightB.addView(toolBtns[1], 0, lp(1)); rightB.addView(toolBtns[2], 1, lp(2)); rightB.addView(toolBtns[4], 2, lp(4))
+            } else toolBtns.forEachIndexed { i, v -> toolR.addView(v, lp(i)) }
             toolRow.visibility = if (wide) View.GONE else View.VISIBLE
         }
         fsBar.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ -> val w = r - l; if (w > 0) fsBar.post { placeTools(w >= ui.dp(720)) } }
