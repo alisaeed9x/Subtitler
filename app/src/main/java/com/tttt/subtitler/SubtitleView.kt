@@ -105,12 +105,15 @@ class SubtitleView(ctx: Context) : View(ctx) {
         if (same) return
         shownStyle = style
         sub = s; lines = if (group.size > 1) group else emptyList()
-        if (s == null) { main = null; sec = null; animator.cancel(); emoAnim.cancel(); visibility = INVISIBLE; startBackdrop(); return }
+        if (s == null) { main = null; sec = null; animator.cancel(); emoAnim.cancel(); visibility = INVISIBLE; startBackdrop(); invalidate(); return }
         visibility = if (suppressed) GONE else VISIBLE; relayout(); startBackdrop()
         animator.cancel(); animator.duration = style.animMs.toLong()
         animator.interpolator = if (style.anim == "bounce" || style.anim == "drop") OvershootInterpolator(2f) else android.view.animation.DecelerateInterpolator()
         if (style.anim == "default") progress = 1f else animator.start()
         if (emoKind() != "") emoAnim.start() else emoAnim.cancel()
+        // لازم إعادة رسم صريحة: الـ View على LAYER_TYPE_SOFTWARE، ولو الارتفاع ماتغيّرش مفيش requestLayout،
+        // فالجملة الجديدة كانت بتفضل مش مرسومة (أو القديمة باقية) لحد ما حاجة تانية تعمل invalidate
+        invalidate(); postInvalidateOnAnimation()
     }
 
     private val tfCache = HashMap<String, Typeface>()
