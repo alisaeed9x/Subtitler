@@ -860,7 +860,9 @@ object Subs {
         }
         return if (res.isEmpty()) listOf(sub) else res
     }
-    fun splitAll(l: List<Sub>): List<Sub> = l.flatMap { splitLong(it) }
+    /** إعداد واحد للتقسيم (الإعدادات ← العرض ← تقسيم الجمل): مطفي = الجملة تظهر كاملة من أول الكلام لآخره */
+    @Volatile var splitEnabled = false
+    fun splitAll(l: List<Sub>): List<Sub> = if (splitEnabled) l.flatMap { splitLong(it) } else l
 
     /** الموديل ساعات بيدّي جملة قصيرة مدة طويلة جدًا (18ث لسطر غنائي) فتفضل ظاهرة والمتكلم سكت — بنقصّرها على قد كلامها */
     fun maxDurFor(s: Sub): Double {

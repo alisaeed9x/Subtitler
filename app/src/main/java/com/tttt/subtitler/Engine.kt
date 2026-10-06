@@ -18,6 +18,8 @@ interface Host {
     fun position(): Double
     /** مدة الفيديو من المشغّل (0 لو لسه مش معروفة) */
     fun playerDuration(): Double
+    /** إشعار صغير للمستخدم (فشل/نجاح باتش) — الافتراضي مفيش */
+    fun notice(s: String) {}
 }
 
 private class BadReply(msg: String) : Exception(msg)
@@ -185,6 +187,40 @@ class Engine(
         val d = currentDur(); if (d <= 0) return emptyList()
         return idx.filter { it !in inflight && cStart(it) < d }
             .map { BatchInfo(it, cStart(it), cEnd(it, d), if ((failed[it] ?: 0) >= MAX_FAILS) "❌" else "⚠", 0) }
+    }
+    // ===== إعادة تلقائية للباتشات الفاشلة/الناقصة (من غير ما المستخدم يدوس حاجة) =====
+    private val autoTries = ConcurrentHashMap<Int, Int>()
+    private val autoAt = ConcurrentHashMap<Int, Long>()
+    private val announced = ConcurrentHashMap.newKeySet<Int>()
+    private var lastAutoTick = 0L
+    private fun autoRetryTick() {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoTick < 4000L) return
+        lastAutoTick = now
+        val d = currentDur(); if (d <= 0) return
+        // باتش اتبلّغ إنه فشل واتترجم دلوقتي → إشعار نجاح صغير
+        for (i in announced.toList()) {
+            if (i in inflight || i in incomplete || (failed[i] ?: 0) >= MAX_FAILS || !isDone(i, d)) continue
+            announced.remove(i); autoTries.remove(i); autoAt.remove(i)
+            host.notice("✅ تمت ترجمة باتش ${i + 1}")
+            host.log("✅ باتش ${i + 1}: اتترجم بعد الإعادة التلقائية")
+        }
+        for (b in problems()) {
+            val i = b.idx
+            val zero = b.mark == "⚠" && subCount(i, d) == 0   // رجع من غير جمل: يتعاد مرة واحدة بس للتأكد
+            val limit = if (zero) 1 else 3
+            val n = autoTries[i] ?: 0
+            if (n >= limit) {
+                if (zero) { incomplete.remove(i); announced.remove(i); host.notice("🔇 باتش ${i + 1}: اتأكدت إن مفيهوش جمل"); host.log("🔇 باتش ${i + 1}: اتعاد وبرضه من غير جمل — اتأكد إنه فعلاً فاضي") }
+                else if (announced.remove(i)) { host.notice("⛔ باتش ${i + 1} لسه فاشل بعد $n محاولات"); host.log("⛔ باتش ${i + 1}: الإعادة التلقائية خلصت ($n) وبرضه فاشل") }
+                continue
+            }
+            if (now < (autoAt[i] ?: 0L)) continue
+            autoTries[i] = n + 1; autoAt[i] = now + 12_000L * (n + 1)
+            if (announced.add(i)) host.notice(if (zero) "⚠ باتش ${i + 1} رجع من غير جمل — بعيده للتأكد" else if (b.mark == "❌") "❌ باتش ${i + 1} فشل — بعيده تلقائي" else "⚠ باتش ${i + 1} رجع ناقص — بعيده تلقائي")
+            host.log("🔁 إعادة تلقائية لباتش ${i + 1} (${n + 1}/$limit)")
+            failed.remove(i); incomplete.remove(i); forceVad.add(i); priorityRetry.add(i)
+        }
     }
     /** إعادة ترجمة باتش واحد على المفاتيح الاحتياطية */
     fun retryOnBackup(i: Int) = retryOnBackupSeq(listOf(i))
@@ -366,6 +402,7 @@ class Engine(
                 if (userPaused) { host.status("⏸ الترجمة واقفة مؤقتًا — دوس «إلغاء الإيقاف» تكمّل"); nap(300); continue }
                 if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
                 hedgeTick()
+                autoRetryTick()
                 // إعادة الباتشات الفاشلة بالأولوية (أكتر من 3): مفيش باتشات جديدة تتبعت لحد ما الفاشلين يتبعتوا، وبعدين الترجمة تكمّل عادي
                 if (priorityRetry.isNotEmpty()) {
                     val nx = priorityRetry.firstOrNull { it !in inflight }

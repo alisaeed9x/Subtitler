@@ -508,9 +508,7 @@ class MainActivity : Activity() {
                 sw("لون نص موحّد", "sub_uni_on", false),
                 ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) }),
             ui.section("✂️ تقسيم الجمل", false,
-                sw("قسّم الجملة عند النقطة والفاصلة (كل جزء يظهر في وقته ويختفي)", "sub_punct", true),
-                sw("تقسيم الجمل الطويلة لأجزاء بالتتابع (تقدير بعدد الكلمات — جيميناي بيقسّم عند الوقفات أصلًا)", "sub_split_on", false),
-                slider("أقصى كلمات في الجزء", "sub_split", 8, 3, 30, "")),
+            sw("تقسيم الجمل الطويلة لأجزاء (مطفي = الجملة تظهر كاملة من أول الكلام لآخره)", "sub_split_on", false)),
             ui.section("🌫 الخلفية", false,
                 sw("إخفاء الخلفية", "sub_nobg", false),
                 slider("غمقان الخلفية (0 = شفافة)", "sub_bgopa", 45, 0, 100, "%"),
@@ -741,6 +739,7 @@ class PlayerActivity : Activity(), Host {
     // قايمة الجمل (نسخة مرتبة + مصفوفات للبحث الثنائي)
     var list: List<Sub> = emptyList()
     var starts = LongArray(0); var ends = LongArray(0)
+    private var hideTicks = 0
     private val seenKeys = HashSet<String>(); private val warnedKeys = HashSet<String>(); private var lastChkT = -1L
     private fun sentKey(q: Sub) = "${q.start}|${q.end}|${q.translated.hashCode()}"
     // الحوار والأصوات الخلفية بيتفصلوا: الحوار تحت، وصف الصوت (همهمة/موسيقى…) فوق الفيديو
@@ -1077,6 +1076,7 @@ class PlayerActivity : Activity(), Host {
     override fun onLowMemory() { super.onLowMemory(); LogStore.add("⚠ onLowMemory · ${LogStore.heapLine()}") }
     override fun status(s: String) { status = s }
     override fun changed() { dirty = true; srtSoon() }
+    override fun notice(s: String) { runOnUiThread { try { Notice.show(this, s, 2600L) } catch (_: Throwable) {} } }
     override fun position() = cur / 1000.0
     override fun playerDuration() = durMs / 1000.0
 
@@ -1816,10 +1816,10 @@ class PlayerActivity : Activity(), Host {
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
                 var parts: List<String> = emptyList(); var part = 0
                 val ssn = sub.style
-                if (ccOn && gs.size == 1) {
-                    var byChars = false
-                    if (ssn.punctOn) { parts = PlayerLogic.splitPunct(gs[0].translated); byChars = true }
-                    if (parts.size <= 1 && ssn.splitOn) { parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh); byChars = false }
+                if (ssn.splitOn && ccOn && gs.size == 1) {
+                    var byChars = true
+                    parts = PlayerLogic.splitPunct(gs[0].translated)
+                    if (parts.size <= 1) { parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh); byChars = false }
                     if (parts.size > 1) parts = PlayerLogic.adaptParts(parts, ends[idx] - starts[idx], byChars)
                     if (parts.size > 1) part = PlayerLogic.partIndex(starts[idx], ends[idx], cur - offsetMs, parts, byChars)
                 }
@@ -1836,6 +1836,10 @@ class PlayerActivity : Activity(), Host {
                     if (sentDlg.isShowing) adapter.notifyDataSetChanged()
                     if (idx >= 0 && sentDlg.isShowing && !listView.isPressed) listView.smoothScrollToPositionFromTop(idx, ui.dp(30))
                 }
+                // حارس العرض: جملة المفروض ظاهرة (curIdx >= 0) بس الـview مخفي أو ارتفاعه صفر → نرجّعه ونسجّل في اللوج
+                if (ccOn && curIdx >= 0 && !sub.suppressed && !pipNow() && (sub.visibility != View.VISIBLE || sub.height <= 0)) {
+                    if (++hideTicks >= 2) { hideTicks = 0; LogStore.add("⚠ الترجمة #${curIdx + 1} المفروض ظاهرة بس الـview مخفي/ارتفاعه صفر — اتصلّحت"); sub.visibility = View.VISIBLE; sub.requestLayout(); curIdx = -2 }
+                } else hideTicks = 0
                 val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { list[it].translated }
                 if (sTxt != soundKey) { soundKey = sTxt; soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE }
                 st.text = status
@@ -2272,16 +2276,12 @@ class PlayerActivity : Activity(), Host {
             probDrawer.post { probDrawer.translationX = -(probBar.width + ui.dp(2)).toFloat() }
         }
     }
+    /** زرار الباتش الفاشل: من غير سؤال — بيعيد على طول وإشعار صغير (والإعادة التلقائية شغالة لوحدها كمان) */
     fun askRetryProblem() {
         val i = probIdx; if (i < 0) return
-        val n = try { engine.problems().size } catch (_: Exception) { 1 }
-        val msg = when {
-            n <= 1 -> "إعادة ترجمة باتش ${i + 1} على المفاتيح الاحتياطية؟"
-            n <= 3 -> "إعادة $n باتشات بالتوالي على المفاتيح الاحتياطية (الأقدم فالأحدث)؟"
-            else -> "إعادة $n باتش: هيترجموا الأول على المفاتيح الأساسية وبعدين الترجمة تكمّل الباقي؟"
-        }
-        Notice.ask(this, msg, "🔁 إعادة", "لاحقًا", 6000L,
-            onYes = { engine.retryProblems(); if (probOn) toggleProb() }, onNo = { })
+        val n = try { engine.retryProblems() } catch (_: Exception) { 0 }
+        if (probOn) toggleProb()
+        if (n > 0) Notice.show(this, if (n == 1) "🔁 بعيد ترجمة باتش ${i + 1}" else "🔁 بعيد ترجمة $n باتش", 2200L)
     }
 
     fun liveDialectDialog() {

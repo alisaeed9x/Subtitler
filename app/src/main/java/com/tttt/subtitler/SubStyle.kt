@@ -31,6 +31,7 @@ data class SubStyle(
             fun i(k: String, d: Int, lo: Int, hi: Int) = (get(k, d.toString()).trim().toIntOrNull() ?: d).coerceIn(lo, hi)
             fun b(k: String, d: Boolean) = get(k, if (d) "1" else "0") == "1"
             val an = get("sub_anim", "default").let { a -> if (entrances.any { it.id == a }) a else "default" }
+            Subs.splitEnabled = b("sub_split_on", false)
             return SubStyle(i("sub_scale", 100, 60, 200), i("sub_bgopa", 45, 0, 100), b("sub_nobg", false), i("sub_blur", 0, 0, 20), i("sub_aspeed", 250, 50, 600),
                 an, get("sub_font", "Cairo"), b("sub_plain", false), i("sub_dual", 0, 0, 4), b("sub_uni_on", false),
                 get("sub_uni_color", "#FFFFFF"), b("sub_split_on", false), i("sub_split", 8, 3, 30),
