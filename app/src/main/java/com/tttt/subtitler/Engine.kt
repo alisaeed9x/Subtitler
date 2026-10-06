@@ -672,7 +672,7 @@ class Engine(
                 if (bad++ < 2) { host.log("⚠ ${e.message} — إعادة المحاولة"); nap(600); continue }
                 throw e
             } catch (e: ApiErr) {
-                val invalid = e.code == 403 || (e.code == 400 && (e.message ?: "").contains("API key", true))
+                val invalid = e.code == 401 || e.code == 403 || (e.code == 400 && (e.message ?: "").contains("API key", true))
                 if (e.code == 429) {
                     pool.block(key, 60_000)
                     val alt = nextKey(key)

@@ -66,6 +66,7 @@ class MainActivity : Activity() {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
         if (fromPlayer) setTheme(android.R.style.Theme_Translucent_NoTitleBar)
         super.onCreate(b)
+        if (fromPlayer && intent?.getBooleanExtra("land", false) == true) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE   // الإعدادات من المشغّل: بالعرض فوق الفيديو
         UiWatchdog.start()
         Cfg.init(this); CrashLog.install(this)
         val th = Themes.byId(Cfg.str("theme", "mx"))
@@ -1309,13 +1310,20 @@ class PlayerActivity : Activity(), Host {
         giShowFn = { m -> giShow(m, Gravity.CENTER) }
         fun scaleBy(dv: Int) { val n = (Cfg.int("sub_scale", 100) + dv).coerceIn(60, 200); Cfg.put("sub_scale", n.toString()); restyle(); giShow("📏 $n%", Gravity.CENTER) }
         fun fb(t: String, f: (TextView) -> Unit): TextView = ui.fsBtn(t) { v -> f(v); showChrome() }
+        /** زرار دايري صغير للصف الأدوات اللي تحت جنب أزرار الشاشة */
+        fun mini(t: String, f: (TextView) -> Unit): TextView {
+            val ref = arrayOfNulls<TextView>(1)
+            val v = ui.fsCircle(t) { ref[0]?.let { f(it) }; showChrome() }
+            ref[0] = v; v.textSize = 12f; return v
+        }
         // زرار تبديل عرض الترجمة: ترجمة ← أصلي ← ترجمة+أصلي تحت ← أصلي فوق+ترجمة تحت
         val dualCycle = listOf(0, 3, 1, 4); val dualShort = mapOf(0 to "فردي", 3 to "أصلي", 1 to "مزدوج", 4 to "مزدوج (أصلي فوق)", 2 to "إنجليزي")
         fun dualLabel() = "💬 وضع الترجمة: " + (dualShort[curStyle().dual] ?: "فردي")
         fun dualBg() = ui.box(if (curStyle().dual == 0) 0xE0141418.toInt() else 0xFF1F5FBF.toInt(), 0x1FFFFFFF, 12)   // الأزرق = وضع غير الفردي
+        fun dualCircleBg() = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (curStyle().dual == 0) 0xE00F0F12.toInt() else 0xFF1F5FBF.toInt()); setStroke(ui.dp(1), 0x1FFFFFFF) }
         fun cycleDual(v: TextView) {
             val n = dualCycle[(dualCycle.indexOf(curStyle().dual) + 1) % dualCycle.size]
-            Cfg.put("sub_dual", n.toString()); restyle(); v.text = dualLabel(); v.background = dualBg()
+            Cfg.put("sub_dual", n.toString()); restyle(); v.text = "💬"; v.background = dualCircleBg()
             giShow(dualLabel(), Gravity.CENTER)
         }
         var fsSpeedB: TextView? = null
@@ -1405,9 +1413,9 @@ class PlayerActivity : Activity(), Host {
             gText.addView(bgTv, LinearLayout.LayoutParams(ui.dp(150), -2))
             gText.addView(bgSb, LinearLayout.LayoutParams(ui.dp(150), -2))
         }
-        val ccB = fb("CC") { toggleCc() }
+        val ccB = mini("CC") { toggleCc() }.apply { textSize = 11f; typeface = android.graphics.Typeface.DEFAULT_BOLD }
         ccFsB = ccB
-        val dualB = fb(dualLabel()) { v -> cycleDual(v) }.apply { background = dualBg() }   // وضع الترجمة (فردي / أصلي / مزدوج)
+        val dualB = mini("💬") { v -> cycleDual(v) }.apply { background = dualCircleBg() }   // وضع الترجمة (فردي / أصلي / مزدوج) — أيقونة بس من غير كلام
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
         val fitB = fb("⬛ " + PlayerLogic.fitNames[curFit()]) { v ->
@@ -1417,7 +1425,9 @@ class PlayerActivity : Activity(), Host {
         }
         fitFsB = fitB
         val menuB = ui.fsBtn("☰") { openSide() }
-        val sentB = ui.fsBtn("📝") { sentDlg.show(); showChrome() }   // اختصار لزرار «الجمل» اللي في القائمة
+        val sentB = mini("📝") { sentDlg.show() }   // الجمل
+        val reB = mini("🔄") { batchDialog() }   // إعادة ترجمة (جنب الجمل)
+        val bgB = mini("🌙") { translateInBackground() }   // ترجمة بالخلفية
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
         // لوحة «Aa»: حجم الترجمة + التوقيت في مكان واحد
         val gSub = gCol()
@@ -1454,9 +1464,9 @@ class PlayerActivity : Activity(), Host {
         val collapseR = object : Runnable { override fun run() { if (!tbOpen) return; if (popup != null && chromeShown) h.postDelayed(this, 2000) else setMore(false) } }
         moreB.setOnClickListener { setMore(!tbOpen); h.removeCallbacks(collapseR); if (tbOpen) h.postDelayed(collapseR, 5000); showChrome() }
         tbCollapseFn = { if (tbOpen) setMore(false) }
-        tbAdd(tip(menuB, "القائمة")); tbAdd(tip(sentB, "الجمل")); tbAdd(tip(ccB, "إظهار/إخفاء الترجمة")); tbAdd(dualB)
+        tbAdd(tip(menuB, "القائمة"))
         tbAdd(tip(grp("Aa", gSub), "حجم الترجمة والتوقيت")); tbAdd(tip(moreB, "المزيد")); tbAdd(tbExtra)
-        exAdd(fitB); exAdd(tip(grp("🔤", gText), "النص")); exAdd(tip(grp("✨", gAi), "لهجة")); exAdd(tip(grp("🧰", gTool), "أدوات"))
+        exAdd(tip(grp("🔤", gText), "النص")); exAdd(tip(grp("🧰", gTool), "أدوات"))
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
@@ -1480,6 +1490,18 @@ class PlayerActivity : Activity(), Host {
         auxRow.addView(makeTrRow(true))
         fsBar.addView(auxRow, LinearLayout.LayoutParams(-1, -2))
         fsBar.addView(timeRow, LinearLayout.LayoutParams(-1, ui.dp(30)))
+        // صف الأدوات الصغيرة (فوق أزرار الشاشة): يمين = 🌙 ترجمة بالخلفية · 🔄 إعادة · 📝 الجمل · CC · 💬 وضع الترجمة | شمال = ✨ اللهجة (عائلي/صريح جواها)
+        val toolRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
+        val toolL = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        val toolR = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        val aiB = tip(grp("✨", gAi, true), "لهجة (عائلي/صريح)").apply { layoutParams = LinearLayout.LayoutParams(-2, ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }; minimumWidth = ui.dp(30); setPadding(ui.dp(8), 0, ui.dp(8), 0); textSize = 12f }
+        toolL.addView(aiB)
+        listOf(tip(bgB, "ترجمة بالخلفية"), tip(reB, "إعادة ترجمة"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(dualB, "وضع الترجمة")).forEach { b ->
+            toolR.addView(b, LinearLayout.LayoutParams(ui.dp(30), ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
+        }
+        toolRow.addView(toolL, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL))
+        toolRow.addView(toolR, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
+        fsBar.addView(toolRow, LinearLayout.LayoutParams(-1, ui.dp(36)))
         val btnRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
         btnRow.addView(ui.fsCircle("🔓") { setLock(true) }, FrameLayout.LayoutParams(ui.dp(40), ui.dp(40), Gravity.START or Gravity.CENTER_VERTICAL))
         val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER }
@@ -2401,7 +2423,7 @@ class PlayerActivity : Activity(), Host {
         resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
-        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).apply { if (tab != null) putExtra("tab", tab) })
+        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("land", true).apply { if (tab != null) putExtra("tab", tab) })
     }
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)
