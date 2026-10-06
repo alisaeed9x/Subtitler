@@ -125,8 +125,8 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
 /** شارة النسبة وعدد الجمل أعلى يمين الفيديو (.fs-trans-badge) */
 class TransBadge(ctx: Context, th: Theme) : LinearLayout(ctx) {
     private val d = ctx.resources.displayMetrics.density
-    private val pct = TextView(ctx).apply { textSize = 13f; setTextColor(th.primary); typeface = android.graphics.Typeface.DEFAULT_BOLD; setShadowLayer(10f, 0f, 0f, (th.primary and 0x00FFFFFF) or 0x55000000); includeFontPadding = false }
-    private val cnt = TextView(ctx).apply { textSize = 10f; setTextColor(0xB3FFFFFF.toInt()); includeFontPadding = false }
+    private val pct = IconTextView(ctx).apply { textSize = 13f; setTextColor(th.primary); typeface = android.graphics.Typeface.DEFAULT_BOLD; setShadowLayer(10f, 0f, 0f, (th.primary and 0x00FFFFFF) or 0x55000000); includeFontPadding = false }
+    private val cnt = IconTextView(ctx).apply { textSize = 10f; setTextColor(0xB3FFFFFF.toInt()); includeFontPadding = false }
     init {
         orientation = VERTICAL; gravity = Gravity.END; layoutDirection = View.LAYOUT_DIRECTION_RTL
         setPadding((12 * d).toInt(), (6 * d).toInt(), (12 * d).toInt(), (6 * d).toInt())
@@ -168,9 +168,9 @@ class MemRow(val root: LinearLayout, val ramTv: TextView, val ramBar: ProgressBa
 fun Ui.onPrimary(): Int = if (th.isLight) Color.WHITE else Color.BLACK
 
 /** .icon-tool-btn: دايرة 32dp، المفتاح بحدود متقطعة (accent) */
-fun Ui.circleBtn(t: String, dashed: Boolean = false, f: () -> Unit): TextView = TextView(ctx).apply {
+fun Ui.circleBtn(t: String, dashed: Boolean = false, f: () -> Unit): TextView = IconTextView(ctx).apply {
     text = t; textSize = 14f; gravity = Gravity.CENTER; setTextColor(if (dashed) th.primary else th.muted)
-    includeFontPadding = false
+    includeFontPadding = false; Glass.pressable(this)
     background = GradientDrawable().apply {
         shape = GradientDrawable.OVAL; setColor(th.card)
         if (dashed) setStroke(dp(1), th.success, dp(3).toFloat(), dp(2).toFloat()) else setStroke(dp(1), th.border)
@@ -180,7 +180,7 @@ fun Ui.circleBtn(t: String, dashed: Boolean = false, f: () -> Unit): TextView = 
 }
 
 /** .model-badge */
-fun Ui.pillChip(t: String, f: () -> Unit): TextView = TextView(ctx).apply {
+fun Ui.pillChip(t: String, f: () -> Unit): TextView = IconTextView(ctx).apply {
     text = t; textSize = 11f; gravity = Gravity.CENTER; setTextColor(th.accent); setSingleLine()
     setPadding(dp(10), dp(4), dp(10), dp(4))
     background = box(th.card, th.border, 20)
@@ -195,7 +195,7 @@ fun Ui.gridBtn(icon: String, label: String, f: () -> Unit): LinearLayout = Linea
     orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
     setPadding(dp(4), dp(5), dp(4), dp(5))
     background = box(th.card, th.border, 8)
-    addView(TextView(ctx).apply { text = icon; textSize = 13f; gravity = Gravity.CENTER; includeFontPadding = false })
+    addView(IconTextView(ctx).apply { text = icon; textSize = 13f; gravity = Gravity.CENTER; includeFontPadding = false })
     addView(text(label, 8f, th.muted, true).apply { gravity = Gravity.CENTER; maxLines = 2; includeFontPadding = false },
         LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
     val m = gap25()
@@ -222,15 +222,15 @@ fun Ui.bigAction(icon: String, label: String, f: () -> Unit): LinearLayout = Lin
     setPadding(dp(20), 0, dp(20), 0)
     background = GradientDrawable().apply { setColor(th.accent); cornerRadius = dp(26).toFloat() }
     elevation = dp(6).toFloat()
-    addView(TextView(ctx).apply { text = icon; textSize = 17f; setTextColor(Color.WHITE); includeFontPadding = false })
-    addView(TextView(ctx).apply { text = label; textSize = 12.5f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD; includeFontPadding = false },
+    addView(IconTextView(ctx).apply { text = icon; textSize = 17f; setTextColor(Color.WHITE); includeFontPadding = false })
+    addView(IconTextView(ctx).apply { text = label; textSize = 12.5f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD; includeFontPadding = false },
         LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
     layoutParams = FrameLayout.LayoutParams(-2, dp(46), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(18) }
     setOnClickListener { f() }
 }
 
 /** .main-fab-bubble: فقاعة ☰ ثابتة (يمين، 76dp من تحت) */
-fun Ui.mainBubble(f: () -> Unit): TextView = TextView(ctx).apply {
+fun Ui.mainBubble(f: () -> Unit): TextView = IconTextView(ctx).apply {
     text = "☰"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); alpha = 0.75f
     background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xEB1E2228.toInt()); setStroke((1.5f * ctx.resources.displayMetrics.density).toInt(), 0x66F5A623) }
     elevation = dp(6).toFloat()
@@ -240,13 +240,13 @@ fun Ui.mainBubble(f: () -> Unit): TextView = TextView(ctx).apply {
 
 /** نافذة سفلية (bottom sheet) بنفس كروت الأصل. fixedH = ارتفاع ثابت للقوائم الطويلة */
 fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = false, onClose: () -> Unit = {}): Dialog {
-    val d = Dialog(act)
+    val d = GDialog(act)
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
     views.forEach { body.addView(it) }
     val head = LinearLayout(ctx).apply { gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, 0, 0, dp(8)) }
     head.addView(text(title, 17f, th.primary, true), LinearLayout.LayoutParams(0, -2, 1f))
-    head.addView(TextView(ctx).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(dp(10), dp(4), dp(10), dp(4)); setOnClickListener { d.dismiss() } })
+    head.addView(IconTextView(ctx).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(dp(10), dp(4), dp(10), dp(4)); setOnClickListener { d.dismiss() } })
     val root = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
         setPadding(dp(14), dp(12), dp(14), dp(14)); background = box(th.card, th.border, 18)
@@ -304,7 +304,7 @@ fun Ui.sideBtn(icon: String, label: String, f: () -> Unit): LinearLayout = Linea
     orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
     setPadding(dp(4), dp(8), dp(4), dp(8))
     background = box(th.surface, th.border, 12)
-    addView(TextView(ctx).apply { text = icon; textSize = 24f; gravity = Gravity.CENTER; includeFontPadding = false })
+    addView(IconTextView(ctx).apply { text = icon; textSize = 24f; gravity = Gravity.CENTER; includeFontPadding = false })
     addView(text(label, 11f, th.text, true).apply { gravity = Gravity.CENTER; maxLines = 2; includeFontPadding = false },
         LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
     val m = dp(4)
@@ -313,7 +313,7 @@ fun Ui.sideBtn(icon: String, label: String, f: () -> Unit): LinearLayout = Linea
 }
 
 /** .fs-subsize-btn: مربع 32dp داكن شفاف بحدود خفيفة (radius 10، 12sp bold) */
-fun Ui.fsBtn(t: String, f: (TextView) -> Unit): TextView = TextView(ctx).apply {
+fun Ui.fsBtn(t: String, f: (TextView) -> Unit): TextView = IconTextView(ctx).apply {
     text = t; textSize = 13f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setSingleLine()
     typeface = android.graphics.Typeface.DEFAULT_BOLD
     minimumWidth = dp(40); setPadding(dp(10), 0, dp(10), 0)
@@ -323,7 +323,7 @@ fun Ui.fsBtn(t: String, f: (TextView) -> Unit): TextView = TextView(ctx).apply {
 }
 
 /** .fullscreen-btn: دايرة 34dp داكنة (أسفل يسار الفيديو) */
-fun Ui.fsCircle(t: String, f: () -> Unit): TextView = TextView(ctx).apply {
+fun Ui.fsCircle(t: String, f: () -> Unit): TextView = IconTextView(ctx).apply {
     text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
     background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(dp(1), 0x1FFFFFFF) }
     setOnClickListener { f() }
@@ -334,7 +334,7 @@ fun Ui.controls(): Ctl {
     val prog = DualProgress(ctx, th).apply { mini = true }
     fun mono(t: String) = text(t, 11f, th.muted).apply { typeface = android.graphics.Typeface.MONOSPACE }
     val tEl = mono("0:00"); val tDur = mono("0:00")
-    fun small(t: String) = TextView(ctx).apply { text = t; textSize = 11f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(dp(8), dp(2), dp(8), dp(2)) }
+    fun small(t: String) = IconTextView(ctx).apply { text = t; textSize = 11f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(dp(8), dp(2), dp(8), dp(2)) }
     val prev = small("⏮"); val next = small("⏭")
     val timeRow = LinearLayout(ctx).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
     timeRow.addView(tEl)
@@ -343,11 +343,11 @@ fun Ui.controls(): Ctl {
     timeRow.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
     timeRow.addView(tDur)
 
-    fun ic(t: String) = TextView(ctx).apply {
+    fun ic(t: String) = IconTextView(ctx).apply {
         text = t; textSize = 16f; setTextColor(th.text); gravity = Gravity.CENTER; includeFontPadding = false
         layoutParams = LinearLayout.LayoutParams(dp(32), dp(38)).apply { setMargins(dp(2), 0, dp(2), 0) }
     }
-    val play = TextView(ctx).apply {
+    val play = IconTextView(ctx).apply {
         text = "▶"; textSize = 19f; gravity = Gravity.CENTER; setTextColor(onPrimary()); includeFontPadding = false
         background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(th.primary, th.accent)).apply { shape = GradientDrawable.OVAL }
         elevation = dp(4).toFloat()
@@ -405,12 +405,12 @@ class VertInd(ctx: Context, icon: String) : LinearLayout(ctx) {
     private val d = ctx.resources.displayMetrics.density
     private val trackH = (90 * d).toInt()
     private val fill = View(ctx)
-    private val lb = TextView(ctx)
+    private val lb = IconTextView(ctx)
     init {
         orientation = VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; visibility = View.GONE
         setPadding((10 * d).toInt(), (14 * d).toInt(), (10 * d).toInt(), (14 * d).toInt())
         background = GradientDrawable().apply { setColor(0x99000000.toInt()); cornerRadius = 14 * d }
-        addView(TextView(ctx).apply { text = icon; textSize = 18f; gravity = Gravity.CENTER })
+        addView(IconTextView(ctx).apply { text = icon; textSize = 18f; gravity = Gravity.CENTER })
         val track = android.widget.FrameLayout(ctx).apply { background = GradientDrawable().apply { setColor(0x40FFFFFF); cornerRadius = 4 * d } }
         fill.background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 4 * d }
         track.addView(fill, android.widget.FrameLayout.LayoutParams(-1, 0, Gravity.BOTTOM))

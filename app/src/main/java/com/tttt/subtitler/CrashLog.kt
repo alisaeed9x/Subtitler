@@ -46,7 +46,7 @@ object CrashLog {
             (if (crash.isBlank() && prevTail.isNotBlank()) "— آخر سطور اللوج قبل ما يقفل —\n$prevTail" else "")
         val full = LogStore.header(a) + "\n\n" + (if (showEx) ex!!.text + "\n\n" else "") + crash + "\n\n— اللوج الكامل للجلسة اللي فاتت —\n" + LogStore.prevText(60000)
         try {
-            AlertDialog.Builder(a).setTitle("⚠ التطبيق قفل المرة اللي فاتت").setMessage(shown.take(3500))
+            GAlert(a).setTitle("⚠ التطبيق قفل المرة اللي فاتت").setMessage(shown.take(3500))
                 .setPositiveButton("📋 نسخ") { _, _ ->
                     (a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("crash", full))
                     Toast.makeText(a, "اتنسخ — ابعته لي", Toast.LENGTH_SHORT).show()

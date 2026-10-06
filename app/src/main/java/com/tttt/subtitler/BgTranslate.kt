@@ -219,15 +219,15 @@ class BgService : Service() {
     private fun build(job: BgJob?): Notification {
         val stop = PendingIntent.getService(this, 1, Intent(this, BgService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val b = Notification.Builder(this, CH).setSmallIcon(android.R.drawable.stat_sys_download).setContentIntent(openApp()).setOngoing(true).setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "⏹ إيقاف", stop).build())
-        if (job != null && job.paused) return b.setContentTitle("⏸ ترجمة الخلفية متوقفة مؤقتًا — ${job.pct}%").setContentText(job.title).setProgress(100, job.pct, false).build()
-        if (job == null) return b.setContentTitle("🌙 ترجمة في الخلفية").setContentText("بجهّز…").setProgress(0, 0, true).build()
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), Icons.plain("⏹ إيقاف"), stop).build())
+        if (job != null && job.paused) return b.setContentTitle(Icons.plain("⏸ ترجمة الخلفية متوقفة مؤقتًا — ${job.pct}%")).setContentText(job.title).setProgress(100, job.pct, false).build()
+        if (job == null) return b.setContentTitle(Icons.plain("🌙 ترجمة في الخلفية")).setContentText("بجهّز…").setProgress(0, 0, true).build()
         val q = BgJobs.queuedCount()
         val rem = BgJobs.fmtRemain(job.remainSec)
         val sb = StringBuilder(job.title)
         if (rem.isNotEmpty()) sb.append(" · باقي حوالي ").append(rem)
         if (q > 0) sb.append(" · +").append(q).append(" في الانتظار")
-        return b.setContentTitle("🌙 بترجم في الخلفية — ${job.pct}%").setContentText(sb.toString()).setStyle(Notification.BigTextStyle().bigText(sb.toString()))
+        return b.setContentTitle(Icons.plain("🌙 بترجم في الخلفية — ${job.pct}%")).setContentText(sb.toString()).setStyle(Notification.BigTextStyle().bigText(sb.toString()))
             .setProgress(100, job.pct, job.dur <= 0).build()
     }
 
@@ -329,7 +329,7 @@ class BgService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val ok = job.state == "done"
         val n = Notification.Builder(this, CH_DONE).setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
-            .setContentTitle(if (ok) "✅ خلصت الترجمة" else "⚠ الترجمة وقفت").setContentText(job.title + (if (job.err.isNotEmpty()) " — " + job.err else ""))
+            .setContentTitle(Icons.plain(if (ok) "✅ خلصت الترجمة" else "⚠ الترجمة وقفت")).setContentText(job.title + (if (job.err.isNotEmpty()) " — " + job.err else ""))
             .setContentIntent(openApp()).setAutoCancel(true).build()
         try { nm.notify(1000 + (job.vid.hashCode() and 0xFFFF), n) } catch (_: Exception) {}
     }

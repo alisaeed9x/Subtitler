@@ -76,6 +76,19 @@ object Sniff {
         val n = u.substringBefore('?').substringBefore('#').substringAfterLast('/')
         return if (n.isNotEmpty() && !n.contains(':')) n else u.substringAfter("://").substringBefore('/')
     }
+    /** أقل حجم يتحسب فيديو: أصغر من كده غالبًا إعلان */
+    const val MIN_BYTES = 3L * 1024 * 1024
+    private val SEP = Regex("\\s+[|\\-–—»·•]\\s+")
+    private val LEAD = Regex("^(watch|download|stream|مشاهدة|تحميل|تنزيل|شاهد)\\s+", RegexOption.IGNORE_CASE)
+    /** عنوان صفحة الموقع → اسم نضيف (بيشيل اسم الموقع اللي بعد | أو - وكلمات زي مشاهدة/Watch) */
+    fun cleanTitle(t: String?): String {
+        var x = (t ?: "").trim()
+        if (x.isEmpty() || x.startsWith("http", true) || x.equals("about:blank", true)) return ""
+        val parts = x.split(SEP).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size > 1) x = parts.maxByOrNull { it.length } ?: x
+        x = x.replace(LEAD, "").trim()
+        return if (x.length > 2) x.take(120) else ""
+    }
     fun fmtSize(b: Long): String = if (b >= 1_048_576L * 1024) String.format("%.2f GB", b / 1073741824.0) else String.format("%.1f MB", b / 1048576.0)
 }
 
@@ -166,6 +179,7 @@ object YtExtract {
  */
 @SuppressLint("SetJavaScriptEnabled")
 class BrowserActivity : Activity() {
+    override fun finish() { super.finish(); try { overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (_: Exception) {} }
     lateinit var wv: WebView
     lateinit var badge: Button
     lateinit var hint: TextView
@@ -191,6 +205,8 @@ class BrowserActivity : Activity() {
     private var customView: View? = null
     private var customCb: CustomViewCallback? = null
     private var oldOrient = -1
+    private val pageTitles = HashMap<String, String>()   // رابط الصفحة → عنوانها (اسم الفيديو بيتاخد من الموقع)
+    private fun titleFor(f: Found): String = f.title.ifEmpty { Sniff.cleanTitle(pageTitles[f.ref] ?: if (f.ref == wv.url) wv.title else null) }
     private var addrRef: android.widget.EditText? = null
     private fun showUrl(u: String?) { val a = addrRef ?: return; if (!u.isNullOrEmpty() && u != "about:blank" && !a.hasFocus()) a.setText(u) }
 
@@ -216,7 +232,7 @@ class BrowserActivity : Activity() {
         val row = LinearLayout(this).apply { addView(addr); addView(copy); addView(go) }
         hint = ui.text("شغّل الفيديو في الصفحة وهلقطه تلقائي · أو الصق لينك يوتيوب فوق", 12f, th.muted).apply { setPadding(ui.dp(10), ui.dp(2), ui.dp(10), ui.dp(4)) }
         wv = WebView(this)
-        badge = Button(this).apply {
+        badge = IconButton(this).apply {
             isAllCaps = false; textSize = 15f; visibility = View.GONE
             setTextColor(if (th.isLight) Color.WHITE else Color.BLACK); background = ui.box(th.primary, th.primary, 8)
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(6)) }
@@ -266,6 +282,7 @@ class BrowserActivity : Activity() {
             override fun doUpdateVisitedHistory(v: WebView, url: String?, isReload: Boolean) { showUrl(url) }
             override fun onPageFinished(v: WebView, url: String?) {
                 showUrl(url)
+                if (url != null) v.title?.takeIf { it.isNotBlank() }?.let { pageTitles[url] = it }
                 if (adOn) v.evaluateJavascript(AdBlock.JS, null)
                 scanOnce()
             }
@@ -314,17 +331,22 @@ class BrowserActivity : Activity() {
     fun addUrl(u: String) = addFound(Found(u, Sniff.kindOf(u), "", wv.url ?: "", ""))
     fun addFound(f: Found) {
         if (!keys.add(Sniff.key(f.url))) return
+        if (f.size > 0 || f.kind == "HLS") { accept(f); return }
+        // حجم مش معروف: نفحصه الأول، وأي فيديو أقل من 3 ميجا (إعلانات غالبًا) بيتتجاهل
+        probe(f) { accept(f) }
+    }
+    private fun accept(f: Found) {
+        if (dead) return
+        if (f.size in 1 until Sniff.MIN_BYTES) return
         items.add(f)
         badge.text = "🎬 لقيت ${items.size} فيديو — اضغط للاختيار"; badge.visibility = View.VISIBLE; hint.visibility = View.GONE
-        probe(f)
         if (autoOpen && !autoShown) { autoShown = true; showList() }
         else if (dlg?.isShowing == true) renderList()
         else if (items.size == 1) Toast.makeText(this, "🎬 لقيت فيديو", Toast.LENGTH_SHORT).show()
     }
 
-    /** حجم ونوع الملف (طلب صغير بـ Range) عشان يظهر في القايمة */
-    private fun probe(f: Found) {
-        if (f.kind == "HLS" || f.size > 0) return
+    /** حجم ونوع الملف (طلب صغير بـ Range) — بعد ما يخلص بينادي done على الـ UI thread */
+    private fun probe(f: Found, done: () -> Unit) {
         val ck = try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" }
         Thread {
             try {
@@ -335,11 +357,13 @@ class BrowserActivity : Activity() {
                 if (f.ref.isNotEmpty()) c.setRequestProperty("Referer", f.ref)
                 if (ck.isNotEmpty()) c.setRequestProperty("Cookie", ck)
                 c.connect()
-                val total = c.getHeaderField("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: c.contentLengthLong
-                f.size = total; f.mime = c.contentType ?: ""
+                val cr = c.getHeaderField("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
+                // رد 206 من غير Content-Range = الحجم الحقيقي مجهول (الطول 1 هو بايت الاختبار) — مانحكمش عليه
+                f.size = cr ?: if (c.responseCode == 206) -1L else c.contentLengthLong
+                f.mime = c.contentType ?: ""
                 c.disconnect()
             } catch (_: Throwable) {}
-            runOnUiThread { if (!dead && dlg?.isShowing == true) renderList() }
+            runOnUiThread { if (!dead) done() }
         }.apply { isDaemon = true }.start()
     }
 
@@ -362,7 +386,7 @@ class BrowserActivity : Activity() {
         val c = ui.card()
         val sz = if (f.size > 0) " · " + Sniff.fmtSize(f.size) else ""
         c.addView(ui.text(f.kind + sz, 15f, th.primary, true))
-        c.addView(ui.text(f.title.ifEmpty { Sniff.nameOf(f.url) }, 12f, th.muted).apply {
+        c.addView(ui.text(titleFor(f).ifEmpty { Sniff.nameOf(f.url) }, 12f, th.muted).apply {
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END; layoutDirection = View.LAYOUT_DIRECTION_LTR; textDirection = View.TEXT_DIRECTION_LTR
         })
         val br = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
@@ -395,7 +419,7 @@ class BrowserActivity : Activity() {
     }
     private fun buildControls(): LinearLayout {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE; setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4)) }
-        fun chip(t: String, f: () -> Unit) = TextView(this).apply {
+        fun chip(t: String, f: () -> Unit) = IconTextView(this).apply {
             text = t; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
             background = ui.box(0xB0000000.toInt(), 0x66FFFFFF, 10); setOnClickListener { f() }
             layoutParams = LinearLayout.LayoutParams(ui.dp(46), -2).apply { setMargins(0, ui.dp(3), 0, ui.dp(3)) }
@@ -430,7 +454,7 @@ class BrowserActivity : Activity() {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             putExtra("url", f.url); putExtra("ref", f.ref)
             putExtra("cookie", try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" })
-            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("nosub", noSub); putExtra("autotr", !noSub)
+            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("title", titleFor(f)); putExtra("nosub", noSub); putExtra("autotr", !noSub)
         })
     }
     @Suppress("DEPRECATION")

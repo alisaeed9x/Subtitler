@@ -57,13 +57,13 @@ class LibraryUi(
         (listV.adapter as? BaseAdapter)?.notifyDataSetChanged()
         if (::queueBtn.isInitialized) { val n = BgJobs.jobs.count { it.active }; queueBtn.text = if (n > 0) "📋$n" else "📋"; queueBtn.textSize = if (n > 0) 13f else 17f }
     }
-    private fun dots(f: (View) -> Unit) = TextView(act).apply {
+    private fun dots(f: (View) -> Unit) = IconTextView(act).apply {
         text = "⋮"; textSize = 22f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
         setOnClickListener { f(this) }
     }
     private fun popup(anchor: View, items: List<Pair<String, () -> Unit>>) {
         val pm = PopupMenu(act, anchor)
-        items.forEachIndexed { i, it -> pm.menu.add(0, i, i, it.first) }
+        items.forEachIndexed { i, it -> pm.menu.add(0, i, i, Icons.convert(it.first)) }
         pm.setOnMenuItemClickListener { m -> items[m.itemId].second(); true }
         pm.show()
     }
@@ -96,7 +96,7 @@ class LibraryUi(
         })
     }
 
-    private val backV = TextView(act).apply {
+    private val backV = IconTextView(act).apply {
         text = "→"; textSize = 24f; setTextColor(th.primary); gravity = Gravity.CENTER; visibility = View.GONE
         setPadding(ui.dp(8), 0, ui.dp(12), 0); setOnClickListener { back() }
     }
@@ -143,19 +143,19 @@ class LibraryUi(
     private val emptyTv = ui.text("", 14f, th.muted).apply { gravity = Gravity.CENTER; setPadding(ui.dp(30), 0, ui.dp(30), 0); visibility = View.GONE }
     private fun keyOf(v: VideoItem) = v.folderKey + "|" + v.name + "|" + v.size
 
-    private val ptr = TextView(act).apply {
+    private val ptr = IconTextView(act).apply {
         text = "🔄"; textSize = 20f; gravity = Gravity.CENTER; background = ui.box(th.surface, th.border, 22)
         elevation = ui.dp(6).toFloat(); alpha = 0f; translationY = -ui.dp(50).toFloat()
     }
-    private val toastTv = TextView(act).apply {
+    private val toastTv = IconTextView(act).apply {
         textSize = 13f; setTextColor(th.text); setPadding(ui.dp(16), ui.dp(9), ui.dp(16), ui.dp(9))
         background = ui.box(th.surface, ORANGE, 14); elevation = ui.dp(8).toFloat(); translationY = -ui.dp(100).toFloat()
     }
-    private val resumeBtn = TextView(act).apply {
+    private val resumeBtn = IconTextView(act).apply {
         text = "▶"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; elevation = ui.dp(8).toFloat(); visibility = View.GONE
         background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF3B82F6.toInt()) }
     }
-    private fun newBadge() = TextView(act).apply {
+    private fun newBadge() = IconTextView(act).apply {
         text = "NEW"; textSize = 10f; setTextColor(0xFF111111.toInt()); setTypeface(typeface, android.graphics.Typeface.BOLD)
         setPadding(ui.dp(7), ui.dp(1), ui.dp(7), ui.dp(1)); background = ui.box(ORANGE, Color.TRANSPARENT, 10); visibility = View.GONE
     }
@@ -403,14 +403,14 @@ class LibraryUi(
     // ===== صف الفولدر =====
     private fun newFolderRow(): View {
         val cb = newCheck()
-        val icon = TextView(act).apply { text = "📁"; textSize = 24f; gravity = Gravity.CENTER; background = ui.box(th.surface, th.border, 12) }
+        val icon = IconTextView(act).apply { text = "📁"; textSize = 24f; gravity = Gravity.CENTER; background = ui.box(th.surface, th.border, 12) }
         val name = ui.text("", 15f, th.text, true).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         val info = ui.text("", 12f, th.primary)
         val path = ui.text("", 10f, th.muted).apply { setSingleLine(); ellipsize = TextUtils.TruncateAt.MIDDLE }
         val fBadge = newBadge()
         val nameRow = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; addView(name, LinearLayout.LayoutParams(-2, -2, 1f)); addView(fBadge, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(8) }) }
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; addView(nameRow); addView(info); addView(path) }
-        val chev = TextView(act).apply { text = "‹"; textSize = 26f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(8), 0, ui.dp(4), 0) }
+        val chev = IconTextView(act).apply { text = "‹"; textSize = 26f; setTextColor(th.muted); gravity = Gravity.CENTER; setPadding(ui.dp(8), 0, ui.dp(4), 0) }
         val fDots = dots { }
         val card = LinearLayout(act).apply {
             layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(10), ui.dp(8), ui.dp(10)); background = ui.box(th.card, th.border, 14)
@@ -420,6 +420,7 @@ class LibraryUi(
             addView(fDots)
             addView(chev)
         }
+        Glass.pressable(card)
         val wrap = FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = arrayOf(name, info, path, card, fBadge, fDots, cb, icon) }
         return wrap
     }
@@ -483,7 +484,7 @@ class LibraryUi(
     }
     private fun folderDetails(f: FolderItem) {
         val tr = f.videos.count { recMap[it.videoId]?.let { r -> r.subs > 0 } == true }
-        android.app.AlertDialog.Builder(act).setTitle("ℹ " + f.name)
+        GAlert(act).setTitle("ℹ " + f.name)
             .setMessage("المسار: ${f.path}\nعدد الفيديوهات: ${f.videos.size}\nالحجم: ${VideoLib.fmtSize(f.totalSize)}\nالمترجم منهم (كله أو جزء): $tr")
             .setPositiveButton("تمام", null).show()
     }
@@ -494,12 +495,12 @@ class LibraryUi(
     private class VH(val iv: ImageView, val dur: TextView, val title: TextView, val meta: TextView, val state: TextView, val card: View, val badge: TextView, val fill: View, val rest: View, val tick: TextView, val dots: TextView, val cb: View)
 
     private fun newVideoRow(): View {
-        val ph = TextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
+        val ph = IconTextView(act).apply { text = "🎞"; textSize = 24f; gravity = Gravity.CENTER; alpha = 0.45f }
         val iv = ImageView(act).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        val dur = TextView(act).apply {
+        val dur = IconTextView(act).apply {
             textSize = 10f; setTextColor(Color.WHITE); setPadding(ui.dp(5), ui.dp(1), ui.dp(5), ui.dp(1)); background = ui.box(0xCC000000.toInt(), Color.TRANSPARENT, 4)
         }
-        val tick = TextView(act).apply { text = "✓"; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF3B82F6.toInt()) }; visibility = View.GONE }
+        val tick = IconTextView(act).apply { text = "✓"; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF3B82F6.toInt()) }; visibility = View.GONE }
         val thumb = FrameLayout(act).apply {
             background = ui.box(0xFF000000.toInt(), th.border, 10); clipToOutline = true
             addView(ph, FrameLayout.LayoutParams(-1, -1)); addView(iv, FrameLayout.LayoutParams(-1, -1))
@@ -526,6 +527,7 @@ class LibraryUi(
             addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
             addView(vDots)
         }
+        Glass.pressable(card)
         return FrameLayout(act).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)); addView(card, FrameLayout.LayoutParams(-1, -2)); tag = VH(iv, dur, title, meta, state, card, vBadge, fill, rest, tick, vDots, vcb) }
     }
 
@@ -619,12 +621,11 @@ class LibraryUi(
         val items = ArrayList<Pair<String, () -> Unit>>()
         items += "▶ تشغيل (من آخر مكان وقفت عنده)" to { onPlayWeb(w) }
         items += "✏ إعادة تسمية" to { webRename(w) }
-        items += "🔎 إعادة التعرف على الاسم من اللقطة" to { webReid(w) }
         items += "📋 نسخ الرابط" to {
             try { (act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("url", w.url)); toastMsg("📋 اتنسخ الرابط") } catch (_: Exception) {}
         }
         items += "🗑 مسح من السجل" to {
-            android.app.AlertDialog.Builder(act).setTitle("🗑 مسح من المصطادة").setMessage("هيتمسح «${w.title}» من السجل (الترجمة المحفوظة مش هتتمسح). تمام؟")
+            GAlert(act).setTitle("🗑 مسح من المصطادة").setMessage("هيتمسح «${w.title}» من السجل (الترجمة المحفوظة مش هتتمسح). تمام؟")
                 .setPositiveButton("امسح") { _, _ -> WebVideos.remove(act, w.id); render() }.setNegativeButton("إلغاء", null).show()
             Unit
         }
@@ -632,28 +633,15 @@ class LibraryUi(
     }
     private fun webRename(w: WebVid) {
         val et = EditText(act).apply { setText(w.title); setSelection(text.length); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)) }
-        android.app.AlertDialog.Builder(act).setTitle("✏ اسم الفيديو").setView(et)
+        GAlert(act).setTitle("✏ اسم الفيديو").setView(et)
             .setPositiveButton("حفظ") { _, _ ->
                 val t = et.text.toString().trim()
                 if (t.isNotEmpty()) { WebVideos.update(act, w.id) { it.copy(title = t, named = true) }; render() }
             }.setNegativeButton("إلغاء", null).show()
     }
-    private fun webReid(w: WebVid) {
-        val f = WebVideos.thumbFile(act, w.id)
-        if (!f.exists()) { toastMsg("شغّل الفيديو دقيقة الأول عشان ياخد لقطة يتعرف منها"); return }
-        toastMsg("🔎 بدوّر على اسم الفيديو…")
-        Thread {
-            val t = try { WebVideos.identify(f.readBytes()) } catch (_: Throwable) { null }
-            act.runOnUiThread {
-                if (t != null) { WebVideos.update(act, w.id) { it.copy(title = t, named = true) }; render(); toastMsg("🎬 $t") }
-                else toastMsg("ماعرفتش الاسم من اللقطة دي — ممكن تسمّيه بنفسك من ✏")
-            }
-        }.apply { isDaemon = true }.start()
-    }
-
     // ===== التحديد المتعدد =====
     private fun newCheck(): FrameLayout {
-        val tv = TextView(act).apply { textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setTypeface(typeface, android.graphics.Typeface.BOLD) }
+        val tv = IconTextView(act).apply { textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setTypeface(typeface, android.graphics.Typeface.BOLD) }
         return FrameLayout(act).apply { addView(tv, FrameLayout.LayoutParams(ui.dp(24), ui.dp(24), Gravity.CENTER)); tag = tv }
     }
     private fun bindCheck(w: View, on: Boolean, f: () -> Unit) {
@@ -690,7 +678,7 @@ class LibraryUi(
     private fun selDetails(vids: List<VideoItem>, folders: Int) {
         val tr = vids.count { recMap[it.videoId]?.let { r -> r.subs > 0 } == true }
         val dur = vids.sumOf { it.durMs }
-        android.app.AlertDialog.Builder(act).setTitle("ℹ تفاصيل المحدد")
+        GAlert(act).setTitle("ℹ تفاصيل المحدد")
             .setMessage((if (folders > 0) "الفولدرات: $folders\n" else "") + "عدد الفيديوهات: ${vids.size}\nالحجم: ${VideoLib.fmtSize(vids.sumOf { it.size })}\nالمدة الكلية: ${VideoLib.fmtDur(dur)}\nالمترجم منهم (كله أو جزء): $tr")
             .setPositiveButton("تمام", null).show()
     }

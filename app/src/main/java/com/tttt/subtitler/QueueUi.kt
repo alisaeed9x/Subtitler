@@ -15,7 +15,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
     private var sig = ""
     val showing: Boolean get() = dlg?.isShowing == true
 
-    private fun chip(t: String, f: () -> Unit) = TextView(act).apply {
+    private fun chip(t: String, f: () -> Unit) = IconTextView(act).apply {
         text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
         layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }; setOnClickListener { f() }
     }

@@ -17,7 +17,7 @@ class TabDef(val id: String, val label: String, val content: List<View>, val pre
 
 /** إعدادات على طريقة MX Player: قايمة أقسام (أيقونة · عنوان · وصف) ← دوس على قسم يفتح شاشته ← سهم الرجوع يرجّعك للقايمة. preview = معاينة الترجمة بتظهر فوق المحتوى في الأقسام اللي preview=true */
 class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: List<TabDef>, val preview: View?, onClose: () -> Unit) {
-    val dialog = Dialog(act)
+    val dialog = GDialog(act)
     private val listPage = LinearLayout(act)
     private val bodies = ArrayList<LinearLayout>()
     private val previewBox = FrameLayout(act)
@@ -37,14 +37,16 @@ class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: L
             setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)); background = ui.box(th.card, th.border, 18)
         }
         val head = LinearLayout(act).apply { gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, 0, 0, ui.dp(6)) }
-        backTv = TextView(act).apply {
-            text = "→"; textSize = 20f; setTextColor(th.primary); visibility = View.GONE
-            setPadding(ui.dp(4), ui.dp(4), ui.dp(12), ui.dp(4)); setOnClickListener { back() }
+        backTv = IconTextView(act).apply {
+            text = "→"; textSize = 20f; gravity = Gravity.CENTER; setTextColor(th.primary); visibility = View.GONE
+            setPadding(ui.dp(14), ui.dp(4), ui.dp(14), ui.dp(4)); background = ui.box(th.surface, th.border, 20)
+            Glass.pressable(this)
+            setOnClickListener { back() }
         }
-        head.addView(backTv)
+        head.addView(backTv, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) })
         titleTv = ui.text(title, 17f, th.primary, true)
         head.addView(titleTv, LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(TextView(act).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4)); setOnClickListener { dialog.dismiss() } })
+        head.addView(IconTextView(act).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4)); setOnClickListener { dialog.dismiss() } })
         root.addView(head, LinearLayout.LayoutParams(-1, -2))
 
         if (preview != null) { previewBox.addView(preview); previewBox.visibility = View.GONE; root.addView(previewBox, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) }) }
@@ -55,14 +57,15 @@ class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: L
             val row = LinearLayout(act).apply {
                 layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(12)); background = ui.box(th.surface, th.border, 12)
+                Glass.pressable(this)
                 setOnClickListener { select(i) }
             }
-            row.addView(TextView(act).apply { text = iconOf(t.label); textSize = 22f; gravity = Gravity.CENTER }, LinearLayout.LayoutParams(ui.dp(40), -2))
+            row.addView(IconTextView(act).apply { text = iconOf(t.label); textSize = 22f; gravity = Gravity.CENTER }, LinearLayout.LayoutParams(ui.dp(40), -2))
             val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
             col.addView(ui.text(nameOf(t.label), 15f, th.text, true))
             if (t.sub.isNotBlank()) col.addView(ui.text(t.sub, 12f, th.muted))
             row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(TextView(act).apply { text = "‹"; textSize = 22f; setTextColor(th.muted) })
+            row.addView(IconTextView(act).apply { text = "‹"; textSize = 22f; setTextColor(th.muted) })
             listPage.addView(row, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, ui.dp(3), 0, ui.dp(3)) })
         }
 
@@ -81,16 +84,24 @@ class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: L
             setLayout((dm.widthPixels * 0.95f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT)
             setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
-        dialog.setOnKeyListener { _, code, ev ->
-            if (code == android.view.KeyEvent.KEYCODE_BACK && ev.action == android.view.KeyEvent.ACTION_UP && cur >= 0) { back(); true } else false
-        }
+        // رجوع (زرار أو سويب): لو جوه قسم يرجع للقايمة، لو في القايمة يقفل الإعدادات
+        dialog.onBack = { if (cur >= 0) { back(); true } else false }
         dialog.setOnDismissListener { onClose() }
         showList()
+    }
+
+    private fun swapIn(v: View, fromLeft: Boolean) {
+        try {
+            v.animate().cancel()
+            v.alpha = 0f; v.translationX = (if (fromLeft) -1f else 1f) * ui.dp(28).toFloat()
+            v.animate().alpha(1f).translationX(0f).setDuration(230).setInterpolator(android.view.animation.DecelerateInterpolator(1.5f)).start()
+        } catch (_: Exception) {}
     }
 
     private fun showList() {
         cur = -1
         listPage.visibility = View.VISIBLE
+        swapIn(listPage, false)
         bodies.forEach { it.visibility = View.GONE }
         previewBox.visibility = View.GONE
         backTv.visibility = View.GONE
@@ -106,6 +117,7 @@ class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: L
         bodies.forEachIndexed { k, b -> b.visibility = if (k == i) View.VISIBLE else View.GONE }
         previewBox.visibility = if (preview != null && tabs[i].preview) View.VISIBLE else View.GONE
         backTv.visibility = View.VISIBLE
+        swapIn(bodies[i], true)
         titleTv.text = tabs[i].label
     }
 
@@ -143,12 +155,12 @@ fun Ui.charactersEditor(act: Activity, roster: EditText, gloss: EditText): Linea
             val name = input("الاسم", r.name).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1.1f) }
             val role = input("وصف قصير", r.role).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1.3f) }
             watch(name) { r.name = it }; watch(role) { r.role = it }
-            val g = TextView(act).apply {
+            val g = IconTextView(act).apply {
                 textSize = 14f; gravity = Gravity.CENTER; setPadding(dp(10), dp(8), dp(10), dp(8)); setTextColor(th.text)
                 fun paint() { text = if (r.gender == "female") "♀ أنثى" else "♂ ذكر"; background = box(th.surface, if (r.gender == "female") SubStyle.FEMALE else SubStyle.MALE, 10) }
                 paint(); setOnClickListener { r.gender = if (r.gender == "female") "male" else "female"; paint(); flush() }
             }
-            val del = TextView(act).apply { text = "🗑"; textSize = 17f; setPadding(dp(8), dp(6), dp(8), dp(6)); setOnClickListener { list.remove(r); flush(); rebuild() } }
+            val del = IconTextView(act).apply { text = "🗑"; textSize = 17f; setPadding(dp(8), dp(6), dp(8), dp(6)); setOnClickListener { list.remove(r); flush(); rebuild() } }
             rows.addView(LinearLayout(act).apply {
                 layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
                 addView(name); addView(g, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(4), 0, dp(4), 0) }); addView(role); addView(del)

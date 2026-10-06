@@ -13,7 +13,7 @@ data class WebVid(
     val title: String, val named: Boolean, val tries: Int, val ts: Long, val kind: String
 )
 
-/** سجل الفيديوهات المصطادة (web_videos.json) + لقطة مصغّرة لكل فيديو + التعرف على الاسم من اللقطة بـ Gemini */
+/** سجل الفيديوهات المصطادة (web_videos.json) + لقطة مصغّرة لكل فيديو (الاسم بيتاخد من صفحة الموقع مش من اللقطة) */
 object WebVideos {
     private val lock = Any()
     private const val MAX = 300
@@ -43,10 +43,10 @@ object WebVideos {
     private fun write(ctx: Context, l: List<WebVid>) { try { file(ctx).writeText(toJson(l.sortedByDescending { it.ts }.take(MAX))) } catch (_: Exception) {} }
 
     /** تسجيل فيديو اتفتح: لو موجود قبل كده بيحتفظ باسمه ويحدّث الرابط والهيدرز (الكوكيز بتتجدد) */
-    fun register(ctx: Context, id: String, url: String, ref: String, ua: String, cookie: String, title0: String, kind: String): WebVid = synchronized(lock) {
+    fun register(ctx: Context, id: String, url: String, ref: String, ua: String, cookie: String, title0: String, kind: String, named0: Boolean = false): WebVid = synchronized(lock) {
         val l = parse(try { file(ctx).readText() } catch (_: Exception) { "" })
         val old = l.firstOrNull { it.id == id }
-        val w = WebVid(id, url, ref, ua, cookie, old?.title?.takeIf { it.isNotBlank() } ?: title0, old?.named ?: false, old?.tries ?: 0, System.currentTimeMillis(), kind)
+        val w = WebVid(id, url, ref, ua, cookie, if (old?.named == true) old.title else title0, old?.named == true || named0, old?.tries ?: 0, System.currentTimeMillis(), kind)
         write(ctx, listOf(w) + l.filter { it.id != id })
         w
     }
@@ -74,29 +74,4 @@ object WebVideos {
         val f = thumbFile(ctx, id); f.parentFile?.mkdirs(); f.writeBytes(bytes)
         bytes
     } catch (_: Throwable) { null }
-
-    private const val PROMPT = "أمامك لقطة شاشة واحدة من فيديو. المطلوب: اسم العمل (فيلم / مسلسل / أنمي / برنامج) اللي اللقطة منه.\n" +
-        "استخدم الدلائل الظاهرة فقط: عنوان أو لوجو أو واترمارك مكتوب، نص الترجمة أو الكابشن، أسلوب الرسم (للأنمي)، مشهد مشهور، اسم القناة/الموقع.\n" +
-        "🚫 ممنوع تتعرف على أي شخص حقيقي من ملامح وجهه. لو الدليل الوحيد هو وجه شخص، رجّع العنوان فاضي.\n" +
-        "لو مش متأكد، رجّع العنوان فاضي — التخمين الغلط أسوأ من ما يتعرفش.\n" +
-        "الاسم يتكتب بالإنجليزي الأصلي لو العمل أجنبي (ومعاه الاسم العربي بين قوسين لو معروف)، وبالعربي لو العمل عربي.\n" +
-        "═ الإخراج JSON فقط ═\n{\"title\":\"اسم العمل\",\"year\":\"2019\",\"confidence\":0.8}\nلا شرح ولا مقدمة — JSON فقط."
-
-    /** الاسم من لقطة JPEG. المفاتيح الاحتياطية الأول (عشان ما يستهلكش كوتة الترجمة)، وبعدها مفاتيح الوضع البصري، وبعدها الأساسية */
-    fun identify(jpeg: ByteArray): String? {
-        val conf = Cfg.snapshot()
-        val ks = (conf.backup + conf.visKeys + conf.keys).map { it.trim() }.filter { it.length > 10 }.distinct()
-        for (k in ks) {
-            try {
-                val r = Api.generateImage(conf.model, k, PROMPT, jpeg, 300, 0.0)
-                val j = Parse.json(r.text) ?: continue
-                val t = j.optString("title", "").trim()
-                val c = j.optDouble("confidence", 0.0)
-                if (t.isEmpty() || t.equals("null", true) || t.equals("unknown", true) || c < 0.45) return null
-                val y = j.optString("year", "").trim().takeIf { it.length == 4 && it.all { ch -> ch.isDigit() } }
-                return if (y != null && !t.contains(y)) "$t ($y)" else t
-            } catch (_: Exception) { /* المفتاح ده فشل (كوتة/شبكة) — جرّب اللي بعده */ }
-        }
-        return null
-    }
 }

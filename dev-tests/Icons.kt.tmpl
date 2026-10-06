@@ -1,0 +1,174 @@
+package com.tttt.subtitler
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ReplacementSpan
+import android.util.AttributeSet
+import android.widget.Button
+import android.widget.Switch
+import android.widget.TextView
+
+/**
+ * (v95) نظام أيقونات مرسومة بالكود بدل الإيموجي: كل إيموجي/رمز في النص بيتغطى بـ IconSpan بيرسم أيقونة واضحة وكبيرة
+ * (خط سميك بأطراف مدوّرة، ألوان ثابتة لأيقونات الحالة ✅ ❌ ⚠ وباقي الأيقونات بلون النص).
+ * النص نفسه ما بيتغيّرش (text.toString() يرجّع نفس الحروف) فأي مقارنة نصوص أو نسخ للّوج شغالة زي ما هي.
+ * IconTextView / IconButton / IconSwitch بيحوّلوا أي نص بيتحط فيهم تلقائيًا — فبيشتغل في الدايلوجات والقوايم والإشعارات وصفوف القوايم.
+ */
+object Icons {
+    /** أيقونة الروتيشن (شاشة بسهمين دايريين زي MX Player) — بتتكتب في أي نص كـ \uE000 */
+    const val ROT = "\uE000"
+
+    private class Layer(val fill: Boolean, val stroke: Boolean, val color: Int, val hasColor: Boolean, val alpha: Float, val path: Path)
+
+    private val DEF: Map<String, Array<String>> = mapOf(
+/*DEFS*/
+    )
+
+    private val CP: Map<Int, String> = mapOf(
+/*CPS*/
+    )
+
+    private val SC: Map<String, Float> = mapOf(/*SCS*/)
+    private const val DEFAULT_SCALE = 1.3f
+
+    private val cache = HashMap<String, List<Layer>>()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private fun parse(d: String): Path {
+        val p = Path(); p.fillType = Path.FillType.EVEN_ODD
+        var i = 0; val n = d.length
+        fun num(): Float {
+            val s = i
+            if (i < n && (d[i] == '-' || d[i] == '+')) i++
+            while (i < n && (d[i].isDigit() || d[i] == '.')) i++
+            val v = d.substring(s, i).toFloat()
+            while (i < n && (d[i] == ' ' || d[i] == ',')) i++
+            return v
+        }
+        while (i < n) {
+            val c = d[i++]
+            when (c) {
+                'M' -> p.moveTo(num(), num())
+                'L' -> p.lineTo(num(), num())
+                'C' -> p.cubicTo(num(), num(), num(), num(), num(), num())
+                'Z' -> p.close()
+                else -> {}
+            }
+        }
+        return p
+    }
+
+    private fun layers(name: String): List<Layer>? {
+        cache[name]?.let { return it }
+        val def = DEF[name] ?: return null
+        val out = def.map { s ->
+            val a = s.split('|', limit = 4)
+            val col = if (a[1] == "_") 0 else a[1].toLong(16).toInt()
+            Layer(a[0].contains('F'), a[0].contains('S'), col, a[1] != "_", a[2].toFloat(), parse(a[3]))
+        }
+        cache[name] = out
+        return out
+    }
+
+    /** بيرسم الأيقونة في مربع [size] بكسل عند (left, top). textColor بيتستخدم للطبقات اللي من غير لون ثابت */
+    fun draw(c: Canvas, name: String, left: Float, top: Float, size: Float, textColor: Int, alphaMul: Int = 255) {
+        val ls = layers(name) ?: return
+        c.save(); c.translate(left, top); val s = size / 24f; c.scale(s, s)
+        for (l in ls) {
+            val col = if (l.hasColor) l.color else textColor
+            val a = (Color.alpha(col) * l.alpha * (alphaMul / 255f)).toInt().coerceIn(0, 255)
+            paint.reset(); paint.isAntiAlias = true
+            if (l.fill) { paint.style = Paint.Style.FILL; paint.color = col; paint.alpha = a; c.drawPath(l.path, paint) }
+            if (l.stroke) {
+                paint.style = Paint.Style.STROKE; paint.strokeWidth = 2.2f; paint.strokeCap = Paint.Cap.ROUND; paint.strokeJoin = Paint.Join.ROUND
+                paint.color = col; paint.alpha = a; c.drawPath(l.path, paint)
+            }
+        }
+        c.restore()
+    }
+
+    class IconSpan(val name: String, val scale: Float) : ReplacementSpan() {
+        override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int =
+            (paint.textSize * scale + paint.textSize * 0.14f).toInt()
+        override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+            val s = paint.textSize * scale
+            val fm = paint.fontMetrics
+            val cy = y + (fm.ascent + fm.descent) / 2f
+            draw(canvas, name, x + paint.textSize * 0.07f, cy - s / 2f, s, paint.color, paint.alpha)
+        }
+    }
+
+    fun has(cs: CharSequence?): Boolean {
+        if (cs == null) return false
+        var i = 0; val n = cs.length
+        while (i < n) {
+            val ch = cs[i]
+            if (ch.code >= 0x2190 || ch.code >= 0xD800) { val cp = Character.codePointAt(cs, i); if (CP.containsKey(cp)) return true; i += Character.charCount(cp) } else i++
+        }
+        return false
+    }
+
+    /** بيرجّع نفس النص + IconSpan فوق كل إيموجي/رمز له أيقونة. لو مفيش، بيرجّع نفس الكائن من غير نسخ */
+    fun convert(cs: CharSequence?): CharSequence? {
+        if (cs == null || cs.isEmpty() || !has(cs)) return cs
+        val out = SpannableStringBuilder(cs)
+        var i = 0; val n = out.length
+        while (i < n) {
+            val cp = Character.codePointAt(out, i); val cc = Character.charCount(cp)
+            val nm = CP[cp]
+            if (nm != null) {
+                var e = i + cc
+                while (e < n && (out[e] == '\uFE0F' || out[e] == '\uFE0E' || out[e] == '\u200D')) e++
+                if (out.getSpans(i, e, IconSpan::class.java).isEmpty())
+                    out.setSpan(IconSpan(nm, SC[nm] ?: DEFAULT_SCALE), i, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                i = e
+            } else i += cc
+        }
+        return out
+    }
+
+    /** نفس النص من غير الإيموجي (للإشعارات وشاشة البصمة ورسائل النظام اللي مينفعش ترسم فيها) */
+    fun plain(s: String): String {
+        if (!has(s)) return s
+        val sb = StringBuilder(); var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i); val cc = Character.charCount(cp)
+            if (!CP.containsKey(cp) && cp != 0xFE0F && cp != 0xFE0E) sb.appendCodePoint(cp)
+            i += cc
+        }
+        return sb.toString().replace(Regex("[ ]{2,}"), " ").trim()
+    }
+
+    /** تحويل مكان مباشر لنص Spannable موجود (لـ append وللنصوص اللي بتتعدّل) */
+    fun applyInPlace(sp: Spannable) {
+        val conv = convert(sp) as? Spanned ?: return
+        for (s in conv.getSpans(0, conv.length, IconSpan::class.java)) {
+            val st = conv.getSpanStart(s); val en = conv.getSpanEnd(s)
+            if (sp.getSpans(st, en, IconSpan::class.java).isEmpty()) sp.setSpan(IconSpan(s.name, s.scale), st, en, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
+}
+
+/** TextView بيرسم الإيموجي كأيقونات تلقائيًا (بديل TextView العادي في كل البرنامج) */
+open class IconTextView(ctx: Context) : TextView(ctx) {
+    override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
+    override fun append(text: CharSequence?, start: Int, end: Int) {
+        super.append(text, start, end)
+        (getText() as? Spannable)?.let { Icons.applyInPlace(it) }
+    }
+}
+
+open class IconButton(ctx: Context) : Button(ctx) {
+    override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
+}
+
+@Suppress("DEPRECATION")
+open class IconSwitch(ctx: Context) : Switch(ctx) {
+    override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
+}

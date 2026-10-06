@@ -73,7 +73,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
             setTextColor(th.text); setHintTextColor(th.muted); setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10)); background = ui.box(th.surface, th.border, 10)
         }
         val box = LinearLayout(act).apply { setPadding(ui.dp(18), ui.dp(8), ui.dp(18), 0); addView(et, LinearLayout.LayoutParams(-1, -2)) }
-        AlertDialog.Builder(act).setTitle(title).setView(box).setPositiveButton(okLabel) { _, _ -> f(et.text.toString().trim()) }.setNegativeButton("إلغاء", null).show()
+        GAlert(act).setTitle(title).setView(box).setPositiveButton(okLabel) { _, _ -> f(et.text.toString().trim()) }.setNegativeButton("إلغاء", null).show()
     }
 
     // ===== إعادة تسمية =====
@@ -162,7 +162,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
     fun deleteFolder(f: FolderItem) {
         if (f.videos.isEmpty()) { toast("الفولدر فاضي"); return }
         if (folderBusy(f)) return
-        AlertDialog.Builder(act).setTitle("🗑 مسح الفولدر").setMessage("هتمسح «${f.name}» بكل اللي فيه (${f.videos.size} فيديو) من الجهاز نهائيًا ومعاهم الترجمات المحفوظة. متأكد؟")
+        GAlert(act).setTitle("🗑 مسح الفولدر").setMessage("هتمسح «${f.name}» بكل اللي فيه (${f.videos.size} فيديو) من الجهاز نهائيًا ومعاهم الترجمات المحفوظة. متأكد؟")
             .setPositiveButton("امسح الكل") { _, _ ->
                 val uris = f.videos.map { Uri.parse(it.uri) }
                 val cleanup = {
@@ -188,7 +188,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
         val cur = relOf(v.folderKey)
         val opts = folders.mapNotNull { f -> relOf(f.key)?.let { f.name to it } }.filter { it.second != cur }.distinctBy { it.second }
         val labels = (opts.map { "📁 " + it.first + "   (" + it.second + ")" } + "➕ مجلد جديد…").toTypedArray()
-        AlertDialog.Builder(act).setTitle("📁 نقل «${v.title}» إلى").setItems(labels) { _, i ->
+        GAlert(act).setTitle("📁 نقل «${v.title}» إلى").setItems(labels) { _, i ->
             if (i < opts.size) doMove(v, opts[i].second)
             else askText("مجلد جديد", "Movies/", "المسار بالنسبة للذاكرة (مثال: Movies/أنمي)", "نقل") { p ->
                 val rel = p.trim().trim('/').replace(Regex("/+"), "/")
@@ -237,7 +237,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
     // ===== حذف =====
     fun delete(v: VideoItem) {
         if (busy(v)) return
-        AlertDialog.Builder(act).setTitle("🗑 حذف الفيديو").setMessage("هتمسح «${v.name}» من الجهاز نهائيًا (ومعاه الترجمة المحفوظة له). متأكد؟")
+        GAlert(act).setTitle("🗑 حذف الفيديو").setMessage("هتمسح «${v.name}» من الجهاز نهائيًا (ومعاه الترجمة المحفوظة له). متأكد؟")
             .setPositiveButton("احذف") { _, _ ->
                 val uri = Uri.parse(v.uri)
                 val cleanup = {
@@ -304,8 +304,8 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
             val body = L.joinToString("\n\n") { it.first + ":\n" + it.second }
             act.runOnUiThread {
                 if (act.isDestroyed) return@runOnUiThread
-                val tv = TextView(act).apply { this.text = body; textSize = 13f; setTextColor(th.text); setTextIsSelectable(true); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(10)) }
-                AlertDialog.Builder(act).setTitle("ℹ تفاصيل الفيديو").setView(ScrollView(act).apply { addView(tv) })
+                val tv = IconTextView(act).apply { this.text = body; textSize = 13f; setTextColor(th.text); setTextIsSelectable(true); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(10)) }
+                GAlert(act).setTitle("ℹ تفاصيل الفيديو").setView(ScrollView(act).apply { addView(tv) })
                     .setPositiveButton("تمام", null)
                     .setNeutralButton("نسخ المسار") { _, _ ->
                         val p = (if (v.folderKey.startsWith("/")) v.folderKey else v.folderPath) + "/" + v.name

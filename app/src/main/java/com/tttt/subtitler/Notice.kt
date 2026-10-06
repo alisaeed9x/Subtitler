@@ -76,7 +76,7 @@ object Notice {
                 background = ui.box(th.card, th.border, 20)
                 setPadding(dp(16), dp(8), dp(16), dp(if (yes != null) 8 else 8)); elevation = dp(10).toFloat()
             }
-            pill.addView(TextView(act).apply {
+            pill.addView(IconTextView(act).apply {
                 text = msg; textSize = 12.5f; setTextColor(th.text); maxLines = 3; ellipsize = TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER; maxWidth = maxW - dp(32)
             }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
@@ -95,7 +95,7 @@ object Notice {
             }
 
             if (yes != null && no != null) {
-                fun chip(t: String, primary: Boolean, f: () -> Unit) = TextView(act).apply {
+                fun chip(t: String, primary: Boolean, f: () -> Unit) = IconTextView(act).apply {
                     text = t; textSize = 12.5f; gravity = Gravity.CENTER
                     setPadding(dp(14), dp(6), dp(14), dp(6))
                     setTextColor(if (primary) onPrimary else th.text)

@@ -29,7 +29,7 @@ class PipSubBar(private val ctx: Context, private val rect: () -> IntArray?) {
     @Suppress("DEPRECATION")
     fun show() {
         if (added) return
-        val t = TextView(ctx).apply {
+        val t = IconTextView(ctx).apply {
             setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD
             layoutDirection = View.LAYOUT_DIRECTION_RTL; maxLines = 3
             setPadding((8 * d).toInt(), (5 * d).toInt(), (8 * d).toInt(), (5 * d).toInt())

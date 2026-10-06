@@ -29,7 +29,7 @@ fun Activity.clipboardKey(): String? = try {
 /** شاشة «إزاي أجيب مفتاح Gemini؟»: خطوات + زرار يفتح Google AI Studio + زرار يلصق المفتاح من الكليبورد */
 fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
-    val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val d = GDialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var auto = false
     val box = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
@@ -46,7 +46,7 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     )
     for (s in steps) box.addView(ui.text(s, 13f, th.text).apply { setPadding(0, ui.dp(3), 0, ui.dp(3)) })
     box.addView(ui.text("• كل مفتاح ليه حد استخدام يومي مجاني. لو عايز ترجمة أسرع أو أكتر، اعمل أكتر من مفتاح (من حسابات/مشاريع مختلفة) وضيفهم كلهم.\n• ماتشاركش مفتاحك مع حد.\n• لو الحساب تبع مدرسة أو شركة ممكن يمنع إنشاء المفاتيح — جرّب حساب شخصي.", 11f, th.muted).apply { setPadding(0, ui.dp(8), 0, ui.dp(4)) })
-    fun pill(t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(this).apply {
+    fun pill(t: String, bg: Int, fg: Int, f: () -> Unit) = IconTextView(this).apply {
         text = t; textSize = 14f; setTextColor(fg); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
         background = ui.box(bg, th.border, 12); setOnClickListener { f() }
     }
@@ -88,7 +88,7 @@ fun Activity.ensureKeys(onDone: () -> Unit) {
 private fun Activity.ensureKeysUi(onDone: () -> Unit) {
     if (hasAnyKeyNow()) { onDone(); return }
     val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
-    val d = Dialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val d = GDialog(this); d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var finished = false
     fun done() { if (!finished) { finished = true; onDone() } }
     val fields = mutableListOf<EditText>()
@@ -104,7 +104,7 @@ private fun Activity.ensureKeysUi(onDone: () -> Unit) {
         col.addView(e, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { setMargins(0, ui.dp(5), 0, ui.dp(5)) })
         e.requestFocus()
     }
-    fun pill(t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(this).apply {
+    fun pill(t: String, bg: Int, fg: Int, f: () -> Unit) = IconTextView(this).apply {
         text = t; textSize = 14f; setTextColor(fg); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
         background = ui.box(bg, th.border, 12); setOnClickListener { f() }
     }

@@ -28,7 +28,7 @@ const val KEY_PAGE_URL = "https://aistudio.google.com/apikey"
 @SuppressLint("SetJavaScriptEnabled")
 fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
     val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
-    val d = Dialog(this, android.R.style.Theme_Black_NoTitleBar)
+    val d = GDialog(this, android.R.style.Theme_Black_NoTitleBar).apply { plain = true }
     val wv = WebView(this)
     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     var captured = false
@@ -49,7 +49,7 @@ fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
         setBackgroundColor(th.card); setPadding(ui.dp(10), ui.dp(6), ui.dp(6), ui.dp(6))
     }
     bar.addView(ui.text("🔑 اعمل المفتاح وانسخه — هلقطه وأحفظه لوحدي", 13f, th.text, true), LinearLayout.LayoutParams(0, -2, 1f))
-    fun chip(t: String, f: () -> Unit) = TextView(this).apply {
+    fun chip(t: String, f: () -> Unit) = IconTextView(this).apply {
         text = t; textSize = 13f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7))
         background = ui.box(th.surface, th.border, 8); layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) }; setOnClickListener { f() }
     }
@@ -77,9 +77,7 @@ fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
     d.setContentView(root)
     d.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     d.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-    d.setOnKeyListener { _, code, ev ->
-        if (code == KeyEvent.KEYCODE_BACK && ev.action == KeyEvent.ACTION_UP) { if (wv.canGoBack()) wv.goBack() else d.dismiss(); true } else false
-    }
+    d.onBack = { if (wv.canGoBack()) wv.goBack() else d.dismiss(); true }
     // لو المستخدم راح Chrome ونسخ المفتاح هناك ورجع: نلقطه أول ما نرجع
     d.window?.decorView?.viewTreeObserver?.addOnWindowFocusChangeListener { f -> if (f && inChrome) clipboardKey()?.let { capture(it) } }
     d.setOnDismissListener {

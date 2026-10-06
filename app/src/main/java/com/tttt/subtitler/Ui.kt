@@ -10,11 +10,13 @@ import android.widget.*
 /** مكوّنات واجهة بنفس شكل الأصل (radius 14/8، حدود، أمبر كلون أساسي) */
 class Ui(val ctx: Context, var th: Theme) {
     fun dp(v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
-    fun box(fill: Int, stroke: Int, r: Int, sw: Int = 1) = GradientDrawable().apply {
-        setColor(fill); cornerRadius = dp(r).toFloat(); setStroke(dp(sw), stroke)
+    fun box(fill: Int, stroke: Int, r: Int, sw: Int = 1): GradientDrawable {
+        // الكروت (لون card) بتتحوّل لزجاج بتدرّج خفيف؛ الباقي زي ما هو
+        if (fill == th.card && r >= 12) return Glass.drawable(th, dp(r).toFloat(), dp(sw), stroke)
+        return GradientDrawable().apply { setColor(fill); cornerRadius = dp(r).toFloat(); setStroke(dp(sw), stroke) }
     }
     private val plex: android.graphics.Typeface? by lazy { try { android.graphics.Typeface.createFromAsset(ctx.assets, "fonts/ibm_plex.ttf") } catch (_: Exception) { null } }
-    fun text(t: String, size: Float = 14f, color: Int = th.text, bold: Boolean = false) = TextView(ctx).apply {
+    fun text(t: String, size: Float = 14f, color: Int = th.text, bold: Boolean = false) = IconTextView(ctx).apply {
         text = t; textSize = size; setTextColor(color)
         if (bold) { plex?.let { typeface = it } ?: setTypeface(typeface, android.graphics.Typeface.BOLD) }
     }
@@ -36,18 +38,20 @@ class Ui(val ctx: Context, var th: Theme) {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(6), 0, dp(6)) }
     }
     fun input(hint: String, value: String, lines: Int = 1) = EditText(ctx).apply {
-        this.hint = hint; setText(value); setTextColor(th.text); setHintTextColor(th.muted); textSize = 14f
-        background = box(th.surface, th.border, 8); setPadding(dp(10), dp(8), dp(10), dp(8))
+        this.hint = Icons.plain(hint); setText(value); setTextColor(th.text); setHintTextColor(th.muted); textSize = 14f
+        background = box(th.surface, th.border, 10); setPadding(dp(10), dp(8), dp(10), dp(8))
+        setOnFocusChangeListener { v, f -> v.background = box(th.surface, if (f) th.primary else th.border, 10) }
         if (lines > 1) { minLines = lines; gravity = Gravity.TOP or Gravity.START } else setSingleLine()
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(4), 0, dp(4)) }
     }
-    fun button(t: String, primary: Boolean = false, f: () -> Unit) = Button(ctx).apply {
-        text = t; isAllCaps = false; setTextColor(if (primary) (if (th.isLight) Color.WHITE else Color.BLACK) else th.text)
-        background = box(if (primary) th.primary else th.surface, if (primary) th.primary else th.border, 8)
+    fun button(t: String, primary: Boolean = false, f: () -> Unit) = IconButton(ctx).apply {
+        text = t; isAllCaps = false; stateListAnimator = null; setTextColor(if (primary) (if (th.isLight) Color.WHITE else Color.BLACK) else th.text)
+        background = if (primary) Glass.primaryFill(th, dp(12).toFloat()) else box(th.surface, th.border, 12)
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(4), 0, dp(4)) }
+        Glass.pressable(this)
         setOnClickListener { f() }
     }
-    fun switchRow(t: String, on: Boolean, onChange: (Boolean) -> Unit): Switch = Switch(ctx).apply {
+    fun switchRow(t: String, on: Boolean, onChange: (Boolean) -> Unit): Switch = IconSwitch(ctx).apply {
         text = t; isChecked = on; setTextColor(th.text); textSize = 14f; setPadding(0, dp(6), 0, dp(6))
         setOnCheckedChangeListener { _, v -> onChange(v) }
     }
@@ -63,12 +67,13 @@ class Ui(val ctx: Context, var th: Theme) {
         var row: LinearLayout? = null; var w = 0
         val max = ctx.resources.displayMetrics.widthPixels - dp(70)
         for (label in items) {
-            val tv = TextView(ctx).apply { text = label; textSize = 13f; setPadding(dp(12), dp(7), dp(12), dp(7)) }
+            val tv = IconTextView(ctx).apply { text = label; textSize = 13f; setPadding(dp(12), dp(7), dp(12), dp(7)) }
             tv.measure(0, 0); val tw = tv.measuredWidth + dp(8)
             if (row == null || w + tw > max) { row = LinearLayout(ctx).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }; col.addView(row); w = 0 }
             w += tw
             row.addView(tv, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             all.add(label to tv)
+            Glass.pressable(tv)
             tv.setOnClickListener { onPick(label); paint() }
         }
         paint(); return col
@@ -77,9 +82,11 @@ class Ui(val ctx: Context, var th: Theme) {
     fun section(title: String, open: Boolean, vararg views: View): LinearLayout {
         val c = card(); val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; visibility = if (open) View.VISIBLE else View.GONE }
         views.forEach { body.addView(it) }
-        val head = text((if (open) "▾ " else "▸ ") + title, 16f, th.primary, true).apply { setPadding(0, dp(2), 0, dp(2)) }
+        val head = text((if (open) "▾ " else "▸ ") + title, 16f, th.primary, true).apply { setPadding(0, dp(6), 0, dp(6)) }
+        Glass.pressable(head)
         head.setOnClickListener {
             val o = body.visibility != View.VISIBLE
+            try { android.transition.TransitionManager.beginDelayedTransition((c.parent as? android.view.ViewGroup) ?: c, android.transition.AutoTransition().setDuration(220)) } catch (_: Exception) {}
             body.visibility = if (o) View.VISIBLE else View.GONE
             head.text = (if (o) "▾ " else "▸ ") + title
         }

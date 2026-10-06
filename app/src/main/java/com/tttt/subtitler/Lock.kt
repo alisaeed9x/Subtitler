@@ -94,7 +94,7 @@ class LockUi(private val act: Activity, private val ui: Ui, private val th: Them
 
     private class Dlg(val d: Dialog, val pv: PatternView, val hint: android.widget.TextView, val title: android.widget.TextView)
     private fun dialog(title: String, hintText: String, extra: List<Pair<String, () -> Unit>>): Dlg {
-        val d = Dialog(act)
+        val d = GDialog(act)
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
         d.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val root = LinearLayout(act).apply {
@@ -149,7 +149,7 @@ class LockUi(private val act: Activity, private val ui: Ui, private val th: Them
             else if (f == p) {
                 save(p); dl.d.dismiss(); toast("✅ اتحفظ النمط")
                 if (bioAvailable && !bioOn) {
-                    android.app.AlertDialog.Builder(act).setTitle("👆 البصمة").setMessage("تفتح المجلد المخفي ببصمة الجهاز كمان؟ (النمط يفضل بديل)")
+                    GAlert(act).setTitle("👆 البصمة").setMessage("تفتح المجلد المخفي ببصمة الجهاز كمان؟ (النمط يفضل بديل)")
                         .setPositiveButton("فعّل") { _, _ -> enableBio { done() } }.setNegativeButton("لا، النمط بس") { _, _ -> done() }.setOnCancelListener { done() }.show()
                 } else done()
             } else { first = null; dl.hint.text = "النمطين مش زي بعض — ابدأ من الأول"; dl.title.text = "🔑 نمط جديد"; dl.pv.flashError() }
@@ -174,7 +174,7 @@ class LockUi(private val act: Activity, private val ui: Ui, private val th: Them
         fun once(f: () -> Unit) { if (!handled) { handled = true; f() } }
         try {
             val ex = act.mainExecutor
-            val p = BiometricPrompt.Builder(act).setTitle("🔒 المجلد المخفي").setSubtitle("المس مستشعر البصمة")
+            val p = BiometricPrompt.Builder(act).setTitle(Icons.plain("🔒 المجلد المخفي")).setSubtitle("المس مستشعر البصمة")
                 .setNegativeButton("استخدم النمط", ex) { _, _ -> once(fallback) }.build()
             p.authenticate(CancellationSignal(), ex, object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(r: BiometricPrompt.AuthenticationResult?) { once(ok) }
