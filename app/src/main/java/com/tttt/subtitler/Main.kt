@@ -1213,6 +1213,7 @@ class PlayerActivity : Activity(), Host {
         logHandle = TextView(this).apply {
             text = "◂"; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); alpha = REST_A
             background = ui.box(0xCC14171C.toInt(), 0x33FFFFFF, 8); setOnClickListener { toggleLog() }
+            visibility = View.GONE   // (v90) اللوج بقى بيتفتح من زرار 📋 جنب 📝 في الشريط السفلي
         }
         logHandle.text = if (logOn) "◂" else "▸"
         logDrawer = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL
@@ -1229,19 +1230,8 @@ class PlayerActivity : Activity(), Host {
         videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
         // 🔄 ترجم باتش معين: دايرة عايمة فوق 👁
         batchBtn = ui.fsCircle("🔄") { batchDialog() }.apply { textSize = 20f; alpha = REST_A; translationY = -ui.dp(60).toFloat() }
-        videoBox.addView(batchBtn, FrameLayout.LayoutParams(ui.dp(52), ui.dp(52), Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(8), 0) })
-        // ▶ ترجمة خفيف وثابت من أول دخول الفيديو (من غير ما يحتاج الشريط يكون ظاهر) + ✕ جنبه تخفيه — بيختفي لوحده لما تدوس ترجمة
-        val chip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL
-            alpha = 0.82f; background = ui.box(0x99000000.toInt(), 0x22FFFFFF, 20); setPadding(ui.dp(4), ui.dp(3), ui.dp(4), ui.dp(3))
-        }
-        chip.addView(ui.fsCircle("✕") { trChipDismissed = true; updateTrChip() }.apply { textSize = 12f }, LinearLayout.LayoutParams(ui.dp(26), ui.dp(26)))
-        chip.addView(TextView(this).apply {
-            text = "▶ ترجمة"; textSize = 12f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(ui.dp(12), 0, ui.dp(12), 0); background = ui.box(0xFFE53935.toInt(), 0x33FFFFFF, 14); setOnClickListener { beginTranslate() }
-        }, LinearLayout.LayoutParams(-2, ui.dp(30)).apply { marginStart = ui.dp(4) })
-        videoBox.addView(chip, FrameLayout.LayoutParams(-2, -2, Gravity.LEFT or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(10), 0, 0, 0) })
-        trChipV = chip; trUpdaters.add { updateTrChip() }; updateTrChip()
+        // (v90) الزرار العايم 🔄 اتشال من الشاشة — «إعادة ترجمة» لسه في 🧰 وفي ☰
+        // (v90) كبسولة «▶ ترجمة» الحمرا على الشمال اتشالت — زرار ▶ ترجمة الوحيد في الشريط السفلي
         // كبسولة جانبية للباتشات الفاشلة (زي اللوج): مخفية خالص لحد ما باتش يفشل، وبعدها بيظهر لسان ⚠ على الحافة الشمال — دوس عليه يفرد الكبسولة ودوس تاني يلمّها
         probBar = TextView(this).apply {
             textSize = 11f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -1426,8 +1416,7 @@ class PlayerActivity : Activity(), Host {
         fitFsB = fitB
         val menuB = ui.fsBtn("☰") { openSide() }
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
-        val reB = mini("🔄") { batchDialog() }   // إعادة ترجمة (جنب الجمل)
-        val bgB = mini("🌙") { translateInBackground() }   // ترجمة بالخلفية
+        val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
         // لوحة «Aa»: حجم الترجمة + التوقيت في مكان واحد
         val gSub = gCol()
@@ -1444,7 +1433,6 @@ class PlayerActivity : Activity(), Host {
 
         gTool.addView(pd("🗂 ترجمات") { versionsDialog() })
         gTool.addView(pd("🔄 إعادة ترجمة") { batchDialog() })
-        gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
         gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
         gAi.addView(pd("😐 عائلي/صريح") { familyDialog() })
         gAi.addView(pd("🌐 لهجة لايف") { liveDialectDialog() })
@@ -1465,8 +1453,8 @@ class PlayerActivity : Activity(), Host {
         moreB.setOnClickListener { setMore(!tbOpen); h.removeCallbacks(collapseR); if (tbOpen) h.postDelayed(collapseR, 5000); showChrome() }
         tbCollapseFn = { if (tbOpen) setMore(false) }
         tbAdd(tip(menuB, "القائمة"))
-        tbAdd(tip(grp("Aa", gSub), "حجم الترجمة والتوقيت")); tbAdd(tip(moreB, "المزيد")); tbAdd(tbExtra)
-        exAdd(tip(grp("🔤", gText), "النص")); exAdd(tip(grp("🧰", gTool), "أدوات"))
+        tbAdd(tip(moreB, "المزيد")); tbAdd(tbExtra)
+        exAdd(tip(grp("🔤", gText), "النص"))
 
         fsPlayB = TextView(this).apply {
             text = "▶"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
@@ -1490,36 +1478,55 @@ class PlayerActivity : Activity(), Host {
         auxRow.addView(makeTrRow(true))
         fsBar.addView(auxRow, LinearLayout.LayoutParams(-1, -2))
         fsBar.addView(timeRow, LinearLayout.LayoutParams(-1, ui.dp(30)))
-        // صف الأدوات الصغيرة (فوق أزرار الشاشة): يمين = 🌙 ترجمة بالخلفية · 🔄 إعادة · 📝 الجمل · CC · 💬 وضع الترجمة | شمال = ✨ اللهجة (عائلي/صريح جواها)
+        // صف الأدوات الصغيرة (فوق أزرار الشاشة) على اليمين: Aa (حجم/توقيت) · 📋 اللوج · 📝 الجمل · CC · 💬 وضع الترجمة
         val toolRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        val toolL = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         val toolR = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
-        val aiB = tip(grp("✨", gAi, true), "لهجة (عائلي/صريح)").apply { layoutParams = LinearLayout.LayoutParams(-2, ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }; minimumWidth = ui.dp(30); setPadding(ui.dp(8), 0, ui.dp(8), 0); textSize = 12f }
-        toolL.addView(aiB)
-        listOf(tip(bgB, "ترجمة بالخلفية"), tip(reB, "إعادة ترجمة"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(dualB, "وضع الترجمة")).forEach { b ->
+        fun barPill(b: TextView): TextView = b.apply { layoutParams = LinearLayout.LayoutParams(-2, ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }; minimumWidth = ui.dp(30); setPadding(ui.dp(8), 0, ui.dp(8), 0); textSize = 12f }
+        val aiB = barPill(tip(grp("✨", gAi, true), "لهجة (عائلي/صريح)"))
+        val toolsB = barPill(tip(grp("🧰", gTool, true), "أدوات"))
+        val syncB = barPill(tip(grp("Aa", gSub, true), "حجم الترجمة والتوقيت"))
+        toolR.addView(syncB)
+        listOf(tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(dualB, "وضع الترجمة")).forEach { b ->
             toolR.addView(b, LinearLayout.LayoutParams(ui.dp(30), ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
         }
-        toolRow.addView(toolL, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL))
         toolRow.addView(toolR, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
         fsBar.addView(toolRow, LinearLayout.LayoutParams(-1, ui.dp(36)))
-        val btnRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        btnRow.addView(ui.fsCircle("🔓") { setLock(true) }, FrameLayout.LayoutParams(ui.dp(40), ui.dp(40), Gravity.START or Gravity.CENTER_VERTICAL))
-        val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER }
-        mid.addView(ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }, LinearLayout.LayoutParams(ui.dp(42), ui.dp(42)))
-        mid.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(56), ui.dp(56)).apply { setMargins(ui.dp(14), 0, ui.dp(14), 0) })
-        mid.addView(ui.fsCircle("⏭") { stepEpisode(1); showChrome() }, LinearLayout.LayoutParams(ui.dp(42), ui.dp(42)))
-        btnRow.addView(mid, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        // (v90) شمال: 🔓 ✨ 🧰 جنب بعض · النص: ⏮ ⏯ ⏭ كبار وموزّعين على عرض الشريط · يمين: 🔄(لاندسكيب/بورتريت) ⧉ ⛶ (⛶ على الحافة)
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+        leftB.addView(ui.fsCircle("🔓") { setLock(true) }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) })
+        leftB.addView(aiB); leftB.addView(toolsB)
+        btnRow.addView(leftB, LinearLayout.LayoutParams(-2, -2))
+        val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f }
+        val nextB = ui.fsCircle("⏭") { stepEpisode(1); showChrome() }.apply { textSize = 20f }
+        fsPlayB.textSize = 36f
+        val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(6), 0, ui.dp(6), 0) }
+        mid.addView(prevB, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)))
+        mid.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        mid.addView(fsPlayB, LinearLayout.LayoutParams(ui.dp(66), ui.dp(66)))
+        mid.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        mid.addView(nextB, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)))
+        // الأزرار تكبر على قد المساحة اللي بين الشمال واليمين (في الرأسي بتصغر عشان ماتتقصش)
+        mid.addOnLayoutChangeListener { _, l, _, r, _, ol, _, rr, _ ->
+            if (r - l != rr - ol) {
+                val avail = (r - l) - mid.paddingLeft - mid.paddingRight
+                val side = (avail / 5).coerceIn(ui.dp(34), ui.dp(64)); val ctr = (side * 1.25f).toInt()
+                fun sz(v: View, n: Int) { val lp = v.layoutParams; if (lp.width != n || lp.height != n) { lp.width = n; lp.height = n; v.layoutParams = lp } }
+                sz(prevB, side); sz(nextB, side); sz(fsPlayB, ctr)
+            }
+        }
+        btnRow.addView(mid, LinearLayout.LayoutParams(0, -2, 1f))
         val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         fsBarFs = ui.fsCircle("⛶") { cycleFitNow(); showChrome() }
-        rightB.addView(ui.fsCircle("↻") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // بورتريت/لاندسكيب في الشريط السفلي مع ⛶ و ⧉
-        rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
-        rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
-        btnRow.addView(rightB, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
-        fsBar.addView(btnRow, LinearLayout.LayoutParams(-1, ui.dp(56)))
+        rightB.addView(ui.fsCircle("🔄") { toggleFs(); showChrome() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // لاندسكيب/بورتريت (بأيقونة 🔄)
+        rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
+        rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
+        btnRow.addView(rightB, LinearLayout.LayoutParams(-2, -2))
+        fsBar.addView(btnRow, LinearLayout.LayoutParams(-1, ui.dp(72)))
         fsBar.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot && chromeShown) applyChromeFn() }   // ارتفاع الشريط اتغيّر: ارفع الترجمة فوقه
         val chromeFrame = FrameLayout(this).apply { visibility = View.GONE; tag = "chromeFrame" }
         // في الرأسي الصفوف بتلفّ لسطر جديد (FlowRow) — من غير HorizontalScrollView لأنه بيدّي عرض لا نهائي فالصف عمره ما بيلفّ
-        chromeFrame.addView(tb, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })
+        chromeFrame.addView(tb, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.RIGHT).apply { setMargins(ui.dp(12), ui.dp(12), ui.dp(93), 0) })   // (v90) يمين، جنب عداد الجمل
         chromeFrame.addView(fsBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(0, 0, 0, ui.dp(6)) })
         // زرار القفل الصغير: بيظهر لما تلمس الشاشة وهي مقفولة
         lockOv = ui.fsCircle("🔒") { setLock(false) }.apply { visibility = View.GONE }
@@ -1537,7 +1544,6 @@ class PlayerActivity : Activity(), Host {
             floatBar.visibility = if (!pipNow()) View.VISIBLE else View.GONE
             batchBtn.visibility = if (cv) View.VISIBLE else View.GONE
             updateTrChip()
-            logHandle.visibility = if (cv) View.VISIBLE else View.GONE
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) maxOf(ui.dp(128), fsBar.height + ui.dp(12)) else ui.dp(12); sub.requestLayout()
         }
@@ -1876,7 +1882,6 @@ class PlayerActivity : Activity(), Host {
             }
         })
         engineStarted = false; updateTr()
-        if (askSaved) videoBoxRef.post { showResumeStrip() }
         // «🌐 ترجمة وفرجة» من المتصفح: الترجمة تبدأ لوحدها من غير ما تدوس ▶ ترجمة
         if (autoTr && !noSub && !askSaved) videoBoxRef.post { if (!engineStarted && !isFinishing && !isDestroyed) beginTranslate() }
     }
@@ -2060,7 +2065,7 @@ class PlayerActivity : Activity(), Host {
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
         if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
-        if (::logDrawer.isInitialized) { (leftCol.layoutParams as FrameLayout.LayoutParams).topMargin = if (f) ui.dp(64) else ui.dp(26); logDrawer.visibility = View.VISIBLE; leftCol.requestLayout() }
+        if (::logDrawer.isInitialized) { (leftCol.layoutParams as FrameLayout.LayoutParams).topMargin = ui.dp(26); logDrawer.visibility = View.VISIBLE; leftCol.requestLayout() }
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else (if (Build.VERSION.SDK_INT >= 23 && th.isLight) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0)
         placeCard()
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
