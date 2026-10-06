@@ -239,7 +239,7 @@ fun Ui.mainBubble(f: () -> Unit): TextView = IconTextView(ctx).apply {
 }
 
 /** نافذة سفلية (bottom sheet) بنفس كروت الأصل. fixedH = ارتفاع ثابت للقوائم الطويلة */
-fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = false, onClose: () -> Unit = {}): Dialog {
+fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = false, onClose: () -> Unit = {}, frac: Float = 0f): Dialog {
     val d = GDialog(act)
     d.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
@@ -273,7 +273,12 @@ fun Ui.sheet(act: Activity, title: String, views: List<View>, fixedH: Boolean = 
     d.setOnShowListener {
         val land = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val w = d.window
-        if (land) {
+        if (frac > 0f) {   // (v97) نافذة بنسبة من ارتفاع الشاشة (مثلًا 45%) بدل الصفحة الكاملة
+            root.background = box(th.card, th.border, 18)
+            w?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            w?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            if (fixedH) holder.layoutParams = LinearLayout.LayoutParams(-1, (ctx.resources.displayMetrics.heightPixels * frac - dp(64)).toInt().coerceAtLeast(dp(120)))
+        } else if (land) {
             root.background = box(th.card, th.card, 0)
             w?.setBackgroundDrawable(ColorDrawable(th.bg))
             w?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)

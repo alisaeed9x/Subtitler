@@ -199,3 +199,12 @@ open class IconButton(ctx: Context) : Button(ctx) {
 open class IconSwitch(ctx: Context) : Switch(ctx) {
     override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
 }
+
+/** (v97) زرار أيقونة مرسومة مباشرة (View عادي من غير TextView) — لزرار القايمة اللي كان بيطلع أسود */
+class IconGlyphButton(ctx: Context, private val iconName: String) : android.view.View(ctx) {
+    override fun onDraw(canvas: Canvas) {
+        val sz = minOf(width, height) * 0.56f
+        if (sz <= 0f) return
+        Icons.draw(canvas, iconName, (width - sz) / 2f, (height - sz) / 2f, sz, Color.WHITE)
+    }
+}

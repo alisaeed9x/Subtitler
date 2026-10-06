@@ -1235,10 +1235,11 @@ class PlayerActivity : Activity(), Host {
         floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualSnap() }.apply {
             textSize = 24f; alpha = REST_A; setOnLongClickListener { visualDialog(); true }
         }
-        videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(54), ui.dp(54), Gravity.END or Gravity.TOP).apply { setMargins(0, ui.dp(120), ui.dp(8), 0) })   // (v95) المكان بيتحسب في placeFloatFn
+        videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.END or Gravity.TOP).apply { setMargins(0, ui.dp(120), ui.dp(8), 0) })   // (v95) المكان بيتحسب في placeFloatFn
         // (v95) زرار الروتيشن: شاشة بسهمين دايريين زي MX Player — فوق 👁 على طول؛ بيقلب بين الرأسي والأفقي
         rotBtn = ui.fsCircle(Icons.ROT) { flashFloat(rotBtn); toggleFs() }.apply { textSize = 24f; alpha = REST_A }
         videoBox.addView(rotBtn, FrameLayout.LayoutParams(ui.dp(48), ui.dp(48), Gravity.END or Gravity.TOP).apply { setMargins(0, ui.dp(60), ui.dp(11), 0) })
+        rotBtn.visibility = View.GONE   // (v97) زرار الروتيشن العايم اتلغى — الروتيشن في الشريط السفلي بس
         // 🔄 ترجم باتش معين: دايرة عايمة فوق 👁
         batchBtn = ui.fsCircle("🔄") { batchDialog() }.apply { textSize = 20f; alpha = REST_A; translationY = -ui.dp(60).toFloat() }
         // (v90) الزرار العايم 🔄 اتشال من الشاشة — «إعادة ترجمة» لسه في 🧰 وفي ☰
@@ -1265,7 +1266,7 @@ class PlayerActivity : Activity(), Host {
             setOnClickListener { togglePlay() }
         }
         videoBox.addView(centerPlay, FrameLayout.LayoutParams(ui.dp(64), ui.dp(64), Gravity.CENTER))
-        fsBadge = TransBadge(this, th).apply { visibility = View.GONE }
+        fsBadge = TransBadge(this, th).apply { visibility = View.GONE; alpha = 0.5f }   // (v99) عداد الجمل شفافية 50%
         videoBox.addView(fsBadge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(14), ui.dp(14), 0) })
         val gi = IconTextView(this).apply {
             textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -1366,13 +1367,14 @@ class PlayerActivity : Activity(), Host {
         }
         var tbScrolled = false
         tb.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!tbScrolled && tbRow.width > 0) { tbScrolled = true; tb.post { tb.scrollTo(tbRow.width, 0) } } }
+        var textAtBottom = false
         fun grp(label: String, col: LinearLayout, above: Boolean = false): TextView = ui.fsBtn("$label ▾") { v ->
             val had = popupOwner === v; dismissPop()
             if (!had) {
                 (col.parent as? android.view.ViewGroup)?.removeView(col)
                 val pw = android.widget.PopupWindow(col, -2, -2, false)
                 pw.isOutsideTouchable = true; pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
-                if (above) {   // زرار في الشريط السفلي: القايمة تفتح فوقه
+                if (above || (col === gText && textAtBottom)) {   // زرار في الشريط السفلي: القايمة تفتح فوقه
                     col.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
                     pw.showAsDropDown(v, 0, -(v.height + col.measuredHeight + ui.dp(2)))
                 } else pw.showAsDropDown(v, 0, ui.dp(2))
@@ -1416,6 +1418,8 @@ class PlayerActivity : Activity(), Host {
         }
         val ccB = mini("CC") { toggleCc() }.apply { textSize = 11f; typeface = android.graphics.Typeface.DEFAULT_BOLD }
         ccFsB = ccB
+        fun loopBg() = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (Cfg.str("loop", "0") == "1") 0xFF1F5FBF.toInt() else 0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x1FFFFFFF) }
+        val loopB = mini("🔁") { v -> Cfg.put("loop", if (Cfg.str("loop", "0") == "1") "0" else "1"); v.background = loopBg(); giShow(if (Cfg.str("loop", "0") == "1") "🔁 تكرار الفيديو: شغّال" else "🔁 تكرار الفيديو: مقفول", Gravity.CENTER) }.apply { background = loopBg() }
         val dualB = mini("💬") { v -> cycleDual(v) }.apply { background = dualCircleBg() }   // وضع الترجمة (فردي / أصلي / مزدوج) — أيقونة بس من غير كلام
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
@@ -1425,7 +1429,7 @@ class PlayerActivity : Activity(), Host {
             v.text = "⬛ " + PlayerLogic.fitNames[curFit()]; applyFit(sv, videoBox)
         }
         fitFsB = fitB
-        val menuB = ui.fsBtn("☰") { openSide() }
+        val menuB = IconGlyphButton(this, "menu").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { openSide(); showChrome() } }
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
         val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
@@ -1454,9 +1458,11 @@ class PlayerActivity : Activity(), Host {
         val tbExtra = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         fun exAdd(v: View) { tbExtra.addView(v, 0) }
         tbCollapseFn = { }
-        tbAdd(tip(menuB, "القائمة")); tbAdd(tbExtra)
+        menuB.setOnLongClickListener { giShow("القائمة", Gravity.CENTER); true }
+        tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) }); tbAdd(tbExtra)
 
-        exAdd(tip(grp("🔤", gText), "النص"))
+        val textB = tip(grp("🔤", gText), "النص")
+        exAdd(textB)
 
         fsPlayB = IconTextView(this).apply {
             text = "▶"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
@@ -1488,7 +1494,7 @@ class PlayerActivity : Activity(), Host {
         val toolsB = barPill(tip(grp("🧰", gTool, true), "أدوات"))
         val syncB = barPill(tip(grp("⏱", gSub, true), "تزامن الترجمة (تقديم / تأخير)"))   // (v91) مكان Aa — حجم الخط بقى بالقرص (pinch) على الشاشة
         toolR.addView(syncB)
-        val toolBtns = listOf<TextView>(syncB, tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(dualB, "وضع الترجمة"))
+        val toolBtns = listOf<TextView>(syncB, tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(loopB, "تكرار الفيديو"), tip(dualB, "وضع الترجمة"))
         toolBtns.drop(1).forEach { b ->
             toolR.addView(b, LinearLayout.LayoutParams(ui.dp(30), ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
         }
@@ -1498,8 +1504,9 @@ class PlayerActivity : Activity(), Host {
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         // (v96) ثلاث أعمدة: شمال (وزن 1) | نص (⏮ ▶ ⏭ متسنطرين فعلًا على عرض الشاشة) | يمين (وزن 1) — فالنص دايمًا في نص الشريط بالظبط
         val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.START or Gravity.CENTER_VERTICAL }
-        leftB.addView(ui.fsCircle("🔓") { setLock(true) }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) })
-        leftB.addView(aiB); leftB.addView(toolsB)
+        val lockB = ui.fsCircle("🔓") { setLock(true) }
+        val lockLp = { LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) } }
+        leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(toolsB)
         btnRow.addView(leftB, LinearLayout.LayoutParams(0, -2, 1f))
         val pillBg = { ui.box(0xE00F0F12.toInt(), 0x29FFFFFF, 24) }
         val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
@@ -1513,8 +1520,10 @@ class PlayerActivity : Activity(), Host {
         btnRow.addView(mid, LinearLayout.LayoutParams(-2, -2))
         val rightB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         fsBarFs = ui.fsCircle("⛶") { cycleFitNow(); showChrome() }
-        rightB.addView(ui.fsCircle(Icons.ROT) { toggleFs(); showChrome() }.apply { textSize = 19f }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })   // لاندسكيب/بورتريت (أيقونة الروتيشن زي MX)
-        rightB.addView(ui.fsCircle("⧉") { enterPip() }, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
+        val rotBarB = ui.fsCircle(Icons.ROT) { toggleFs(); showChrome() }.apply { textSize = 19f }   // لاندسكيب/بورتريت (أيقونة الروتيشن زي MX)
+        val pipBarB = ui.fsCircle("⧉") { enterPip() }
+        rightB.addView(rotBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })
+        rightB.addView(pipBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
         rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
         btnRow.addView(rightB, LinearLayout.LayoutParams(0, -2, 1f))
         fsBar.addView(btnRow, LinearLayout.LayoutParams(-1, ui.dp(72)))
@@ -1523,13 +1532,34 @@ class PlayerActivity : Activity(), Host {
         fun placeTools(wide: Boolean) {
             if (toolsWide == wide) return; toolsWide = wide
             toolBtns.forEach { (it.parent as? ViewGroup)?.removeView(it) }
-            // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 💬 وضع الترجمة]
+            (menuB.parent as? ViewGroup)?.removeView(menuB); (textB.parent as? ViewGroup)?.removeView(textB)
+            leftB.removeAllViews(); rightB.removeAllViews()
+            // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 🔁 تكرار, 💬 وضع الترجمة]
             fun lp(i: Int) = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(34), ui.dp(34)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }
+            fun sq(m: Int = 3) = LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(m), 0, ui.dp(m), 0) }
+            fun pill() = LinearLayout.LayoutParams(-2, ui.dp(34)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }
             if (wide) {
-                // (v96) توزيع متوازن: شمال 🔓 ✨ 🧰 ⏱ CC · يمين 📋 📝 💬 🔄 ⧉ ⛶
-                leftB.addView(toolBtns[0], lp(0)); leftB.addView(toolBtns[3], lp(3))
-                rightB.addView(toolBtns[1], 0, lp(1)); rightB.addView(toolBtns[2], 1, lp(2)); rightB.addView(toolBtns[4], 2, lp(4))
-            } else toolBtns.forEachIndexed { i, v -> toolR.addView(v, lp(i)) }
+                // (v98) ترتيب مصمَّم بالاستخدام وسهولة الوصول (الصوابع على الحواف):
+                // شمال = الترجمة (من الحافة للنص): 🔓 · CC · ⏱ · 💬 · Aa · ✨ · 🧰
+                leftB.addView(lockB, lockLp())
+                leftB.addView(toolBtns[3], lp(3)); leftB.addView(toolBtns[0], lp(0)); leftB.addView(toolBtns[5], lp(5))
+                leftB.addView(textB, pill()); leftB.addView(aiB, pill()); leftB.addView(toolsB, pill())
+                // يمين = المشغّل (من النص للحافة): ☰ · 📋 · 📝 · 🔁 · ⧉ · 🔄 · ⛶
+                rightB.addView(menuB, lp(3)); rightB.addView(toolBtns[1], lp(1)); rightB.addView(toolBtns[2], lp(2)); rightB.addView(toolBtns[4], lp(4))
+                rightB.addView(pipBarB, sq()); rightB.addView(rotBarB, sq()); rightB.addView(fsBarFs, sq())
+                textB.minimumWidth = ui.dp(34); textB.setPadding(ui.dp(8), 0, ui.dp(8), 0)
+            } else {
+                leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(toolsB)
+                rightB.addView(rotBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })
+                rightB.addView(pipBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
+                rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
+                toolBtns.forEachIndexed { i, v -> toolR.addView(v, lp(i)) }
+                tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
+                tbExtra.addView(textB, 0, LinearLayout.LayoutParams(-2, ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
+                textB.minimumWidth = ui.dp(40); textB.setPadding(ui.dp(10), 0, ui.dp(10), 0)
+            }
+            textAtBottom = wide
+            tb.visibility = if (wide) View.GONE else View.VISIBLE
             toolRow.visibility = if (wide) View.GONE else View.VISIBLE
         }
         fsBar.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ -> val w = r - l; if (w > 0) fsBar.post { placeTools(w >= ui.dp(720)) } }
@@ -1550,12 +1580,12 @@ class PlayerActivity : Activity(), Host {
         placeFloatFn = fn@{
             val bh = videoBox.height; if (bh <= 0) return@fn
             val chromeOn = fullMode && chromeShown && !pipNow()
-            val eyeH = ui.dp(54); val rotH = ui.dp(48); val gap = ui.dp(10)
-            val zTop = if (chromeOn) ui.dp(64) else ui.dp(44)
+            val eyeH = ui.dp(44); val rotH = ui.dp(48); val gap = ui.dp(10)
+            val zTop = ui.dp(84)   // (v97) تحت عداد الجمل خالص
             val zBot = bh - (if (chromeOn) fsBar.height + ui.dp(16) else ui.dp(60))
             val room = zBot - zTop
             val both = rotH + gap + eyeH
-            val showRot = room >= both && !pipNow()
+            val showRot = false   // (v97) مفيش روتيشن عايم
             val stackH = if (showRot) both else eyeH
             val top = (if (chromeOn) zTop + (room - stackH) / 2 else zTop).coerceAtMost(zBot - stackH).coerceAtLeast(ui.dp(2))
             val rotLp = rotBtn.layoutParams as FrameLayout.LayoutParams
@@ -1762,7 +1792,7 @@ class PlayerActivity : Activity(), Host {
         val sentCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         sentCol.addView(copyChip, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(6) })
         sentCol.addView(listView, LinearLayout.LayoutParams(-1, 0, 1f))
-        sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(sentCol), true)
+        sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(sentCol), true, frac = 0.45f)
         sentDlg.setOnShowListener { adapter.notifyDataSetChanged() }
         val logCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         fun logChip(t: String, f: () -> Unit) = IconTextView(this).apply {
@@ -1973,6 +2003,13 @@ class PlayerActivity : Activity(), Host {
                 // تشخيص الشاشة السودا: صوت شغّال ومفيش ولا فريم فيديو اتعرض بعد ٥ ثواني
                 if (p && !firstFrame) h.postDelayed({ if (!firstFrame && !isFinishing) log("⚠️ مفيش فريم فيديو اتعرض بعد ٥ ثواني — غالبًا كودك/بروفايل الفيديو مش مدعوم على الجهاز (مثلًا HEVC 10-bit)") }, 5000)
             }
+            override fun onPlaybackStateChanged(st: Int) {
+                // (v97) الفيديو خلص: لو اللوب شغّال يعيد من الأول، وإلا يروح للحلقة اللي بعدها (لو في)
+                if (st == Player.STATE_ENDED && !isFinishing) {
+                    if (Cfg.str("loop", "0") == "1") { player.seekTo(0); player.play() }
+                    else if (hasNextEpisode()) h.post { stepEpisode(1) }
+                }
+            }
             override fun onRenderedFirstFrame() { firstFrame = true; webFirstFrame = true }
             override fun onTracksChanged(t: Tracks) {
                 for (g in t.groups) {
@@ -2119,7 +2156,15 @@ class PlayerActivity : Activity(), Host {
         if (f) showChrome() else { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn() }
     }
     fun showChrome() { if (pipNow() || uiLocked) return; chromeShown = true; applyChromeFn(); h.removeCallbacks(hideChrome); h.postDelayed(hideChrome, 3500) }
-    fun togglePlay() { if (player.isPlaying) player.pause() else player.play() }
+    fun togglePlay() { if (player.isPlaying) player.pause() else { if (player.playbackState == Player.STATE_ENDED) player.seekTo(0); player.play() } }
+    /** (v97) في حلقة بعد الحالية في نفس الفولدر؟ (من غير رسالة) */
+    private fun hasNextEpisode(): Boolean {
+        val curU = uri?.toString() ?: return false
+        val all = VideoScan.cache ?: return false
+        val me = all.firstOrNull { it.uri == curU } ?: return false
+        val sib = VideoLib.sortVideos(all.filter { it.folderKey == me.folderKey }, VideoLib.SORT_NAME)
+        return sib.getOrNull(sib.indexOfFirst { it.uri == curU } + 1) != null
+    }
     private var userRot = false
     private var autoRotDone = false
     fun toggleFs() {
