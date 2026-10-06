@@ -69,7 +69,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
         refresh(true)
         (col.parent as? android.view.ViewGroup)?.removeView(col)
         val sv = ScrollView(act).apply { addView(col) }
-        dlg = ui.sheet(act, "📋 طابور الترجمة في الخلفية", listOf<View>(sv), true) { dlg = null }
+        dlg = ui.sheet(act, "📋 طابور الترجمة في الخلفية", listOf<View>(sv), true, onClose = { dlg = null })
         dlg!!.show()
     }
 }

@@ -10,7 +10,8 @@ import java.io.File
 /** فيديو اتصاد من الإنترنت: الرابط + هيدرزه + الاسم (اتعرف من لقطة) — id هو نفس videoId بتاع المشغّل عشان التقدم والترجمة يتربطوا بيه */
 data class WebVid(
     val id: String, val url: String, val ref: String, val ua: String, val cookie: String,
-    val title: String, val named: Boolean, val tries: Int, val ts: Long, val kind: String
+    val title: String, val named: Boolean, val tries: Int, val ts: Long, val kind: String,
+    val page: String = ""   // لينك صفحة الفيديو في الموقع (بيتحفظ من ⋮ ← تحديث لينك الفيديو) — منه بنعيد الاصطياد لما لينك التحميل يبوظ
 )
 
 /** سجل الفيديوهات المصطادة (web_videos.json) + لقطة مصغّرة لكل فيديو (الاسم بيتاخد من صفحة الموقع مش من اللقطة) */
@@ -25,14 +26,14 @@ object WebVideos {
         val a = JSONArray(s.ifEmpty { "[]" })
         (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
             WebVid(it.optString("id"), it.optString("url"), it.optString("ref"), it.optString("ua"), it.optString("cookie"),
-                it.optString("title"), it.optBoolean("named", false), it.optInt("tries", 0), it.optLong("ts", 0), it.optString("kind"))
+                it.optString("title"), it.optBoolean("named", false), it.optInt("tries", 0), it.optLong("ts", 0), it.optString("kind"), it.optString("page"))
         }.filter { it.id.isNotEmpty() && it.url.isNotEmpty() }
     } catch (_: Exception) { emptyList() }
 
     private fun toJson(l: List<WebVid>): String {
         val a = JSONArray()
         for (w in l) a.put(JSONObject().put("id", w.id).put("url", w.url).put("ref", w.ref).put("ua", w.ua).put("cookie", w.cookie)
-            .put("title", w.title).put("named", w.named).put("tries", w.tries).put("ts", w.ts).put("kind", w.kind))
+            .put("title", w.title).put("named", w.named).put("tries", w.tries).put("ts", w.ts).put("kind", w.kind).put("page", w.page))
         return a.toString()
     }
 
@@ -46,7 +47,7 @@ object WebVideos {
     fun register(ctx: Context, id: String, url: String, ref: String, ua: String, cookie: String, title0: String, kind: String, named0: Boolean = false): WebVid = synchronized(lock) {
         val l = parse(try { file(ctx).readText() } catch (_: Exception) { "" })
         val old = l.firstOrNull { it.id == id }
-        val w = WebVid(id, url, ref, ua, cookie, if (old?.named == true) old.title else title0, old?.named == true || named0, old?.tries ?: 0, System.currentTimeMillis(), kind)
+        val w = WebVid(id, url, ref, ua, cookie, if (old?.named == true) old.title else title0, old?.named == true || named0, old?.tries ?: 0, System.currentTimeMillis(), kind, old?.page ?: "")
         write(ctx, listOf(w) + l.filter { it.id != id })
         w
     }

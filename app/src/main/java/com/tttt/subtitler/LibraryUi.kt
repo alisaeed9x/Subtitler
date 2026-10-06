@@ -624,12 +624,25 @@ class LibraryUi(
         items += "📋 نسخ الرابط" to {
             try { (act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("url", w.url)); toastMsg("📋 اتنسخ الرابط") } catch (_: Exception) {}
         }
+        items += "🔗 تحديث لينك الفيديو" to { webPageLink(w) }
         items += "🗑 مسح من السجل" to {
             GAlert(act).setTitle("🗑 مسح من المصطادة").setMessage("هيتمسح «${w.title}» من السجل (الترجمة المحفوظة مش هتتمسح). تمام؟")
                 .setPositiveButton("امسح") { _, _ -> WebVideos.remove(act, w.id); render() }.setNegativeButton("إلغاء", null).show()
             Unit
         }
         popup(anchor, items)
+    }
+    /** يحفظ لينك صفحة الفيديو (من الكليبورد أو بالكتابة) — ده اللي بيتفتح في الخلفية لما لينك التحميل يفشل */
+    private fun webPageLink(w: WebVid) {
+        val clip = try { (act.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: "" } catch (_: Exception) { "" }
+        val start = if (clip.startsWith("http", true)) clip else w.page.ifEmpty { w.ref }
+        val et = EditText(act).apply { setText(start); setSelection(text.length); layoutDirection = View.LAYOUT_DIRECTION_LTR; setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)); maxLines = 4 }
+        GAlert(act).setTitle("🔗 لينك صفحة الفيديو").setMessage("الصق لينك الصفحة اللي بيتشغّل فيها الفيديو في الموقع. لو الفيديو ماشتغلش بعد كده هقدر أحدّث لينك التحميل منها.").setView(et)
+            .setPositiveButton("حفظ") { _, _ ->
+                val u = et.text.toString().trim()
+                if (u.startsWith("http", true)) { WebVideos.update(act, w.id) { it.copy(page = u) }; render(); toastMsg("✓ اتحفظ لينك الصفحة") }
+                else toastMsg("اللينك لازم يبدأ بـ http")
+            }.setNegativeButton("إلغاء", null).show()
     }
     private fun webRename(w: WebVid) {
         val et = EditText(act).apply { setText(w.title); setSelection(text.length); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)) }

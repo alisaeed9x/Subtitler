@@ -66,7 +66,7 @@ class MainActivity : Activity() {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
         if (fromPlayer) setTheme(android.R.style.Theme_Translucent_NoTitleBar)
         super.onCreate(b)
-        if (fromPlayer && intent?.getBooleanExtra("land", false) == true) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE   // الإعدادات من المشغّل: بالعرض فوق الفيديو
+        if (fromPlayer) requestedOrientation = if (intent?.getBooleanExtra("land", false) == true) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT   // الإعدادات من المشغّل: بنفس اتجاه المشغّل
         UiWatchdog.start()
         Cfg.init(this); CrashLog.install(this)
         val th = Themes.byId(Cfg.str("theme", "mx"))
@@ -718,7 +718,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() { if (!fromPlayer && libUi?.back() == true) return; super.onBackPressed() }
     override fun startActivity(i: Intent?) { super.startActivity(i); try { overridePendingTransition(R.anim.act_enter, R.anim.act_stay) } catch (_: Exception) {} }
-    override fun finish() { super.finish(); try { overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (_: Exception) {} }
+    override fun finish() { super.finish(); try { if (fromPlayer) overridePendingTransition(0, 0) else overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (_: Exception) {} }
 }
 
 class PlayerActivity : Activity(), Host {
@@ -760,6 +760,7 @@ class PlayerActivity : Activity(), Host {
     val h = Handler(Looper.getMainLooper())
     var url: String? = null
     var uri: Uri? = null
+    private var httpDsf: DefaultHttpDataSource.Factory? = null
     val hdr = HashMap<String, String>()
     var touching = false
     lateinit var conf: Conf
@@ -1229,7 +1230,7 @@ class PlayerActivity : Activity(), Host {
         batchTv.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!logOn) logDrawer.translationX = -(batchTv.width + ui.dp(2)).toFloat() }
         // عمود الشمال: كبسولة الباتش الفاشل (لو في) فوق، واللوج تحتها
         leftCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; clipChildren = false; clipToPadding = false }
-        leftCol.addView(logDrawer, LinearLayout.LayoutParams(-2, -2))
+        // (v100) اللوج العايم اتلغى: حالة الباتشات بقت جوه صفحة اللوجز (logCol)
         videoBox.addView(leftCol, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
         // 👁 بصري: دايرة عايمة فوق دايرة ✦
         floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualSnap() }.apply {
@@ -1817,8 +1818,11 @@ class PlayerActivity : Activity(), Host {
         logRow.addView(logChip("📋 نسخ") { logCopy() }); logRow.addView(logChip("الحالي") { logShow(0) })
         logRow.addView(logChip("🕘 الجلسة اللي فاتت") { logShow(1) }); logRow.addView(logChip("💥 آخر كراش") { logShow(2) })
         logCol.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(logRow) }, LinearLayout.LayoutParams(-1, -2))
+        (batchTv.parent as? android.view.ViewGroup)?.removeView(batchTv)
+        batchTv.setOnClickListener(null); batchTv.isClickable = false; batchTv.setTextIsSelectable(true)
+        logCol.addView(batchTv, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(8), 0, ui.dp(8), ui.dp(6)) })
         logSv.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); logCol.addView(logSv)
-        logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logCol), true)
+        logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logCol), true, frac = 0.45f)
         logDlg.setOnShowListener { logShow(0) }
         mem = ui.memRow()
 
@@ -1978,7 +1982,7 @@ class PlayerActivity : Activity(), Host {
     private fun buildPlayer() {
         val sv = svRef; val videoBox = videoBoxRef
         val factory = if (uri != null) DefaultMediaSourceFactory(this)
-        else DefaultMediaSourceFactory(DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true))
+        else { val f = DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true); httpDsf = f; DefaultMediaSourceFactory(f) }
         // MKV وغيره: لو الديكودر الأول فشل (HEVC / 10-bit) جرّب اللي بعده بدل شاشة سودا
         val rf = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this, rf).setMediaSourceFactory(factory).build()
@@ -2023,6 +2027,7 @@ class PlayerActivity : Activity(), Host {
             override fun onPlayerError(e: PlaybackException) {
                 log("❌ خطأ في التشغيل: ${e.errorCodeName} — ${e.cause?.message ?: e.message}")
                 say("خطأ في تشغيل الفيديو — التفاصيل في 📜 اللوجز")
+                offerLinkRefresh()
             }
         })
         player.setMediaItem(MediaItem.fromUri(uri ?: Uri.parse(url!!)))
@@ -2066,6 +2071,50 @@ class PlayerActivity : Activity(), Host {
         maybePrompt(wasBg)
     }
 
+    // ===== فشل لينك التحميل: تحديثه في الخلفية من صفحة الفيديو المحفوظة =====
+    private var refreshAsked = false
+    private fun offerLinkRefresh() {
+        if (uri != null || url == null || refreshAsked || isFinishing || isDestroyed) return
+        refreshAsked = true
+        val appCtx = applicationContext; val id = vid
+        Thread {
+            val w = WebVideos.find(appCtx, id)
+            val page = (w?.page?.takeIf { it.isNotEmpty() } ?: hdr["Referer"] ?: "")
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (!page.startsWith("http")) { Notice.show(this, "مفيش لينك صفحة محفوظ للفيديو — احفظه من ⋮ ← تحديث لينك الفيديو", 4000L); return@runOnUiThread }
+                GAlert(this).setTitle("⚠ فشل تحميل الفيديو").setMessage("لينك التحميل فشل أو انتهت صلاحيته.\nتحديث عنوان التحميل؟")
+                    .setPositiveButton("نعم، حدّث") { _, _ -> startLinkRefresh(page) }
+                    .setNegativeButton("لا", null).show()
+            }
+        }.apply { isDaemon = true }.start()
+    }
+    private fun startLinkRefresh(page: String) {
+        val old = url ?: return
+        Notice.show(this, "⏳ بحدّث لينك الفيديو في الخلفية…", 4000L)
+        LinkRefresh.run(this, page, old, hdr["User-Agent"] ?: "") { r ->
+            if (isFinishing || isDestroyed) return@run
+            if (r != null && r.same) {
+                applyNewLink(r)
+                refreshAsked = false
+                Notice.show(this, "✓ اتحدّث لينك الفيديو", 2500L)
+            } else {
+                refreshAsked = false
+                GAlert(this).setTitle("⚠ فشل الاصطياد التلقائي").setMessage("مقدرتش ألقط نفس لينك الفيديو تلقائيًا.\nتروح لصفحة التحميل تصطاد بنفسك؟")
+                    .setPositiveButton("نعم") { _, _ -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", page)) }
+                    .setNegativeButton("لا", null).show()
+            }
+        }
+    }
+    private fun applyNewLink(r: LinkRefresh.Res) {
+        url = r.url
+        if (r.cookie.isNotEmpty()) hdr["Cookie"] = r.cookie
+        httpDsf?.setDefaultRequestProperties(hdr)
+        val appCtx = applicationContext; val id = vid; val nu = r.url; val ck = r.cookie
+        Thread { WebVideos.update(appCtx, id) { it.copy(url = nu, cookie = if (ck.isNotEmpty()) ck else it.cookie, ts = System.currentTimeMillis()) } }.apply { isDaemon = true }.start()
+        try { val pos = player.currentPosition; player.setMediaItem(MediaItem.fromUri(Uri.parse(r.url)), pos); player.prepare(); player.playWhenReady = true } catch (_: Exception) {}
+    }
+
     // ===== الفيديوهات المصطادة: تسجيل في السجل + لقطة مصغّرة (الاسم من صفحة الموقع) =====
     @Volatile private var webFirstFrame = false
     private var webSnapTries = 0
@@ -2093,13 +2142,8 @@ class PlayerActivity : Activity(), Host {
         } catch (_: Exception) {}
     }
 
-    fun toggleLog() {
-        logOn = !logOn
-        logDrawer.animate().translationX(if (logOn) 0f else -(batchTv.width + ui.dp(2)).toFloat()).setDuration(220).start()
-        logHandle.text = if (logOn) "◂" else "▸"
-        fadeTo(logHandle, if (logOn) 1f else REST_A)
-        h.removeCallbacks(logAuto); if (logOn) h.postDelayed(logAuto, 6000)
-    }
+    /** زرار 📋 في المشغّل = نفس صفحة اللوجز بتاعة القايمة (اللوج العايم اتلغى) */
+    fun toggleLog() { if (logDlg.isShowing) logDlg.dismiss() else logDlg.show() }
 
     /** الحلقة اللي بعدها (+1) أو اللي قبلها (-1) من نفس الفولدر: بيوقف ترجمة الحالية ويبدأ ترجمة الجديدة */
     fun stepEpisode(d: Int) {
@@ -2521,7 +2565,9 @@ class PlayerActivity : Activity(), Host {
         resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
         try { player.pause() } catch (_: Exception) {}
         saveRecent(); Thread { engine.saveNow() }.start()
-        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("land", true).apply { if (tab != null) putExtra("tab", tab) })
+        // (v100) نفس اتجاه المشغّل بالظبط (من غير روتيشن) ومن غير حركة انتقال — كان بيجبر العرض فيعمل نتشة ويرجع
+        startActivity(Intent(this, MainActivity::class.java).putExtra("from_player", true).putExtra("land", isLandNow()).apply { if (tab != null) putExtra("tab", tab) })
+        try { overridePendingTransition(0, 0) } catch (_: Exception) {}
     }
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)
