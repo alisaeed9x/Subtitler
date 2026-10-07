@@ -26,11 +26,13 @@ import java.util.concurrent.Executors
 object WitcherApi {
     const val FIRESTORE_ROOT =
         "https://firestore.googleapis.com/v1/projects/animewitcher-1c66d/databases/(default)/documents"
+    private const val FIREBASE_API_KEY = "AIzaSyAcbWRwfFNnCpoydDXlEALWnM_TYVcJOMU"
 
-    private const val ALGOLIA_ENDPOINT =
-        "https://pm74amwqb7-dsn.algolia.net/1/indexes/series/query"
-    private const val ALGOLIA_APP_ID = "PM74AMWQB7"
-    private const val ALGOLIA_API_KEY = "637988febef474435052d8dc083b77be"
+    // The original Anime Witcher APK does NOT hard-code the Algolia credentials.
+    // It reads them from Firestore: Settings/search_service.
+    private const val SEARCH_SERVICE_PATH = "/Settings/search_service"
+    private const val DEFAULT_ALGOLIA_APP_ID = "PM74AMWQB7"
+    private const val DEFAULT_ALGOLIA_API_KEY = "637988febef474435052d8dc083b77be"
 
     private val pool = Executors.newCachedThreadPool()
 
@@ -82,38 +84,18 @@ object WitcherApi {
     )
 
     fun home(): Home = pool.submit<Home> {
-        // The old UI labels these data sets "new_episodes" and "new_added_anime".
-        // Those names are kept as a first attempt; if the backend layout changes,
-        // the fallback reads the same anime_list/series data instead of inventing data.
-        val newSeries = safeListCollection("new_added_anime", 24)
-            .mapNotNull { documentToSeries(it) }
-        val latest = if (newSeries.isNotEmpty()) newSeries else algoliaSearch("").take(24)
+        // Match the old app's home/search source: Algolia index "series".
+        // The old APK obtains the Algolia app id/key from Settings/search_service.
+        val latest = try { algoliaSearch("").take(24) } catch (_: Throwable) { emptyList() }
 
-        val newEpisodeDocs = safeListCollection("new_episodes", 24)
-        val episodePairs = ArrayList<Pair<Series, Episode>>()
-        for (d in newEpisodeDocs) {
-            val f = d.optJSONObject("fields") ?: JSONObject()
-            val id = f.optStringAny("anime_id", "animeId", "series_id", "seriesId") ?: continue
-            val epNo = f.optIntAny("episode_no", "episode_number", "episodeNo") ?: continue
-            val s = try { getAnime(id).series } catch (_: Throwable) { continue }
-            val e = Episode(
-                id = String.format(Locale.US, "%03d", epNo),
-                number = epNo,
-                name = f.optStringAny("name", "episode_name", "episode_title") ?: "الحلقة $epNo",
-                thumb = f.optStringAny("thumb_uri", "thumb", "image") ?: ""
-            )
-            episodePairs += s to e
-        }
-
-        if (episodePairs.isNotEmpty()) return@submit Home(episodePairs, latest)
-
-        // Stable fallback: take the first results from the old Algolia index and
-        // resolve their episode summaries through the old Firestore collection.
+        // Build the "new episodes" row from the same Firestore episode summaries
+        // used by the old Anime Witcher app. We intentionally do not invent a
+        // separate collection such as new_episodes/new_added_anime.
         val pairs = ArrayList<Pair<Series, Episode>>()
-        for (s in latest.take(12)) {
-            val eps = try { getEpisodes(s.id) } catch (_: Throwable) { emptyList() }
-            val ep = eps.maxByOrNull { it.number } ?: continue
-            pairs += s to ep
+        for (series in latest.take(16)) {
+            val ep = try { getEpisodes(series.id).maxByOrNull { it.number } } catch (_: Throwable) { null }
+            if (ep != null) pairs += series to ep
+            if (pairs.size >= 12) break
         }
         Home(pairs, latest)
     }.get()
@@ -138,13 +120,13 @@ object WitcherApi {
             val d = docs.optJSONObject(i) ?: continue
             val f = d.optJSONObject("fields") ?: continue
             val name = f.optStringAny("name") ?: continue
-            val link = f.optStringAny("link") ?: continue
+            val rawLink = f.optStringAny("direct_link", "link") ?: continue
             val quality = f.optStringAny("quality") ?: ""
-            if (name.isBlank() || link.isBlank()) continue
+            if (name.isBlank() || rawLink.isBlank()) continue
             out += Server(
                 id = d.optString("name").substringAfterLast('/'),
                 name = name,
-                link = link,
+                link = rawLink,
                 quality = quality,
                 visible = f.optBooleanAny("visible"),
                 openBrowser = f.optBooleanAny("open_browser", "openBrowser"),
@@ -172,23 +154,38 @@ object WitcherApi {
     }
 
     private fun algoliaSearch(query: String): List<Series> {
-        val params = "attributesToRetrieve=" +
-            URLEncoder.encode(
-                "[\"objectID\",\"name\",\"poster_uri\",\"order\",\"path\",\"type\",\"poster\",\"tags\",\"details\",\"rating\"]",
-                "UTF-8"
-            ) +
+        val cfg = loadSearchConfig()
+        val appId = cfg.first.ifBlank { DEFAULT_ALGOLIA_APP_ID }
+        val apiKey = cfg.second.ifBlank { DEFAULT_ALGOLIA_API_KEY }
+        val endpoint = "https://${appId.lowercase(Locale.US)}-dsn.algolia.net/1/indexes/series/query"
+
+        val attrs = "[\"objectID\",\"name\",\"poster_uri\",\"order\",\"path\",\"type\",\"poster\",\"tags\",\"details\",\"rating\"]"
+        val params = "attributesToRetrieve=" + URLEncoder.encode(attrs, "UTF-8") +
             "&hitsPerPage=500&page=0&query=" + URLEncoder.encode(query, "UTF-8")
 
         val body = JSONObject().put("params", params).toString()
-        val raw = requestRaw(ALGOLIA_ENDPOINT, "POST", body, mapOf(
+        val raw = requestRaw(endpoint, "POST", body, mapOf(
             "Content-Type" to "application/json; charset=UTF-8",
             "Accept" to "application/json",
-            "X-Algolia-Application-Id" to ALGOLIA_APP_ID,
-            "X-Algolia-API-Key" to ALGOLIA_API_KEY,
+            "X-Algolia-Application-Id" to appId,
+            "X-Algolia-API-Key" to apiKey,
             "User-Agent" to "Algolia for Android (3.27.0); Android (11)"
         ))
         val hits = raw.optJSONArray("hits") ?: return emptyList()
         return (0 until hits.length()).mapNotNull { parseAlgoliaSeries(hits.optJSONObject(it)) }
+    }
+
+    private fun loadSearchConfig(): Pair<String, String> {
+        return try {
+            val doc = getObjectAllow404(SEARCH_SERVICE_PATH) ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
+            val f = doc.optJSONObject("fields") ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
+            val appId = f.optStringAny("algolia_app_id", "app_id", "appId") ?: DEFAULT_ALGOLIA_APP_ID
+            val key = f.optStringAny("algolia_browse_api_key", "algolia_api_key", "browse_api_key", "api_key")
+                ?: DEFAULT_ALGOLIA_API_KEY
+            appId to key
+        } catch (_: Throwable) {
+            DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
+        }
     }
 
     private fun getEpisodes(animeId: String): List<Episode> {
@@ -293,7 +290,8 @@ object WitcherApi {
         ?: throw IllegalStateException("Anime Witcher API request returned 404: $path")
 
     private fun getObjectAllow404(path: String): JSONObject? = try {
-        val o = requestRaw(FIRESTORE_ROOT + path, "GET", null, mapOf("Accept" to "application/json"))
+        val sep = if (path.contains("?")) "&" else "?"
+        val o = requestRaw(FIRESTORE_ROOT + path + sep + "key=" + URLEncoder.encode(FIREBASE_API_KEY, "UTF-8"), "GET", null, mapOf("Accept" to "application/json"))
         o
     } catch (_: HttpFailure) {
         null
