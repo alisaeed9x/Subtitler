@@ -533,6 +533,39 @@ class PlayerActivity : Activity(), Host {
         LogStore.add(fmtMs(cur) + "  " + s)
     }
     private var lastBeat = 0L
+    // (v125) حفظ مكان الوقوف كل 3 ثواني (كان بيتحفظ عند الخروج بس → بعد PiP / تحديث النسخة بيرجع لمكان قديم)
+    private var lastPosSave = 0L
+    private var lastRecentSave = 0L
+    private var lastLogLen = -1
+    private var lastBatchTxt = ""
+    private var miniLog: View? = null
+    private var miniLogTv: TextView? = null
+    fun closeMiniLog() {
+        miniLog?.let { p -> try { (p.parent as? ViewGroup)?.removeView(p) } catch (_: Exception) {} }
+        miniLog = null; miniLogTv = null
+    }
+    /** (v125) اللوج الصغير: بيوضّح أنهي باتش بيترجم دلوقتي (دوس على عداد الجمل) — بيتحدّث لوحده ويتسكرول */
+    fun toggleMiniLog() {
+        if (miniLog != null) { closeMiniLog(); return }
+        val tv = IconTextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(8)); layoutDirection = View.LAYOUT_DIRECTION_RTL
+            text = engine.batchLines().ifBlank { "مفيش باتشات لسه — دوس ▶ ترجمة" }
+        }
+        miniLogTv = tv
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; isClickable = true
+            background = ui.box(0xEE101418.toInt(), 0x33FFFFFF, 12)
+        }
+        val head = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(6), ui.dp(4), ui.dp(2)) }
+        head.addView(ui.text("📋 الباتشات — بيترجم دلوقتي", 12f, th.primary, true), LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(IconTextView(this).apply { text = "✕"; textSize = 16f; setTextColor(Color.WHITE); setPadding(ui.dp(10), ui.dp(2), ui.dp(8), ui.dp(2)); setOnClickListener { closeMiniLog() } })
+        col.addView(head)
+        col.addView(MaxHeightScroll(this, (resources.displayMetrics.heightPixels * 0.42f).toInt()).apply { addView(tv, FrameLayout.LayoutParams(-1, -2)) }, LinearLayout.LayoutParams(-1, -2))
+        val w = minOf(ui.dp(270), resources.displayMetrics.widthPixels - ui.dp(28))
+        videoBoxRef.addView(col, FrameLayout.LayoutParams(w, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(66), ui.dp(14), 0) })
+        miniLog = col
+    }
     private var logMode = 0
     override fun onTrimMemory(level: Int) { super.onTrimMemory(level); LogStore.add("⚠ onTrimMemory level=$level · ${LogStore.heapLine()}") }
     override fun onLowMemory() { super.onLowMemory(); LogStore.add("⚠ onLowMemory · ${LogStore.heapLine()}") }
@@ -741,7 +774,7 @@ class PlayerActivity : Activity(), Host {
             setOnClickListener { togglePlay() }
         }
         videoBox.addView(centerPlay, FrameLayout.LayoutParams(ui.dp(64), ui.dp(64), Gravity.CENTER))
-        fsBadge = TransBadge(this, th).apply { visibility = View.GONE; alpha = 0.5f; setOnClickListener { alpha = 1f; versionsPopup(this); h.postDelayed({ alpha = 0.5f }, 4000) } }   // (v99) عداد الجمل شفافية 50% — دوس عليه: قايمة الترجمات واللهجات
+        fsBadge = TransBadge(this, th).apply { visibility = View.GONE; alpha = 0.5f; setOnClickListener { alpha = 1f; toggleMiniLog(); h.postDelayed({ alpha = 0.5f }, 4000) }; setOnLongClickListener { alpha = 1f; closeMiniLog(); versionsPopup(this); h.postDelayed({ alpha = 0.5f }, 4000); true } }   // (v125) دوسة = اللوج الصغير (أنهي باتش بيترجم) · ضغطة طويلة = قايمة الترجمات المحفوظة
         videoBox.addView(fsBadge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(14), ui.dp(14), 0) })
         val gi = IconTextView(this).apply {
             textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -847,12 +880,18 @@ class PlayerActivity : Activity(), Host {
             val had = popupOwner === v; dismissPop()
             if (!had) {
                 (col.parent as? android.view.ViewGroup)?.removeView(col)
-                val pw = android.widget.PopupWindow(col, -2, -2, false)
+                // (v125) القوايم الطويلة بتتسكرول وبتتحصر في المساحة المتاحة بدل ما تطلع بره الشاشة
+                val dmP = resources.displayMetrics
+                col.measure(View.MeasureSpec.makeMeasureSpec((dmP.widthPixels * 0.9f).toInt(), View.MeasureSpec.AT_MOST), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+                val loc = IntArray(2); v.getLocationOnScreen(loc)
+                val goUp = above || (col === gText && textAtBottom)   // زرار في الشريط السفلي: القايمة تفتح فوقه
+                val avail = (if (goUp) loc[1] - ui.dp(8) else dmP.heightPixels - loc[1] - v.height - ui.dp(8)).coerceAtLeast(ui.dp(120))
+                val popH = minOf(col.measuredHeight, avail)
+                val svP = android.widget.ScrollView(this).apply { overScrollMode = View.OVER_SCROLL_NEVER; isVerticalScrollBarEnabled = false; addView(col) }
+                val pw = android.widget.PopupWindow(svP, maxOf(col.measuredWidth, ui.dp(150)), popH, false)
                 pw.isOutsideTouchable = true; pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
-                if (above || (col === gText && textAtBottom)) {   // زرار في الشريط السفلي: القايمة تفتح فوقه
-                    col.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-                    pw.showAsDropDown(v, 0, -(v.height + col.measuredHeight + ui.dp(2)))
-                } else pw.showAsDropDown(v, 0, ui.dp(2))
+                if (goUp) pw.showAsDropDown(v, 0, -(v.height + popH + ui.dp(2)))
+                else pw.showAsDropDown(v, 0, ui.dp(2))
                 popup = pw; popupOwner = v
             }
             showChrome(); if (popup != null) h.removeCallbacks(hideChrome)
@@ -1051,8 +1090,8 @@ class PlayerActivity : Activity(), Host {
         leftB.addView(lockB, lockLp()); leftB.addView(aiB)
         btnRow.addView(leftB, LinearLayout.LayoutParams(0, -2, 1f))
         val pillBg = { ui.box(0xE00F0F12.toInt(), 0x29FFFFFF, 24) }
-        val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
-        val nextB = ui.fsCircle("⏭") { stepEpisode(1); showChrome() }.apply { textSize = 20f; background = pillBg() }
+        val prevB = ui.fsCircle("⏮") { stepOrSeek(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
+        val nextB = ui.fsCircle("⏭") { stepOrSeek(1); showChrome() }.apply { textSize = 20f; background = pillBg() }
         fsPlayB.textSize = 30f
         fsPlayB.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x29FFFFFF) }
         val mid = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER; setPadding(ui.dp(6), 0, ui.dp(6), 0) }
@@ -1380,7 +1419,7 @@ class PlayerActivity : Activity(), Host {
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6); topMargin = ui.dp(4) }; setOnClickListener { f() }
         }
         fun logShow(m: Int) {
-            logMode = m
+            logMode = m; lastLogLen = -1
             logTv.text = when (m) {
                 1 -> LogStore.prevText(80000).ifBlank { "مفيش لوج لجلسة سابقة" }
                 2 -> LogStore.crashText().ifBlank { "مفيش كراش متسجّل" }
@@ -1399,7 +1438,7 @@ class PlayerActivity : Activity(), Host {
         logCol.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(logRow) }, LinearLayout.LayoutParams(-1, -2))
         (batchTv.parent as? android.view.ViewGroup)?.removeView(batchTv)
         batchTv.setOnClickListener(null); batchTv.isClickable = false; batchTv.setTextIsSelectable(true)
-        logCol.addView(batchTv, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(8), 0, ui.dp(8), ui.dp(6)) })
+        logCol.addView(MaxHeightScroll(this, (resources.displayMetrics.heightPixels * 0.14f).toInt()).apply { addView(batchTv, FrameLayout.LayoutParams(-1, -2)) }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(8), 0, ui.dp(8), ui.dp(6)) })
         logSv.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); logCol.addView(logSv)
         logDlg = ui.sheet(this, "📜 اللوجز", listOf<View>(logCol), true, frac = 0.45f)
         logDlg.setOnShowListener { logShow(0) }
@@ -1443,6 +1482,17 @@ class PlayerActivity : Activity(), Host {
                 cur = player.currentPosition
                 val d = player.duration
                 if (d > 0) durMs = d
+                run {
+                    val nowP = System.currentTimeMillis()
+                    if (nowP - lastPosSave >= 3000 && engineReady && !incognito && durMs > 0) {
+                        lastPosSave = nowP
+                        try {
+                            if (cur > 1000 && cur < durMs - 4000) Cfg.p.edit().putString("lastpos", vid + "\t" + cur).apply()
+                            else if (cur >= durMs - 4000 && (Cfg.p.getString("lastpos", "") ?: "").startsWith(vid + "\t")) Cfg.p.edit().remove("lastpos").apply()
+                        } catch (_: Throwable) {}
+                    }
+                    if (nowP - lastRecentSave >= 20000 && player.isPlaying) { lastRecentSave = nowP; Thread { try { saveRecent() } catch (_: Throwable) {} }.apply { isDaemon = true }.start() }
+                }
                 val frac = if (durMs > 0) (cur.toFloat() / durMs).coerceIn(0f, 1f) else 0f
                 val cov = if (durMs > 0) (engine.coveredSec() * 1000.0 / durMs).toFloat().coerceIn(0f, 1f) else 0f
                 val pr = if (fullMode) fsProgV else ctl.prog
@@ -1512,13 +1562,26 @@ class PlayerActivity : Activity(), Host {
                 val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { list[it].translated }
                 if (sTxt != soundKey) { soundKey = sTxt; soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE }
                 st.text = status
-                if (now - lastBatch > 700) { lastBatch = now; batchTv.text = engine.batchLines(); updateProblems() }
+                if (now - lastBatch > 700) {
+                    lastBatch = now
+                    val bl = engine.batchLines()
+                    if (bl != lastBatchTxt) { lastBatchTxt = bl; batchTv.text = bl; miniLogTv?.text = bl.ifBlank { "مفيش باتشات لسه" } }
+                    updateProblems()
+                }
                 if (now - lastBeat > 20000) { lastBeat = now; LogStore.add("💓 ${LogStore.heapLine()} · ${if (player.isPlaying) "بيشتغل" else "واقف"} @${fmtMs(cur)} · مترجم ${(engine.coveredSec() / 60).toInt()}د · ${engine.subs.size} جملة") }
                 run { val pc = PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0); if (pc != trPct) { trPct = pc; updateTr() } }
                 if (fullMode) fsBadge.set(PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toString() + "%", list.size.toString() + " جملة ▾")
                 if (now - lastMem > 4000) { lastMem = now; if (!fullMode) mem.update(this@PlayerActivity) }
                 counters.text = "جمل ${list.size} · تغطية ${PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0)}% · فجوات ${engine.failedCount()} · كوتة ${Quota.used(conf.model)}/${Models.quotaOf(conf.model)}"
-                if (logDlg.isShowing && logMode == 0) logTv.text = synchronized(logBuf) { logBuf.toString() }
+                if (logDlg.isShowing && logMode == 0) {
+                    val nl = synchronized(logBuf) { logBuf.length }
+                    if (nl != lastLogLen) {
+                        lastLogLen = nl
+                        val atBottom = !logSv.canScrollVertically(1)
+                        logTv.text = synchronized(logBuf) { logBuf.toString() }
+                        if (atBottom) logSv.post { logSv.fullScroll(View.FOCUS_DOWN) }
+                    }
+                }
                 h.postDelayed(this, 200)
             }
         })
@@ -1662,7 +1725,10 @@ class PlayerActivity : Activity(), Host {
         Thread {
             // (كانت بتتعمل على الـ UI وبتجمّد الشاشة): إيقاف ترجمة الخلفية + قراءة وتحليل ملف الترجمة المحفوظة
             if (wasBg) try { BgJobs.stopAndWait(vidNow, 2500) } catch (e: Throwable) { LogStore.err("Player:stopBg", e) }
-            val savedPos = try { eng.load() } catch (e: Throwable) { LogStore.err("Player:load", e); 0.0 }
+            val savedPos0 = try { eng.load() } catch (e: Throwable) { LogStore.err("Player:load", e); 0.0 }
+            // (v125) آخر مكان وقوف فعلي (بيتحفظ كل 3 ث، حتى وإنت في PiP) أحدث من اللي في ملف الترجمة
+            val lastPosSec = try { val s = Cfg.p.getString("lastpos", "") ?: ""; val i = s.indexOf('\t'); if (i > 0 && s.substring(0, i) == vidNow) (s.substring(i + 1).toLongOrNull() ?: 0L) / 1000.0 else 0.0 } catch (_: Throwable) { 0.0 }
+            val savedPos = if (lastPosSec > 5.0) lastPosSec else savedPos0
             val rp = if (savedPos <= 5.0 && uri == null) {
                 try { Recents.parse(File(filesDir, "recent.json").readText()).firstOrNull { it.id == vidNow }?.posSec ?: 0.0 } catch (_: Exception) { 0.0 }
             } else 0.0
@@ -1757,6 +1823,22 @@ class PlayerActivity : Activity(), Host {
     /** زرار 📋 في المشغّل = نفس صفحة اللوجز بتاعة القايمة (اللوج العايم اتلغى) */
     fun toggleLog() { if (logDlg.isShowing) logDlg.dismiss() else logDlg.show() }
 
+    /** (v125) ⏮ ⏭: لو الفيديو من فولدر في المكتبة → الحلقة اللي قبلها/بعدها، وإلا (فيديو إنترنت/ملف لوحده) → الجملة اللي قبلها/بعدها (قبل كده كانت بتطلّع رسالة بس) */
+    fun stepOrSeek(d: Int) {
+        val curU = uri?.toString(); val all = VideoScan.cache
+        val inLib = curU != null && all != null && all.any { it.uri == curU }
+        if (inLib && (if (d > 0) hasNextEpisode() else true)) {
+            val me = all!!.first { it.uri == curU }
+            val sib = VideoLib.sortVideos(all.filter { it.folderKey == me.folderKey }, VideoLib.SORT_NAME)
+            if (sib.getOrNull(sib.indexOfFirst { it.uri == curU } + d) != null) { stepEpisode(d); return }
+        }
+        val t = player.currentPosition - offsetMs
+        if (starts.isNotEmpty()) {
+            val i = if (d > 0) starts.indexOfFirst { it > t + 200 } else starts.indexOfLast { it < t - 1500 }
+            if (i >= 0) { player.seekTo(starts[i] + offsetMs); return }
+        }
+        player.seekTo((player.currentPosition + d * 10000L).coerceIn(0L, if (durMs > 0) durMs else Long.MAX_VALUE))
+    }
     /** الحلقة اللي بعدها (+1) أو اللي قبلها (-1) من نفس الفولدر: بيوقف ترجمة الحالية ويبدأ ترجمة الجديدة */
     fun stepEpisode(d: Int) {
         val curU = uri?.toString()
@@ -1866,7 +1948,7 @@ class PlayerActivity : Activity(), Host {
         if (inPipNow) { try {
             closeSide(); dismissPopFn()
             h.removeCallbacks(hideChrome); chromeShown = false
-            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; rotBtn.visibility = View.GONE; batchBtn.visibility = View.GONE; trChipV?.visibility = View.GONE; closeBatchPanel(); probDrawer.visibility = View.GONE; logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
+            extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; rotBtn.visibility = View.GONE; batchBtn.visibility = View.GONE; trChipV?.visibility = View.GONE; closeBatchPanel(); closeMiniLog(); probDrawer.visibility = View.GONE; logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
             fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
             visOv.showBoxes(emptyList())
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
@@ -1954,6 +2036,7 @@ class PlayerActivity : Activity(), Host {
     private fun saveRecent() { if (!handedOff) saveRecentForce() }
     private fun saveRecentForce() {
         if (incognito) return
+        try { if (durMs > 0 && cur > 1000 && cur < durMs - 4000 && vid.isNotEmpty()) Cfg.p.edit().putString("lastpos", vid + "\t" + cur).apply() } catch (_: Throwable) {}
         if (!::engine.isInitialized || !engineReady) return
         try {
             if (!incognito) {
@@ -2017,7 +2100,7 @@ class PlayerActivity : Activity(), Host {
         box.addView(ui.button("🧹 عائلي — نضّف الألفاظ الخارجة والإيحاءات") { d.dismiss(); runTool("عائلي", "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام.", true) })
         box.addView(ui.button("🔞 صريح — طابق صراحة النص الأصلي بالظبط") { d.dismiss(); runTool("صريح", "رجّع الترجمة لمطابقة صراحة النص الأصلي بالظبط (الألفاظ والإيحاءات زي ما هي في الأصل من غير تلطيف ولا حذف).", true) })
         box.addView(ui.button("↩ رجّع آخر نسخة قبل التعديل") { d.dismiss(); versionsDialog() })
-        d.setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18); addView(ui.text("😐 عادي / عائلي / صريح", 17f, th.primary, true)); addView(box) })
+        d.setContentView(android.widget.ScrollView(this).apply { addView(LinearLayout(this@PlayerActivity).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18); addView(ui.text("😐 عادي / عائلي / صريح", 17f, th.primary, true)); addView(box) }) })
         d.window?.apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT) }
         ui.fullPage(d)
         d.show()

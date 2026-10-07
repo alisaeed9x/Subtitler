@@ -185,7 +185,10 @@ class GAlert(private val ctx: Context) {
         }
         view?.let { v ->
             (v.parent as? ViewGroup)?.removeView(v)
-            root.addView(v, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) })
+            // (v125) أي محتوى طويل جوه الدايلوج لازم يتسكرول (كان بيتقص من غير ما يتحرك)
+            val scrollable = v is android.widget.ScrollView || v is android.widget.AbsListView || v is android.widget.HorizontalScrollView
+            val wrapped: View = if (scrollable) v else MaxHeightScroll(ctx, (dm.heightPixels * 0.6f).toInt()).apply { addView(v) }
+            root.addView(wrapped, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) })
         }
         items?.let { arr ->
             val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
