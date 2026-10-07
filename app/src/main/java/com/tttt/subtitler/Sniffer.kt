@@ -89,6 +89,14 @@ object Sniff {
         x = x.replace(LEAD, "").trim()
         return if (x.length > 2) x.take(120) else ""
     }
+    // (v120) جودات الفيديو في أي موقع: بنستنتج الارتفاع من اللينك (…/720/… أو _1080p) ونجمّع اللينكات اللي نفس الفيديو بجودات مختلفة
+    private val HQ = Regex("(?<![0-9])(2160|1440|1080|720|576|540|480|432|406|360|288|270|240|180|144)(?![0-9])")
+    fun heightOf(u: String): Int = HQ.findAll(u.substringBefore('?').substringBefore('#')).lastOrNull()?.value?.toIntOrNull() ?: 0
+    /** هيكل اللينك من غير رقم الجودة — اللينكات اللي ليها نفس الهيكل بجودات مختلفة = نفس الفيديو */
+    fun skeleton(u: String): String = key(u).replace(HQ, "#")
+    /** سطر الجودة: «720p · 85.3 MB» (الحجم الكلي لو معروف) */
+    fun qLabel(h: Int, idx: Int, size: Long, approx: Boolean = false): String =
+        (if (h > 0) h.toString() + "p" else "جودة " + idx) + (if (size > 0) " · " + (if (approx) "≈" else "") + fmtSize(size) else "")
     fun fmtSize(b: Long): String = if (b >= 1_048_576L * 1024) String.format("%.2f GB", b / 1073741824.0) else String.format("%.1f MB", b / 1048576.0)
 }
 
@@ -118,41 +126,72 @@ object AdBlock {
 
 /**
  * استخراج روابط يوتيوب المباشرة (صيغ فيها صوت وصورة + HLS لو موجود) من نفس واجهة تطبيق يوتيوب.
- * ملحوظة: يوتيوب بيغيّر الواجهة دي كل شوية، فلو فشلت البرنامج بيرجع لصيد المتصفح.
+ * ملحوظة: يوتيوب بيغيّر الواجهة دي كل شوية، فبنجرّب أكتر من «عميل» واحد ورا التاني، وسبب فشل كل واحد بيتسجّل في lastWhy
+ * (v119) عشان نعرف بالظبط إيه اللي حصل بدل ما نرمي المستخدم على المتصفح.
  */
 object YtExtract {
     private val ID = Regex("(?:youtu\\.be/|youtube(?:-nocookie)?\\.com/(?:watch\\?(?:[^#]*&)?v=|shorts/|embed/|live/|v/))([A-Za-z0-9_-]{11})")
     fun videoId(u: String): String? = ID.find(u)?.groupValues?.get(1)
 
-    private class Cl(val name: String, val ver: String, val id: Int, val ua: String, val extra: String)
+    /** (v119) سبب فشل آخر استخراج — سطر لكل عميل (للعرض في الرسالة واللوج) */
+    @Volatile var lastWhy: String = ""
+
+    private class Cl(val name: String, val ver: String, val id: Int, val ua: String, val extra: String, val ctx: String = "", val tag: String = name)
     private val clients = listOf(
+        Cl("ANDROID_VR", "1.65.10", 28, "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            "\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"osName\":\"Android\",\"osVersion\":\"12L\",\"androidSdkVersion\":32", tag = "VR"),
         Cl("ANDROID_VR", "1.60.19", 28, "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-            "\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"osName\":\"Android\",\"osVersion\":\"12L\",\"androidSdkVersion\":32"),
+            "\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"osName\":\"Android\",\"osVersion\":\"12L\",\"androidSdkVersion\":32", tag = "VR-old"),
+        Cl("TVHTML5_SIMPLY_EMBEDDED_PLAYER", "2.0", 85, "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
+            "\"clientScreen\":\"EMBED\"", ",\"thirdParty\":{\"embedUrl\":\"https://www.youtube.com/\"}", tag = "TV-embed"),
+        Cl("ANDROID_TESTSUITE", "1.9", 30, "com.google.android.youtube/1.9 (Linux; U; Android 11) gzip",
+            "\"osName\":\"Android\",\"osVersion\":\"11\",\"androidSdkVersion\":30", tag = "TEST"),
         Cl("ANDROID", "19.44.38", 3, "com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip",
-            "\"osName\":\"Android\",\"osVersion\":\"14\",\"androidSdkVersion\":34"),
+            "\"osName\":\"Android\",\"osVersion\":\"14\",\"androidSdkVersion\":34", tag = "ANDROID"),
+        Cl("ANDROID_MUSIC", "7.27.52", 21, "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14) gzip",
+            "\"osName\":\"Android\",\"osVersion\":\"14\",\"androidSdkVersion\":34", tag = "MUSIC"),
         Cl("IOS", "19.45.4", 5, "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
-            "\"deviceMake\":\"Apple\",\"deviceModel\":\"iPhone16,2\",\"osName\":\"iPhone\",\"osVersion\":\"18.1.0.22B83\"")
+            "\"deviceMake\":\"Apple\",\"deviceModel\":\"iPhone16,2\",\"osName\":\"iPhone\",\"osVersion\":\"18.1.0.22B83\"", tag = "IOS")
     )
 
-    /** بيشتغل على thread خلفي */
+    private class Res(val j: JSONObject?, val why: String)
+
+    private fun playerJson(c: Cl, id: String): Res {
+        val body = "{\"context\":{\"client\":{\"clientName\":\"${c.name}\",\"clientVersion\":\"${c.ver}\",${c.extra},\"hl\":\"en\",\"gl\":\"US\"}${c.ctx}},\"videoId\":\"$id\",\"contentCheckOk\":true,\"racyCheckOk\":true}"
+        var con: HttpURLConnection? = null
+        try {
+            con = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
+            con.requestMethod = "POST"; con.connectTimeout = 10000; con.readTimeout = 15000; con.doOutput = true
+            con.setRequestProperty("Content-Type", "application/json"); con.setRequestProperty("User-Agent", c.ua)
+            con.setRequestProperty("X-YouTube-Client-Name", c.id.toString()); con.setRequestProperty("X-YouTube-Client-Version", c.ver)
+            con.setRequestProperty("Origin", "https://www.youtube.com")
+            con.outputStream.use { it.write(body.toByteArray()) }
+            val code = con.responseCode
+            if (code != 200) return Res(null, "HTTP $code")
+            val j = JSONObject(con.inputStream.bufferedReader().use { it.readText() })
+            val ps = j.optJSONObject("playabilityStatus")
+            val st = ps?.optString("status") ?: "?"
+            if (st != "OK") {
+                val rs = ps?.optString("reason") ?: ""
+                return Res(null, st + (if (rs.isNotEmpty()) " – " + rs.take(90) else ""))
+            }
+            return Res(j, "")
+        } catch (e: Throwable) {
+            return Res(null, e.javaClass.simpleName + (e.message?.let { ": " + it.take(60) } ?: ""))
+        } finally { try { con?.disconnect() } catch (_: Throwable) {} }
+    }
+
+    /** بيشتغل على thread خلفي: كل الصيغ الجاهزة (صوت+صورة) + HLS لو موجود — للمتصفح والكليبورد */
     fun fetch(id: String): List<Found> {
-        val out = ArrayList<Found>(); val seen = HashSet<String>()
+        val out = ArrayList<Found>(); val seen = HashSet<String>(); val whys = ArrayList<String>()
         for (c in clients) {
             try {
-                val body = "{\"context\":{\"client\":{\"clientName\":\"${c.name}\",\"clientVersion\":\"${c.ver}\",${c.extra},\"hl\":\"en\",\"gl\":\"US\"}},\"videoId\":\"$id\",\"contentCheckOk\":true,\"racyCheckOk\":true}"
-                val con = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
-                con.requestMethod = "POST"; con.connectTimeout = 10000; con.readTimeout = 15000; con.doOutput = true
-                con.setRequestProperty("Content-Type", "application/json"); con.setRequestProperty("User-Agent", c.ua)
-                con.setRequestProperty("X-YouTube-Client-Name", c.id.toString()); con.setRequestProperty("X-YouTube-Client-Version", c.ver)
-                con.setRequestProperty("Origin", "https://www.youtube.com")
-                con.outputStream.use { it.write(body.toByteArray()) }
-                if (con.responseCode != 200) { con.disconnect(); continue }
-                val txt = con.inputStream.bufferedReader().use { it.readText() }
-                con.disconnect()
-                val j = JSONObject(txt)
-                if (j.optJSONObject("playabilityStatus")?.optString("status") != "OK") continue
+                val r = playerJson(c, id)
+                val j = r.j
+                if (j == null) { whys.add(c.tag + ": " + r.why); continue }
                 val title = j.optJSONObject("videoDetails")?.optString("title") ?: ""
-                val sd = j.optJSONObject("streamingData") ?: continue
+                val sd = j.optJSONObject("streamingData")
+                if (sd == null) { whys.add(c.tag + ": مفيش streamingData"); continue }
                 val fm = sd.optJSONArray("formats")
                 if (fm != null) for (i in 0 until fm.length()) {
                     val f = fm.getJSONObject(i); val u = f.optString("url")
@@ -166,8 +205,11 @@ object YtExtract {
                 val hls = sd.optString("hlsManifestUrl")
                 if (hls.isNotEmpty() && seen.add(hls)) out.add(Found(hls, "HLS", title, "https://www.youtube.com/", c.ua))
                 if (out.isNotEmpty()) break
-            } catch (e: Throwable) { LogStore.err("Sniffer:169", e) }
+                whys.add(c.tag + ": مفيش روابط مباشرة (محمي)")
+            } catch (e: Throwable) { LogStore.err("Sniffer:169", e); whys.add(c.tag + ": " + e.javaClass.simpleName) }
         }
+        lastWhy = if (out.isEmpty()) whys.joinToString("\n") else ""
+        if (out.isEmpty()) LogStore.add("⚠ YtExtract.fetch فشل ($id):\n" + lastWhy)
         return out
     }
 
@@ -178,33 +220,23 @@ object YtExtract {
         fun optsJson(): String { val a = JSONArray(); for (o in opts) a.put(JSONObject().put("l", o.label).put("u", o.url).put("a", o.audio ?: "").put("h", o.h)); return a.toString() }
     }
 
-    private fun playerJson(c: Cl, id: String): JSONObject? {
-        val body = "{\"context\":{\"client\":{\"clientName\":\"${c.name}\",\"clientVersion\":\"${c.ver}\",${c.extra},\"hl\":\"en\",\"gl\":\"US\"}},\"videoId\":\"$id\",\"contentCheckOk\":true,\"racyCheckOk\":true}"
-        val con = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
-        try {
-            con.requestMethod = "POST"; con.connectTimeout = 10000; con.readTimeout = 15000; con.doOutput = true
-            con.setRequestProperty("Content-Type", "application/json"); con.setRequestProperty("User-Agent", c.ua)
-            con.setRequestProperty("X-YouTube-Client-Name", c.id.toString()); con.setRequestProperty("X-YouTube-Client-Version", c.ver)
-            con.setRequestProperty("Origin", "https://www.youtube.com")
-            con.outputStream.use { it.write(body.toByteArray()) }
-            if (con.responseCode != 200) return null
-            val j = JSONObject(con.inputStream.bufferedReader().use { it.readText() })
-            return if (j.optJSONObject("playabilityStatus")?.optString("status") == "OK") j else null
-        } finally { con.disconnect() }
-    }
-
     private fun mb(n: Long) = if (n > 0) " · " + (if (n >= 10_485_760L) (n / 1_048_576L).toString() else String.format("%.1f", n / 1048576.0)) + "MB" else ""
 
     /**
      * بيجرّب العملاء واحد ورا التاني ويرجّع كل الجودات المتاحة (144p…1080p بحجمها التقريبي).
      * maxH > 0: بيختار أعلى جودة لحد الارتفاع ده (للداتا القليلة)، غير كده أعلى جودة متاحة.
+     * (v119) لو ولا عميل دّى روابط مباشرة لكن في HLS: بيرجّع HLS (المشغّل بيختار الجودة منه). لو مفيش خالص: null وlastWhy فيه السبب.
      */
     fun fetchPick(id: String, maxH: Int = 0): Pick? {
+        val whys = ArrayList<String>(); var hlsPick: Pick? = null
         for (c in clients) {
             try {
-                val j = playerJson(c, id) ?: continue
+                val r = playerJson(c, id)
+                val j = r.j
+                if (j == null) { whys.add(c.tag + ": " + r.why); continue }
                 val title = j.optJSONObject("videoDetails")?.optString("title") ?: ""
-                val sd = j.optJSONObject("streamingData") ?: continue
+                val sd = j.optJSONObject("streamingData")
+                if (sd == null) { whys.add(c.tag + ": مفيش streamingData"); continue }
                 val byH = HashMap<Int, Opt>()
                 // صيغ فيها صوت وصورة (الأبسط): بتتفضّل لو نفس الجودة
                 sd.optJSONArray("formats")?.let { a -> for (i in 0 until a.length()) {
@@ -220,7 +252,7 @@ object YtExtract {
                     if (f.optString("url").isEmpty()) continue
                     val m = f.optString("mimeType")
                     if (m.startsWith("video/mp4") && m.contains("avc1")) { val h = f.optInt("height"); if (h in 1..1080) vids.add(f) }
-                    else if (m.startsWith("audio/mp4")) { val r = f.optInt("bitrate"); if (r > baR) { ba = f; baR = r } }
+                    else if (m.startsWith("audio/mp4")) { val rt = f.optInt("bitrate"); if (rt > baR) { ba = f; baR = rt } }
                 } }
                 val au = ba
                 if (au != null) {
@@ -232,12 +264,20 @@ object YtExtract {
                         byH[h] = Opt(h.toString() + "p" + mb(if (vs > 0) vs + aSize else 0L), f.optString("url"), au.optString("url"), h)
                     }
                 }
-                if (byH.isEmpty()) continue
+                if (byH.isEmpty()) {
+                    val hls = sd.optString("hlsManifestUrl")
+                    if (hls.isNotEmpty() && hlsPick == null) hlsPick = Pick(hls, null, title, c.ua, "HLS", emptyList())
+                    whys.add(c.tag + ": مفيش روابط مباشرة (محمي)" + (if (hls.isNotEmpty()) " — فيه HLS" else ""))
+                    continue
+                }
                 val opts = byH.values.sortedByDescending { it.h }
                 val chosen = (if (maxH > 0) opts.firstOrNull { it.h <= maxH } ?: opts.last() else opts.first())
+                lastWhy = ""
                 return Pick(chosen.url, chosen.audio, title, c.ua, chosen.label, opts)
-            } catch (e: Throwable) { LogStore.err("Sniffer:pick", e) }
+            } catch (e: Throwable) { LogStore.err("Sniffer:pick", e); whys.add(c.tag + ": " + e.javaClass.simpleName) }
         }
-        return null
+        lastWhy = whys.joinToString("\n")
+        LogStore.add("⚠ YtExtract.fetchPick ($id)" + (if (hlsPick != null) " — بجرّب HLS" else " فشل") + ":\n" + lastWhy)
+        return hlsPick
     }
 }

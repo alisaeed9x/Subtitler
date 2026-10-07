@@ -198,6 +198,30 @@ class BrowserActivity : Activity() {
         "document.querySelectorAll('a[href]').forEach(function(l){if(/\\.(mp4|m3u8|webm|mkv|mov|m4v)([?#]|\$)/i.test(l.href))a(l.href)});" +
         "return JSON.stringify(o)})()"
 
+    // (v120) جودات أي موقع: عناصر <source> جوه نفس <video> (بـ label/size/res) = نفس الفيديو بجودات مختلفة
+    private val JSQ = """(function(){var g=[];document.querySelectorAll('video').forEach(function(v){var m=[];v.querySelectorAll('source').forEach(function(s){var u=s.src;if(!u)return;var t=(s.getAttribute('label')||s.getAttribute('res')||s.getAttribute('size')||s.getAttribute('data-res')||s.getAttribute('title')||'');var mm=/([0-9]{3,4})/.exec(t);m.push({u:u,h:mm?parseInt(mm[1]):0})});if(m.length>1)g.push(m)});return JSON.stringify(g)})()"""
+    private val webGroups = ArrayList<List<Pair<String, Int>>>()
+
+    /** لو الفيديو اللي هيتفتح ليه جودات تانية في نفس الصفحة: قايمة الجودات (بحجمها الكلي) بنفس صيغة يوتيوب، وإلا null */
+    private fun webQlist(f: Found): String? {
+        val k = Sniff.key(f.url)
+        val grp = webGroups.firstOrNull { g -> g.any { Sniff.key(it.first) == k } }
+        val raw = ArrayList<Triple<String, Int, Long>>()   // url, height, size
+        if (grp != null) {
+            for (m in grp) { val it0 = items.firstOrNull { x -> Sniff.key(x.url) == Sniff.key(m.first) }
+                raw.add(Triple(m.first, if (m.second > 0) m.second else Sniff.heightOf(m.first), it0?.size ?: -1L)) }
+        } else {
+            val sk = Sniff.skeleton(f.url)
+            for (x in items) if (x.ref == f.ref && x.kind != "HLS" && Sniff.skeleton(x.url) == sk) raw.add(Triple(x.url, Sniff.heightOf(x.url), x.size))
+            if (raw.map { it.second }.filter { it > 0 }.toSet().size < 2) return null
+        }
+        val uniq = raw.distinctBy { Sniff.key(it.first) }.sortedByDescending { it.second }
+        if (uniq.size < 2) return null
+        val a = JSONArray()
+        for ((i, t) in uniq.withIndex()) a.put(JSONObject().put("l", Sniff.qLabel(t.second, i + 1, t.third)).put("u", t.first).put("a", "").put("h", t.second))
+        return a.toString()
+    }
+
     // ===== بناء الشاشة =====
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -723,17 +747,42 @@ class BrowserActivity : Activity() {
                 } catch (e: Throwable) { LogStore.err("Browser:scan2", e) }
             }
         } catch (e: Throwable) { LogStore.err("Browser:scan3", e) }
+        scanGroups()
+    }
+    private fun scanGroups() {
+        val wv = wvOrNull ?: return
+        try {
+            wv.evaluateJavascript(JSQ) { r ->
+                try {
+                    val s = JSONTokener(r ?: "").nextValue() as? String ?: return@evaluateJavascript
+                    val arr = JSONArray(s)
+                    for (i in 0 until arr.length()) {
+                        val ga = arr.getJSONArray(i); val g = ArrayList<Pair<String, Int>>()
+                        for (j in 0 until ga.length()) { val o = ga.getJSONObject(j); val u = Sniff.accept(o.optString("u")) ?: continue; g.add(u to o.optInt("h")); addUrl(u) }
+                        if (g.size > 1 && webGroups.none { x -> x.any { y -> g.any { z -> Sniff.key(z.first) == Sniff.key(y.first) } } }) webGroups.add(g)
+                    }
+                } catch (e: Throwable) { LogStore.err("Browser:grp", e) }
+            }
+        } catch (e: Throwable) { LogStore.err("Browser:grp2", e) }
     }
     private fun scanLoop() { if (dead) return; scanOnce(); h.postDelayed({ scanLoop() }, 2000) }
 
+    private val ytPicks = HashMap<String, YtExtract.Pick>()   // (v119) معرّف → أحسن اختيار (فيه الصوت المنفصل وقايمة الجودات)
     private fun ytFetch(id: String) {
         hint.text = "⏳ بجيب روابط يوتيوب…"
         Thread {
             val r = try { YtExtract.fetch(id) } catch (_: Throwable) { emptyList() }
+            // لو الصيغ الجاهزة فشلت: نجرّب الصور+صوت المنفصلين / HLS (نفس طريقة بوابة يوتيوب)
+            val pk = if (r.isEmpty()) try { YtExtract.fetchPick(id, Cfg.int("yt_maxh", 0)) } catch (_: Throwable) { null } else null
             runOnUiThread {
                 if (dead) return@runOnUiThread
                 r.forEach { ytIds[Sniff.key(it.url)] = id; addFound(it) }
-                if (r.isEmpty() && items.isEmpty()) hint.text = "يوتيوب ما رضيش يدّي لينك مباشر — شغّل الفيديو في الصفحة وأنا هحاول ألقطه"
+                if (pk != null) {
+                    ytPicks[id] = pk
+                    val f = Found(pk.url, if (pk.label == "HLS") "HLS" else "YT " + pk.label.substringBefore(' '), pk.title, "https://www.youtube.com/", pk.ua)
+                    ytIds[Sniff.key(f.url)] = id; addFound(f)
+                }
+                if (r.isEmpty() && pk == null && items.isEmpty()) hint.text = "يوتيوب ما رضيش يدّي لينك مباشر — شغّل الفيديو في الصفحة وأنا هحاول ألقطه\n" + YtExtract.lastWhy
             }
         }.apply { isDaemon = true }.start()
     }
@@ -861,7 +910,11 @@ class BrowserActivity : Activity() {
         val yid = ytIds[Sniff.key(f.url)] ?: YtExtract.videoId(f.ref) ?: (if (isYtStream) YtExtract.videoId(wvOrNull?.url ?: "") else null) ?: ""
         if (yid.isNotEmpty()) try { YtHistory.add(this, yid, titleFor(f)) } catch (e: Throwable) { LogStore.err("Browser:yt2", e) }
         startActivity(Intent(this, PlayerActivity::class.java).apply {
-            if (yid.isNotEmpty()) putExtra("ytid", yid)
+            if (yid.isNotEmpty()) {
+                putExtra("ytid", yid)
+                ytPicks[yid]?.let { pk -> if (pk.url == f.url) { putExtra("aurl", pk.audio ?: ""); putExtra("qlist", pk.optsJson()) } }
+            }
+            if (yid.isEmpty()) try { webQlist(f)?.let { putExtra("qlist", it) } } catch (e: Throwable) { LogStore.err("Browser:wq", e) }
             putExtra("url", f.url); putExtra("ref", f.ref)
             putExtra("cookie", try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" })
             putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("title", titleFor(f)); putExtra("nosub", noSub); putExtra("autotr", !noSub)

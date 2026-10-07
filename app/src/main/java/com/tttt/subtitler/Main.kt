@@ -728,8 +728,13 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (best == null) {
-                    Notice.show(this, ("يوتيوب ما رضيش يدّي لينك مباشر — هفتحه في المتصفح").toString(), 3000L)
-                    startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", YtHistory.watchUrl(id)).putExtra("noauto", true))
+                    // (v119) مفيش رمي أوتوماتيك على المتصفح: بنقولك السبب وإنت تختار (تعيد / تفتحه في المتصفح / تقفل)
+                    val why = YtExtract.lastWhy.ifBlank { "السبب مش معروف (راجع اللوج)" }
+                    GAlert(this).setTitle("⚠ ما قدرتش أجيب الفيديو")
+                        .setMessage("يوتيوب ما رضيش يدّي لينك للفيديو ده من التطبيق.\n\n" + why)
+                        .setPositiveButton("🔁 جرّب تاني") { _, _ -> playYt(id, title, translate) }
+                        .setNeutralButton("🌐 افتحه في المتصفح") { _, _ -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", YtHistory.watchUrl(id)).putExtra("noauto", true)) }
+                        .setNegativeButton("إغلاق", null).show()
                     return@runOnUiThread
                 }
                 val ttl = title.ifBlank { best.title }
@@ -756,7 +761,7 @@ class MainActivity : Activity() {
         Notice.show(this, ("بجيب الفيديو…").toString(), 2300L)
         Thread {
             val best = try { YtExtract.fetch(id).filter { it.kind != "HLS" }.maxByOrNull { Regex("(\\d+)p").find(it.kind)?.groupValues?.get(1)?.toIntOrNull() ?: 0 } } catch (_: Throwable) { null }
-            runOnUiThread { if (best != null) go(best.url, best.ref, best.ua) else openLink(c.url) }
+            runOnUiThread { if (best != null) go(best.url, best.ref, best.ua) else playYt(id, "", true) }
         }.apply { isDaemon = true }.start()
     }
     override fun onResume() {

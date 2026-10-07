@@ -85,6 +85,12 @@ class PlayerActivity : Activity(), Host {
     private var qCur = -1
     private var hlsH = 0                                   // جودة HLS المثبّتة (0 = تلقائي)
     private var qualBRef: TextView? = null
+    private val qualRowRefs = ArrayList<TextView>()          // (v120) زرار «🎞 الجودة» اللي جنب زرار الترجمة (في الشريط السفلي والواسع)
+    private var qualPopFn: ((View) -> Unit)? = null
+    private fun setQualLabel(h: Int) {
+        qualBRef?.text = if (h > 0) h.toString() else "HD"
+        for (v in qualRowRefs) v.text = if (h > 0) "${h}p ▾" else if (vidW > 0 && vidH > 0) "${minOf(vidW, vidH)}p ▾" else "الجودة ▾"
+    }
     var uri: Uri? = null
     private var httpDsf: DefaultHttpDataSource.Factory? = null
     val hdr = HashMap<String, String>()
@@ -253,6 +259,12 @@ class PlayerActivity : Activity(), Host {
         var lgRef: TextView? = null
         val lgB = b(if (compact) "🌐 اللغة ▾" else "🌐 لغة الترجمة ▾", 0xFF37474F.toInt()) { lgRef?.let { langPopup(it) } }
         lgRef = lgB
+        fun qBtn(): TextView {
+            val cur = qOpts.getOrNull(qCur)?.h ?: 0
+            val v = b(if (cur > 0) "${cur}p ▾" else "الجودة ▾", 0xFF37474F.toInt()) { }
+            v.setOnClickListener { qualPopFn?.invoke(v) }
+            qualRowRefs.add(v); return v
+        }
         if (compact) {
             // الشريط السفلي: شريحة صغيرة بنسبة الترجمة (⏳ 19%) — دوس عليها تتفرد: إيقاف/استئناف + اللغة، وبتتلم لوحدها بعد 5 ثواني
             var open = false
@@ -264,6 +276,7 @@ class PlayerActivity : Activity(), Host {
             val tg = b("⏸ إيقاف", 0xFF424B57.toInt()) { if (::engine.isInitialized && engine.userPaused) beginTranslate() else pauseTranslate(); h.removeCallbacks(closeR); h.postDelayed(closeR, 5000) }
             val rd = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { h.removeCallbacks(closeR); h.postDelayed(closeR, 8000); redoDialog() }
             row.addView(chipB, lp(-2)); row.addView(tg, lp(-2)); row.addView(rd, lp(-2)); row.addView(lgB, lp(-2))
+            if (uri == null && url != null) row.addView(qBtn(), lp(-2))
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
                 val started = engineStarted
@@ -287,6 +300,7 @@ class PlayerActivity : Activity(), Host {
             row.addView(rs, lp(0).apply { width = 0; weight = 1f })
             row.addView(rd2, lp(0).apply { width = 0; weight = 1f })
             row.addView(lgB, lp(0).apply { width = 0; weight = 1.3f })
+            if (uri == null && url != null) row.addView(qBtn(), lp(0).apply { width = 0; weight = 1.1f })
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
                 rd2.visibility = if (engineStarted) View.VISIBLE else View.GONE
@@ -905,10 +919,15 @@ class PlayerActivity : Activity(), Host {
                 val tg = ArrayList<Triple<Int, androidx.media3.common.Tracks.Group, Int>>()
                 for (g in player.currentTracks.groups) if (g.type == androidx.media3.common.C.TRACK_TYPE_VIDEO)
                     for (ti in 0 until g.length) if (g.isTrackSupported(ti)) tg.add(Triple(g.getTrackFormat(ti).height, g, ti))
-                val hs = tg.filter { it.first > 0 }.sortedByDescending { it.first }.distinctBy { it.first }
+                // (v120) أعلى bitrate لكل ارتفاع، والحجم الكلي تقريبي = bitrate × مدة الفيديو (HLS/DASH مفيهوش حجم جاهز)
+                val hs = tg.filter { it.first > 0 }.sortedWith(compareByDescending<Triple<Int, androidx.media3.common.Tracks.Group, Int>> { it.first }.thenByDescending { it.second.getTrackFormat(it.third).bitrate }).distinctBy { it.first }
+                fun szOf(q: Triple<Int, androidx.media3.common.Tracks.Group, Int>): String {
+                    val br = q.second.getTrackFormat(q.third).bitrate.toLong()
+                    return if (br > 0 && durMs > 0) " · ≈" + Sniff.fmtSize(br / 8 * (durMs / 1000)) else ""
+                }
                 if (hs.size > 1) {
                     gQ.addView(pd((if (hlsH == 0) "✓ " else "") + "تلقائي") { hlsAuto() })
-                    for (q in hs) gQ.addView(pd((if (hlsH == q.first) "✓ " else "") + q.first + "p") { hlsPick(q.second, q.third, q.first) })
+                    for (q in hs) gQ.addView(pd((if (hlsH == q.first) "✓ " else "") + q.first + "p" + szOf(q)) { hlsPick(q.second, q.third, q.first) })
                 }
             }
             return gQ.childCount > 0
@@ -916,6 +935,8 @@ class PlayerActivity : Activity(), Host {
         val qualB = mini("HD") { v -> if (fillQ()) togglePop(v, gQ, true) else Notice.show(this, "مفيش جودات تانية للفيديو ده", 2300L) }
         qualB.visibility = if (uri == null) View.VISIBLE else View.GONE
         qualBRef = qualB
+        qualPopFn = { v -> if (fillQ()) togglePop(v, gQ, true) else Notice.show(this, "مفيش جودات تانية للفيديو ده", 2300L) }
+        setQualLabel(qOpts.getOrNull(qCur)?.h ?: 0)
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
         val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
@@ -1009,7 +1030,7 @@ class PlayerActivity : Activity(), Host {
         val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.START or Gravity.CENTER_VERTICAL }
         val lockB = ui.fsCircle("🔓") { setLock(true) }
         val lockLp = { LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) } }
-        leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(qualB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(4) })
+        leftB.addView(lockB, lockLp()); leftB.addView(aiB)
         btnRow.addView(leftB, LinearLayout.LayoutParams(0, -2, 1f))
         val pillBg = { ui.box(0xE00F0F12.toInt(), 0x29FFFFFF, 24) }
         val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
@@ -1041,7 +1062,7 @@ class PlayerActivity : Activity(), Host {
             leftB.removeAllViews(); rightB.removeAllViews(); tbRow.removeAllViews()
             // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 🔁 تكرار, 💬 وضع الترجمة]
             fun lp(i: Int) = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(38), ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) }
-            leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(qualB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(4) })
+            leftB.addView(lockB, lockLp()); leftB.addView(aiB)
             rightB.addView(rotBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })
             rightB.addView(pipBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
             rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
@@ -1495,25 +1516,26 @@ class PlayerActivity : Activity(), Host {
         try {
             val pos = player.currentPosition; val play = player.playWhenReady
             val f = httpDsf ?: DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true)
-            val pf = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(f)
-            val v = pf.createMediaSource(MediaItem.fromUri(Uri.parse(o.url)))
             val au = o.audio
-            val src = if (au != null) androidx.media3.exoplayer.source.MergingMediaSource(v, pf.createMediaSource(MediaItem.fromUri(Uri.parse(au)))) else v
+            // (v120) أي موقع: من غير صوت منفصل بنسيب ExoPlayer يختار النوع (MP4/HLS…) من اللينك؛ يوتيوب بصوت منفصل بيتدمج
+            val src = if (au != null) { val pf = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(f)
+                androidx.media3.exoplayer.source.MergingMediaSource(pf.createMediaSource(MediaItem.fromUri(Uri.parse(o.url))), pf.createMediaSource(MediaItem.fromUri(Uri.parse(au)))) }
+            else DefaultMediaSourceFactory(f).createMediaSource(MediaItem.fromUri(Uri.parse(o.url)))
             player.setMediaSource(src, pos); player.prepare(); player.playWhenReady = play
-            qCur = i; qualBRef?.text = o.h.toString()
-            Cfg.put("yt_maxh", o.h.toString())
+            qCur = i; setQualLabel(o.h)
+            if (intent.getStringExtra("ytid") != null) Cfg.put("yt_maxh", o.h.toString())
             Notice.show(this, "🎞 الجودة: " + o.label, 2000L)
         } catch (e: Exception) { LogStore.err("Player:switchYt", e); Notice.show(this, "ما قدرتش أغيّر الجودة", 2300L) }
     }
     private fun hlsAuto() {
         hlsH = 0
         try { player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO).build() } catch (e: Exception) { LogStore.err("Player:hlsAuto", e) }
-        qualBRef?.text = "HD"; Notice.show(this, "🎞 الجودة: تلقائي", 1800L)
+        setQualLabel(0); Notice.show(this, "🎞 الجودة: تلقائي", 1800L)
     }
     private fun hlsPick(g: androidx.media3.common.Tracks.Group, i: Int, h: Int) {
         hlsH = h
         try { player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setOverrideForType(androidx.media3.common.TrackSelectionOverride(g.mediaTrackGroup, i)).build() } catch (e: Exception) { LogStore.err("Player:hlsPick", e) }
-        qualBRef?.text = h.toString(); Notice.show(this, "🎞 الجودة: " + h + "p", 1800L)
+        setQualLabel(h); Notice.show(this, "🎞 الجودة: " + h + "p", 1800L)
     }
 
     private fun buildPlayer() {
@@ -1531,6 +1553,7 @@ class PlayerActivity : Activity(), Host {
             override fun onVideoSizeChanged(v: VideoSize) {
                 if (v.width > 0 && v.height > 0) {
                     vidW = v.width; vidH = v.height; videoBox.post { applyFit(sv, videoBox) }
+                    if (hlsH == 0 && qOpts.getOrNull(qCur) == null) setQualLabel(0)
                     // الفيديو يفتح على شكله الحقيقي: طولي → رأسي، عريض → أفقي (مرة واحدة، ومالهاش دعوة لو إنت بدّلت بإيدك)
                     if (!userRot && !autoRotDone && !pipNow()) {
                         autoRotDone = true
