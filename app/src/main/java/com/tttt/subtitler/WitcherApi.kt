@@ -84,15 +84,20 @@ object WitcherApi {
     )
 
     fun home(): Home = pool.submit<Home> {
-        // Match the old app's home/search source: Algolia index "series".
-        // The old APK obtains the Algolia app id/key from Settings/search_service.
-        val latest = try { algoliaSearch("").take(24) } catch (_: Throwable) { emptyList() }
+        // The old app uses Algolia for search, but the home screen also has
+        // Firestore-backed anime_list data. Do NOT make the whole home screen
+        // depend on Algolia: if its remote search config changes, the library
+        // must still load.
+        val latest = try {
+            val fromFirestore = listAnimeFromFirestore(40)
+            if (fromFirestore.isNotEmpty()) fromFirestore
+            else algoliaSearch("").take(40)
+        } catch (_: Throwable) {
+            try { algoliaSearch("").take(40) } catch (_: Throwable) { emptyList() }
+        }
 
-        // Build the "new episodes" row from the same Firestore episode summaries
-        // used by the old Anime Witcher app. We intentionally do not invent a
-        // separate collection such as new_episodes/new_added_anime.
         val pairs = ArrayList<Pair<Series, Episode>>()
-        for (series in latest.take(16)) {
+        for (series in latest.take(20)) {
             val ep = try { getEpisodes(series.id).maxByOrNull { it.number } } catch (_: Throwable) { null }
             if (ep != null) pairs += series to ep
             if (pairs.size >= 12) break
@@ -101,7 +106,15 @@ object WitcherApi {
     }.get()
 
     fun search(query: String): List<Series> = pool.submit<List<Series>> {
-        algoliaSearch(query.trim())
+        val q = query.trim()
+        try {
+            val hits = algoliaSearch(q)
+            if (hits.isNotEmpty()) return@submit hits
+        } catch (_: Throwable) { }
+        // Same Firestore source as the old app, as a resilient fallback.
+        listAnimeFromFirestore(500).filter { s ->
+            q.isBlank() || s.name.contains(q, true) || s.englishName.contains(q, true)
+        }
     }.get()
 
     fun getAnime(id: String): ItemDetails = pool.submit<ItemDetails> {
@@ -113,24 +126,25 @@ object WitcherApi {
 
     fun getServers(animeId: String, episodeNumber: Int): List<Server> = pool.submit<List<Server>> {
         val padded = String.format(Locale.US, "%03d", episodeNumber)
-        val obj = getObjectAllow404("/anime_list/${path(animeId)}/episodes/$padded/servers") ?: return@submit emptyList()
+        val obj = getObjectAllow404("/anime_list/${path(animeId)}/episodes/$padded/servers")
+            ?: getObjectAllow404("/anime_list/${path(animeId)}/episodes/$episodeNumber/servers")
+            ?: return@submit emptyList()
         val docs = obj.optJSONArray("documents") ?: JSONArray()
         val out = ArrayList<Server>()
         for (i in 0 until docs.length()) {
             val d = docs.optJSONObject(i) ?: continue
             val f = d.optJSONObject("fields") ?: continue
-            val name = f.optStringAny("name") ?: continue
-            val rawLink = f.optStringAny("direct_link", "link") ?: continue
-            val quality = f.optStringAny("quality") ?: ""
+            val name = f.valueStringAny("name") ?: continue
+            val rawLink = f.valueStringAny("direct_link", "link") ?: continue
             if (name.isBlank() || rawLink.isBlank()) continue
             out += Server(
                 id = d.optString("name").substringAfterLast('/'),
                 name = name,
                 link = rawLink,
-                quality = quality,
-                visible = f.optBooleanAny("visible"),
-                openBrowser = f.optBooleanAny("open_browser", "openBrowser"),
-                updateServer = f.optStringAny("update_server", "updateServer") ?: ""
+                quality = f.valueStringAny("quality") ?: "",
+                visible = f.valueBooleanAny("visible"),
+                openBrowser = f.valueBooleanAny("open_browser", "openBrowser"),
+                updateServer = f.valueStringAny("update_server", "updateServer") ?: ""
             )
         }
         out
@@ -177,22 +191,36 @@ object WitcherApi {
 
     private fun loadSearchConfig(): Pair<String, String> {
         return try {
-            val doc = getObjectAllow404(SEARCH_SERVICE_PATH) ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
-            val f = doc.optJSONObject("fields") ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
-            val appId = f.optStringAny("algolia_app_id", "app_id", "appId") ?: DEFAULT_ALGOLIA_APP_ID
-            val key = f.optStringAny("algolia_browse_api_key", "algolia_api_key", "browse_api_key", "api_key")
-                ?: DEFAULT_ALGOLIA_API_KEY
+            val doc = getObjectAllow404(SEARCH_SERVICE_PATH)
+                ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
+            val f = doc.optJSONObject("fields")
+                ?: return DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
+            val appId = f.valueStringAny("algolia_app_id", "app_id", "appId")
+                ?: DEFAULT_ALGOLIA_APP_ID
+            val key = f.valueStringAny(
+                "algolia_browse_api_key", "algolia_api_key", "browse_api_key", "api_key"
+            ) ?: DEFAULT_ALGOLIA_API_KEY
             appId to key
         } catch (_: Throwable) {
             DEFAULT_ALGOLIA_APP_ID to DEFAULT_ALGOLIA_API_KEY
         }
     }
 
+    private fun listAnimeFromFirestore(limit: Int): List<Series> {
+        val obj = getObjectAllow404("/anime_list?pageSize=${limit.coerceIn(1, 1000)}") ?: return emptyList()
+        val docs = obj.optJSONArray("documents") ?: return emptyList()
+        return (0 until docs.length()).mapNotNull { i ->
+            val d = docs.optJSONObject(i) ?: return@mapNotNull null
+            val id = d.optString("name").substringAfterLast('/')
+            if (id.isBlank()) null else parseSeries(d, id)
+        }.sortedByDescending { it.updatedAt }
+    }
+
     private fun getEpisodes(animeId: String): List<Episode> {
         val summary = getObjectAllow404("/anime_list/${path(animeId)}/episodes_summery/summery")
         if (summary != null) {
             val values = summary.optJSONObject("fields")
-                ?.optJSONObject("episodes")
+                ?.valueObject("episodes")
                 ?.optJSONObject("arrayValue")
                 ?.optJSONArray("values")
             if (values != null) {
@@ -207,14 +235,14 @@ object WitcherApi {
         for (i in 0 until arr.length()) {
             val d = arr.optJSONObject(i) ?: continue
             val f = d.optJSONObject("fields") ?: continue
-            val docId = f.optStringAny("doc_id") ?: d.optString("name").substringAfterLast('/')
-            val number = docId.filter { it.isDigit() }.trimStart('0').toIntOrNull() ?: 1
+            val docId = f.valueStringAny("doc_id") ?: d.optString("name").substringAfterLast('/')
+            val number = docId.filter { it.isDigit() }.trimStart('0').toIntOrNull() ?: continue
             out += Episode(
                 id = docId,
                 number = number,
-                name = f.optStringAny("name", "episode_name", "episode_title") ?: "الحلقة $number",
-                thumb = f.optStringAny("thumb_uri", "thumb") ?: "",
-                filler = f.optBooleanAny("filler")
+                name = f.valueStringAny("name", "episode_name", "episode_title") ?: "الحلقة $number",
+                thumb = f.valueStringAny("thumb_uri", "thumb") ?: "",
+                filler = f.valueBooleanAny("filler")
             )
         }
         return out.sortedBy { it.number }
@@ -224,14 +252,14 @@ object WitcherApi {
         val out = ArrayList<Episode>()
         for (i in 0 until values.length()) {
             val fields = values.optJSONObject(i)?.optJSONObject("mapValue")?.optJSONObject("fields") ?: continue
-            val docId = fields.optStringAny("doc_id") ?: ""
+            val docId = fields.valueStringAny("doc_id") ?: continue
             val number = docId.filter { it.isDigit() }.trimStart('0').toIntOrNull() ?: continue
             out += Episode(
                 id = docId,
                 number = number,
-                name = fields.optStringAny("name", "episode_name", "episode_title") ?: "الحلقة $number",
-                thumb = fields.optStringAny("thumb_uri", "thumb") ?: "",
-                filler = fields.optBooleanAny("filler")
+                name = fields.valueStringAny("name", "episode_name", "episode_title") ?: "الحلقة $number",
+                thumb = fields.valueStringAny("thumb_uri", "thumb") ?: "",
+                filler = fields.valueBooleanAny("filler")
             )
         }
         return out
@@ -257,19 +285,19 @@ object WitcherApi {
 
     private fun parseSeries(doc: JSONObject, id: String): Series {
         val f = doc.optJSONObject("fields") ?: JSONObject()
-        val d = f.optJSONObject("details")?.optJSONObject("mapValue")?.optJSONObject("fields") ?: JSONObject()
-        val p = f.optJSONObject("poster")?.optJSONObject("mapValue")?.optJSONObject("fields") ?: JSONObject()
+        val d = f.valueObject("details")?.optJSONObject("mapValue")?.optJSONObject("fields") ?: JSONObject()
+        val p = f.valueObject("poster")?.optJSONObject("mapValue")?.optJSONObject("fields") ?: JSONObject()
         return Series(
             id = id,
-            name = f.optStringAny("name") ?: "",
-            englishName = d.optStringAny("english_title") ?: "",
-            type = f.optStringAny("type") ?: "",
-            poster = p.optStringAny("large", "medium") ?: f.optStringAny("poster_uri") ?: "",
-            cover = f.optStringAny("cover_uri") ?: p.optStringAny("large", "medium") ?: "",
-            year = d.optStringAny("year")?.toIntOrNull() ?: 0,
-            story = f.optStringAny("story") ?: "",
-            state = d.optStringAny("state") ?: "",
-            epsNum = d.optStringAny("eps_num")?.toIntOrNull() ?: 0,
+            name = f.valueStringAny("name") ?: "",
+            englishName = d.valueStringAny("english_title") ?: "",
+            type = f.valueStringAny("type") ?: "",
+            poster = p.valueStringAny("large", "medium") ?: f.valueStringAny("poster_uri") ?: "",
+            cover = f.valueStringAny("cover_uri") ?: p.valueStringAny("large", "medium") ?: "",
+            year = d.valueIntAny("year") ?: 0,
+            story = f.valueStringAny("story") ?: "",
+            state = d.valueStringAny("state") ?: "",
+            epsNum = d.valueIntAny("eps_num") ?: 0,
             updatedAt = doc.optString("updateTime")
         )
     }
@@ -355,27 +383,56 @@ object WitcherApi {
 
     private class HttpFailure(val code: Int, val payload: String) : RuntimeException("HTTP $code")
 
-    private fun JSONObject.optStringAny(vararg keys: String): String? {
+    /** Firestore REST stores each field as {stringValue:...}, {integerValue:...}, etc. */
+    private fun JSONObject.valueObject(key: String): JSONObject? = optJSONObject(key)
+
+    private fun JSONObject.valueStringAny(vararg keys: String): String? {
         for (k in keys) {
-            val v = optString(k, "").takeIf { it.isNotBlank() }
-            if (v != null) return v
+            val v = opt(k) ?: continue
+            val s = when (v) {
+                is JSONObject -> when {
+                    v.has("stringValue") -> v.optString("stringValue")
+                    v.has("referenceValue") -> v.optString("referenceValue")
+                    v.has("timestampValue") -> v.optString("timestampValue")
+                    v.has("integerValue") -> v.optString("integerValue")
+                    v.has("doubleValue") -> v.optString("doubleValue")
+                    v.has("booleanValue") -> v.optBoolean("booleanValue").toString()
+                    else -> ""
+                }
+                else -> v.toString()
+            }.trim()
+            if (s.isNotBlank()) return s
         }
         return null
     }
 
-    private fun JSONObject.optIntAny(vararg keys: String): Int? {
+    private fun JSONObject.valueIntAny(vararg keys: String): Int? {
         for (k in keys) {
-            if (has(k)) {
-                val n = optInt(k, Int.MIN_VALUE)
-                if (n != Int.MIN_VALUE) return n
-                optString(k).toIntOrNull()?.let { return it }
+            val v = opt(k) ?: continue
+            val n = when (v) {
+                is JSONObject -> when {
+                    v.has("integerValue") -> v.optString("integerValue").toIntOrNull()
+                    v.has("doubleValue") -> v.optDouble("doubleValue").toInt()
+                    v.has("stringValue") -> v.optString("stringValue").toIntOrNull()
+                    else -> null
+                }
+                else -> v.toString().toIntOrNull()
+            }
+            if (n != null) return n
+        }
+        return null
+    }
+
+    private fun JSONObject.valueBooleanAny(vararg keys: String): Boolean {
+        for (k in keys) {
+            val v = opt(k) ?: continue
+            when (v) {
+                is JSONObject -> if (v.has("booleanValue")) return v.optBoolean("booleanValue")
+                is Boolean -> return v
+                is String -> if (v.equals("true", true) || v.equals("false", true)) return v.toBoolean()
             }
         }
-        return null
-    }
-
-    private fun JSONObject.optBooleanAny(vararg keys: String): Boolean {
-        for (k in keys) if (has(k)) return optBoolean(k, false)
         return false
     }
+
 }
