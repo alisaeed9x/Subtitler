@@ -75,7 +75,13 @@ class MainActivity : Activity() {
         val th = Themes.byId(Cfg.str("theme", "mx"))
         val ui = Ui(this, th)
         applyBars(th)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, ui.dp(32), 0, ui.dp(110)); layoutDirection = View.LAYOUT_DIRECTION_RTL; clipChildren = false; clipToPadding = false }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, ui.dp(32), 0, 0)
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            clipChildren = false
+            clipToPadding = false
+        }
         val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
         val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
         val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
@@ -468,8 +474,14 @@ class MainActivity : Activity() {
         }
         val nav = BottomNav(this, ui, th, 0) { i ->
             when (i) {
-                1 -> { save(); startActivity(Intent(this, PrivateLibraryActivity::class.java)) }
-                2 -> { save(); startActivity(Intent(this, BrowserActivity::class.java)) }
+                1 -> {
+                    save()
+                    startActivity(Intent(this, PrivateLibraryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                }
+                2 -> {
+                    save()
+                    startActivity(Intent(this, BrowserActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                }
                 else -> showTabFn(i)
             }
         }
@@ -478,7 +490,9 @@ class MainActivity : Activity() {
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
-        shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
+        shell.addView(nav.view, LinearLayout.LayoutParams(-1, ui.dp(72)).apply {
+            gravity = Gravity.BOTTOM
+        })
         val frame = FrameLayout(this).apply { setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_LTR }
         frame.addView(shell, FrameLayout.LayoutParams(-1, -1))
         if (fromPlayer) {

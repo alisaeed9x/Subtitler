@@ -52,10 +52,10 @@ class PrivateLibraryActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun tv(text: String, size: Float, bold: Boolean = false) =
+    private fun tv(text: String, size: Number, bold: Boolean = false) =
         TextView(this).apply {
             this.text = text
-            textSize = size
+            textSize = size.toFloat()
             setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.create(
                 android.graphics.Typeface.DEFAULT,
@@ -87,7 +87,7 @@ class PrivateLibraryActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_RTL
         }
         val menu = tv("☰", 30).apply { gravity = Gravity.CENTER; setOnClickListener { finish() } }
-        val title = tv("الصفحة الرئيسية", 22, true).apply { gravity = Gravity.CENTER }
+        val title = tv("الأنمي", 22, true).apply { gravity = Gravity.CENTER }
         val search = tv("⌕", 34).apply { gravity = Gravity.CENTER; setOnClickListener { showSearch() } }
         bar.addView(menu, LinearLayout.LayoutParams(dp(52), dp(56)))
         bar.addView(title, LinearLayout.LayoutParams(0, dp(56), 1f))
@@ -103,12 +103,12 @@ class PrivateLibraryActivity : Activity() {
         sv.addView(content)
         root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // (v128) نفس شريط التنقل السفلي الموحد: الفيديوهات · الأنمي · المتصفح
+        // (v129) نفس شريط التنقل السفلي الموحد: الفيديوهات · الأنمي · المتصفح
         val th = Themes.byId(Cfg.str("theme", "mx"))
         val ui = Ui(this, th)
         val gates = BottomNav(this, ui, th, 1) { i ->
             when (i) {
-                0 -> { startActivity(Intent(this, Main::class.java)); finish() }
+                0 -> { startActivity(Intent(this, MainActivity::class.java)); finish() }
                 2 -> { startActivity(Intent(this, BrowserActivity::class.java)); finish() }
             }
         }

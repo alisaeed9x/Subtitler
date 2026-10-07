@@ -92,14 +92,15 @@ object WitcherApi {
         val newEpisodeDocs = safeListCollection("new_episodes", 24)
         val episodePairs = ArrayList<Pair<Series, Episode>>()
         for (d in newEpisodeDocs) {
-            val id = d.fields?.optStringAny("anime_id", "animeId", "series_id", "seriesId") ?: continue
-            val epNo = d.fields?.optIntAny("episode_no", "episode_number", "episodeNo") ?: continue
+            val f = d.optJSONObject("fields") ?: JSONObject()
+            val id = f.optStringAny("anime_id", "animeId", "series_id", "seriesId") ?: continue
+            val epNo = f.optIntAny("episode_no", "episode_number", "episodeNo") ?: continue
             val s = try { getAnime(id).series } catch (_: Throwable) { continue }
             val e = Episode(
                 id = String.format(Locale.US, "%03d", epNo),
                 number = epNo,
-                name = d.fields?.optStringAny("name", "episode_name", "episode_title") ?: "الحلقة $epNo",
-                thumb = d.fields?.optStringAny("thumb_uri", "thumb", "image") ?: ""
+                name = f.optStringAny("name", "episode_name", "episode_title") ?: "الحلقة $epNo",
+                thumb = f.optStringAny("thumb_uri", "thumb", "image") ?: ""
             )
             episodePairs += s to e
         }

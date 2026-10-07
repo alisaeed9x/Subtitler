@@ -282,7 +282,7 @@ class BrowserActivity : Activity() {
         }
         root.addView(bar); root.addView(progTrack, LinearLayout.LayoutParams(-1, ui.dp(3))); root.addView(findBar); root.addView(hint)
         root.addView(webHolder, LinearLayout.LayoutParams(-1, 0, 1f)); root.addView(badge)
-        // (v128) شريط البوابات: الفيديوهات · الأنمي · المتصفح (إحنا فيه دلوقتي)
+        // (v129) شريط التنقل السفلي: الفيديوهات · الأنمي · المتصفح (إحنا في المتصفح)
         val gates = BottomNav(this, ui, th, 2) { i ->
             when (i) {
                 0 -> goMain("videos")
