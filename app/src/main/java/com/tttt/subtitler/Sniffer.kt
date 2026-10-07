@@ -170,4 +170,74 @@ object YtExtract {
         }
         return out
     }
+
+    /** (v118) خيار جودة: رابط فيديو + (لو الصورة لوحدها) رابط صوت بيتدمج معاه في المشغّل — زي NewPipe/SnapTube */
+    class Opt(val label: String, val url: String, val audio: String?, val h: Int)
+    /** نتيجة الاستخراج: الخيار المختار + كل الجودات المتاحة (لزرار الجودة في المشغّل) */
+    class Pick(val url: String, val audio: String?, val title: String, val ua: String, val label: String, val opts: List<Opt>) {
+        fun optsJson(): String { val a = JSONArray(); for (o in opts) a.put(JSONObject().put("l", o.label).put("u", o.url).put("a", o.audio ?: "").put("h", o.h)); return a.toString() }
+    }
+
+    private fun playerJson(c: Cl, id: String): JSONObject? {
+        val body = "{\"context\":{\"client\":{\"clientName\":\"${c.name}\",\"clientVersion\":\"${c.ver}\",${c.extra},\"hl\":\"en\",\"gl\":\"US\"}},\"videoId\":\"$id\",\"contentCheckOk\":true,\"racyCheckOk\":true}"
+        val con = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
+        try {
+            con.requestMethod = "POST"; con.connectTimeout = 10000; con.readTimeout = 15000; con.doOutput = true
+            con.setRequestProperty("Content-Type", "application/json"); con.setRequestProperty("User-Agent", c.ua)
+            con.setRequestProperty("X-YouTube-Client-Name", c.id.toString()); con.setRequestProperty("X-YouTube-Client-Version", c.ver)
+            con.setRequestProperty("Origin", "https://www.youtube.com")
+            con.outputStream.use { it.write(body.toByteArray()) }
+            if (con.responseCode != 200) return null
+            val j = JSONObject(con.inputStream.bufferedReader().use { it.readText() })
+            return if (j.optJSONObject("playabilityStatus")?.optString("status") == "OK") j else null
+        } finally { con.disconnect() }
+    }
+
+    private fun mb(n: Long) = if (n > 0) " · " + (if (n >= 10_485_760L) (n / 1_048_576L).toString() else String.format("%.1f", n / 1048576.0)) + "MB" else ""
+
+    /**
+     * بيجرّب العملاء واحد ورا التاني ويرجّع كل الجودات المتاحة (144p…1080p بحجمها التقريبي).
+     * maxH > 0: بيختار أعلى جودة لحد الارتفاع ده (للداتا القليلة)، غير كده أعلى جودة متاحة.
+     */
+    fun fetchPick(id: String, maxH: Int = 0): Pick? {
+        for (c in clients) {
+            try {
+                val j = playerJson(c, id) ?: continue
+                val title = j.optJSONObject("videoDetails")?.optString("title") ?: ""
+                val sd = j.optJSONObject("streamingData") ?: continue
+                val byH = HashMap<Int, Opt>()
+                // صيغ فيها صوت وصورة (الأبسط): بتتفضّل لو نفس الجودة
+                sd.optJSONArray("formats")?.let { a -> for (i in 0 until a.length()) {
+                    val f = a.optJSONObject(i) ?: continue
+                    val u = f.optString("url"); val h = f.optInt("height")
+                    if (u.isEmpty() || h <= 0) continue
+                    byH[h] = Opt(h.toString() + "p" + mb(f.optString("contentLength").toLongOrNull() ?: 0L), u, null, h)
+                } }
+                var ba: JSONObject? = null; var baR = 0
+                val vids = ArrayList<JSONObject>()
+                sd.optJSONArray("adaptiveFormats")?.let { a -> for (i in 0 until a.length()) {
+                    val f = a.optJSONObject(i) ?: continue
+                    if (f.optString("url").isEmpty()) continue
+                    val m = f.optString("mimeType")
+                    if (m.startsWith("video/mp4") && m.contains("avc1")) { val h = f.optInt("height"); if (h in 1..1080) vids.add(f) }
+                    else if (m.startsWith("audio/mp4")) { val r = f.optInt("bitrate"); if (r > baR) { ba = f; baR = r } }
+                } }
+                val au = ba
+                if (au != null) {
+                    val aSize = au.optString("contentLength").toLongOrNull() ?: 0L
+                    for (f in vids.sortedByDescending { it.optInt("bitrate") }) {
+                        val h = f.optInt("height")
+                        if (byH.containsKey(h)) continue
+                        val vs = f.optString("contentLength").toLongOrNull() ?: 0L
+                        byH[h] = Opt(h.toString() + "p" + mb(if (vs > 0) vs + aSize else 0L), f.optString("url"), au.optString("url"), h)
+                    }
+                }
+                if (byH.isEmpty()) continue
+                val opts = byH.values.sortedByDescending { it.h }
+                val chosen = (if (maxH > 0) opts.firstOrNull { it.h <= maxH } ?: opts.last() else opts.first())
+                return Pick(chosen.url, chosen.audio, title, c.ua, chosen.label, opts)
+            } catch (e: Throwable) { LogStore.err("Sniffer:pick", e) }
+        }
+        return null
+    }
 }

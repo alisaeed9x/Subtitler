@@ -45,6 +45,8 @@ class Engine(
     }
 
     private val lock = Any()
+    /** المشغّل بيحمّل الترجمة المحفوظة في الخلفية: لحد ما يخلص ممنوع أي حفظ (عشان مانكتبش حالة فاضية فوق الترجمة المحفوظة) */
+    @Volatile var persistBlocked = false
     @Volatile var subs: List<Sub> = emptyList()
         private set
     private val chars = ArrayList<Chr>()
@@ -1489,6 +1491,7 @@ class Engine(
     }
     private fun doPersist() {
         val st = store ?: return
+        if (persistBlocked) return
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }
             Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list())

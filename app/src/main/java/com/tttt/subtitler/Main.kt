@@ -62,6 +62,10 @@ class MainActivity : Activity() {
     private var permDone: (() -> Unit)? = null
     private var scanFn: () -> Unit = {}
     private var libStarted = false
+    private var curTab = 0                       // (v117) 0 = الفيديوهات · 1 = يوتيوب
+    private var ytUi: YoutubeUi? = null
+    private var navUi: BottomNav? = null
+    private var showTabFn: (Int) -> Unit = {}
     override fun onCreate(b: Bundle?) {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
         if (fromPlayer) setTheme(android.R.style.Theme_Translucent_NoTitleBar)
@@ -456,8 +460,32 @@ class MainActivity : Activity() {
         lib.onPull = { VideoScan.cache = null; doScan() }
         lib.onRefresh = { VideoScan.cache = null; Thumbs.clear(); lib.showScanning(); doScan() }
 
+        // (v117) الشريط السفلي: ثلاث بوابات — الفيديوهات (المكتبة) · يوتيوب (سجل + دخول مباشر) · المتصفح
+        val yt = YoutubeUi(this, ui, th, { Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }).associateBy { it.id } },
+            { id, title, tr -> playYt(id, title, tr) },
+            { u -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", u).putExtra("noauto", true)) },
+            { try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 47) } catch (e: Throwable) { LogStore.err("Main:ytsubs", e) } })
+        ytUi = yt
+        showTabFn = { i ->
+            if (i == 0 || i == 1) {
+                curTab = i
+                lib.root.visibility = if (i == 0) View.VISIBLE else View.GONE
+                yt.root.visibility = if (i == 1) View.VISIBLE else View.GONE
+                navUi?.set(i)
+                if (i == 1) yt.refresh() else yt.onHide()
+            }
+        }
+        val nav = BottomNav(this, ui, th, 0) { i -> if (i == 2) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
+        navUi = nav
+        val pane = FrameLayout(this)
+        pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
+        pane.addView(yt.root, FrameLayout.LayoutParams(-1, -1))
+        yt.root.visibility = View.GONE
+        val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
+        shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
+        shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
         val frame = FrameLayout(this).apply { setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_LTR }
-        frame.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(shell, FrameLayout.LayoutParams(-1, -1))
         if (fromPlayer) {
             setContentView(FrameLayout(this))
             settingsDlg.show(intent?.getStringExtra("tab"))   // من غير قسم محدد = قايمة الإعدادات كاملة
@@ -644,21 +672,9 @@ class MainActivity : Activity() {
         if (noSub) startPlayerNow(u, uri, landscape, fresh, true)   // فرجة من غير ترجمة: مش محتاج مفتاح
         else ensureKeys { startPlayerNow(u, uri, landscape, fresh, false, ask) }
     }
-    /** قبل ما تدخل الفيديو: لو له ترجمة محفوظة (ومش بيترجم في الخلفية دلوقتي) اسأل: كمّل ولا ابدأ من الأول وجديد */
+    /** (v117) دخول فوري للمشغّل: مفيش قراءة لملف الترجمة هنا خالص — المشغّل بيحمّلها هو في الخلفية واللودنج بيظهر جواه */
     fun playChecked(v: VideoItem) {
-        if (BgJobs.isActive(v.videoId)) { play("", Uri.parse(v.uri), v.landscape); return }
-        Thread {
-            var subsN = 0; var covered = 0.0
-            try {
-                val sv = Store(File(filesDir, "progress"), Store.keyFor(v.videoId)).load()
-                if (sv != null) { subsN = sv.subs.size; covered = sv.done.fold(0.0) { a, r -> a + (r[1] - r[0]) } }
-            } catch (e: Throwable) { LogStore.err("Main:644", e) }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (subsN == 0 && covered <= 0.0) { play("", Uri.parse(v.uri), v.landscape); return@runOnUiThread }
-                play("", Uri.parse(v.uri), v.landscape, false, false, true)   // يدخل الفيديو على طول، والاختيار (كمّل / من الأول / بدون ترجمة) بيظهر كشريط جوه المشغّل
-            }
-        }.apply { isDaemon = true }.start()
+        play("", Uri.parse(v.uri), v.landscape, false, false, !BgJobs.isActive(v.videoId))
     }
     fun startPlayerNow(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false, noSub: Boolean = false, ask: Boolean = false) {
         startActivity(Intent(this, PlayerActivity::class.java).apply {
@@ -670,6 +686,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
         super.onActivityResult(r, c, d)
+        if (r == 47) { if (c == RESULT_OK) d?.data?.let { ytUi?.importUri(it) }; return }   // (v118) ملف اشتراكات يوتيوب
         if (lockUi?.onResult(r, c == RESULT_OK) == true) return
         if (mediaOps?.onResult(r, c == RESULT_OK) == true) return
         if (r == 14) { nextPerm(); return }
@@ -695,13 +712,38 @@ class MainActivity : Activity() {
     /** «نعم» من بوب-أب الكليبورد: فيديو مباشر يشتغل على طول، يوتيوب بنجيب له أحسن رابط فيه صوت وصورة، وغير كده شاشة الصيد */
     /** فيديو من سجل «المصطادة»: يفتح بنفس الرابط والهيدرز ويكمّل من آخر مكان وقفت عنده. روابط يوتيوب بتنتهي — فبنفتح صفحة الفيديو */
     fun playWeb(w: WebVid) {
-        if (w.kind == "YT") { if (w.ref.isNotEmpty()) openLink(w.ref) else Notice.show(this, ("رابط يوتيوب انتهت صلاحيته — افتحه من المتصفح تاني").toString(), 3600L); return }
+        if (w.kind == "YT") { if (w.id.startsWith("yt:")) playYt(w.id.removePrefix("yt:"), w.title, true) else if (w.ref.isNotEmpty()) openLink(w.ref) else Notice.show(this, ("رابط يوتيوب انتهت صلاحيته — افتحه من المتصفح تاني").toString(), 3600L); return }
         ensureKeys {
             startActivity(Intent(this, PlayerActivity::class.java).apply {
                 putExtra("url", w.url); putExtra("ref", w.ref); putExtra("ua", w.ua); putExtra("cookie", w.cookie)
                 putExtra("title", w.title); putExtra("autotr", true)
             })
         }
+    }
+    /** (v117) دخول مباشر لفيديو يوتيوب من معرّفه: بيجيب أحسن لينك فيه صوت وصورة ويفتح المشغّل (لو فشل بيفتح صفحته في المتصفح) */
+    fun playYt(id: String, title: String, translate: Boolean = true) {
+        Notice.show(this, ("⏳ بجيب الفيديو…").toString(), 2300L)
+        Thread {
+            val best = try { YtExtract.fetchPick(id, Cfg.int("yt_maxh", 0)) } catch (_: Throwable) { null }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (best == null) {
+                    Notice.show(this, ("يوتيوب ما رضيش يدّي لينك مباشر — هفتحه في المتصفح").toString(), 3000L)
+                    startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", YtHistory.watchUrl(id)).putExtra("noauto", true))
+                    return@runOnUiThread
+                }
+                val ttl = title.ifBlank { best.title }
+                YtHistory.add(this, id, ttl)
+                val go = {
+                    startActivity(Intent(this, PlayerActivity::class.java).apply {
+                        putExtra("url", best.url); putExtra("aurl", best.audio ?: ""); putExtra("qlist", best.optsJson()); putExtra("ref", "https://www.youtube.com/"); putExtra("ua", best.ua)
+                        putExtra("title", ttl); putExtra("ytid", id)
+                        putExtra("nosub", !translate); putExtra("autotr", translate)
+                    })
+                }
+                if (translate) ensureKeys { go() } else go()
+            }
+        }.apply { isDaemon = true }.start()
     }
     fun playClip(c: ClipVideo) {
         fun go(u: String, ref: String, ua: String) {
@@ -725,9 +767,20 @@ class MainActivity : Activity() {
         if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
         stoppedAt = 0L
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
+        if (!fromPlayer && curTab == 1) ytUi?.refresh()
+    }
+    /** (v117) الرجوع من المتصفح بشريط البوابات: بيفتح البوابة اللي اخترتها */
+    override fun onNewIntent(i: Intent?) {
+        super.onNewIntent(i)
+        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1) }
     }
     @Suppress("DEPRECATION")
-    override fun onBackPressed() { if (!fromPlayer && libUi?.back() == true) return; super.onBackPressed() }
+    override fun onBackPressed() {
+        if (!fromPlayer && curTab == 1 && ytUi?.back() == true) return   // (v118) رجوع جوه يوتيوب الأول
+        if (!fromPlayer && curTab != 0) { showTabFn(0); return }
+        if (!fromPlayer && libUi?.back() == true) return
+        super.onBackPressed()
+    }
     override fun startActivity(i: Intent?) { super.startActivity(i); try { overridePendingTransition(R.anim.act_enter, R.anim.act_stay) } catch (e: Exception) { LogStore.err("Main:720", e) } }
     override fun finish() { super.finish(); try { if (fromPlayer) overridePendingTransition(0, 0) else overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (e: Exception) { LogStore.err("Main:721", e) } }
 }

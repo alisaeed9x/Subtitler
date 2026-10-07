@@ -256,6 +256,9 @@ class BrowserActivity : Activity() {
         }
         root.addView(bar); root.addView(progTrack, LinearLayout.LayoutParams(-1, ui.dp(3))); root.addView(findBar); root.addView(hint)
         root.addView(webHolder, LinearLayout.LayoutParams(-1, 0, 1f)); root.addView(badge)
+        // (v117) شريط البوابات: الفيديوهات · يوتيوب · المتصفح (إحنا فيه دلوقتي)
+        val gates = BottomNav(this, ui, th, 2) { i -> if (i == 0) goMain("videos") else if (i == 1) goMain("yt") }
+        root.addView(gates.view, LinearLayout.LayoutParams(-1, -2))
         content = root
         frame = FrameLayout(this); frame.setBackgroundColor(th.bg)
         customBox = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
@@ -271,10 +274,27 @@ class BrowserActivity : Activity() {
         val saved = if (keep) BrowserStore.loadTabs(this) else (emptyList<BrowserStore.SavedTab>() to 0)
         for (s in saved.first) tabs.add(BTab(nextId++).also { it.url = s.url; it.title = s.title; it.desktop = s.desktop })
         if (tabs.isNotEmpty()) curIdx = saved.second.coerceIn(0, tabs.size - 1)
-        if (start.isNotEmpty()) { autoOpen = true; newTab(start, true) }
+        if (start.isNotEmpty()) { autoOpen = intent?.getBooleanExtra("noauto", false) != true; newTab(start, true) }
         else if (tabs.isEmpty()) newTab(home(), true)
         else select(curIdx)
         scanLoop()
+    }
+
+    /** (v117) رجوع للشاشة الرئيسية على بوابة معيّنة (videos / yt) */
+    private fun goMain(tab: String) {
+        persistTabs()
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("tab", tab))
+        finish()
+    }
+    /** (v117) أي صفحة فيديو يوتيوب بتتفتح في المتصفح بتتسجل في سجل بوابة يوتيوب (المعرّف + الاسم) */
+    private var lastYtId = ""
+    private val ytIds = HashMap<String, String>()
+    private fun noteYt(url: String?, title: String?) {
+        val id = YtExtract.videoId(url ?: "") ?: return
+        val t = (title ?: "").trim().removeSuffix("- YouTube").trim().let { if (it.equals("YouTube", true)) "" else it }
+        if (id == lastYtId && t.isEmpty()) return
+        lastYtId = id
+        try { YtHistory.add(this, id, t) } catch (e: Throwable) { LogStore.err("Browser:yt", e) }
     }
 
     // ===== إنشاء WebView لتبويب =====
@@ -303,6 +323,7 @@ class BrowserActivity : Activity() {
             override fun onReceivedTitle(v: WebView?, title: String?) {
                 if (title.isNullOrBlank()) return
                 t.title = title; v?.url?.let { BrowserStore.setTitle(this@BrowserActivity, it, title); pageTitles[it] = title }
+                noteYt(v?.url, title)
                 if (tabsDlg?.isShowing == true) renderTabs()
             }
             override fun onShowCustomView(view: View?, cb: CustomViewCallback?) {
@@ -344,7 +365,7 @@ class BrowserActivity : Activity() {
                 if (adOn) v.evaluateJavascript(AdBlock.JS, null)
             }
             override fun doUpdateVisitedHistory(v: WebView, url: String?, isReload: Boolean) {
-                if (url != null && !url.startsWith("data:")) t.url = url
+                if (url != null && !url.startsWith("data:")) { t.url = url; noteYt(url, null) }
                 if (t === tabs.getOrNull(curIdx)) { showUrl(url); updateNav() }
             }
             override fun onPageFinished(v: WebView, url: String?) {
@@ -353,6 +374,7 @@ class BrowserActivity : Activity() {
                     val ti = v.title?.takeIf { it.isNotBlank() } ?: ""
                     if (ti.isNotEmpty()) { t.title = ti; pageTitles[url] = ti }
                     BrowserStore.addHistory(this@BrowserActivity, url, ti)
+                    noteYt(url, ti)
                 }
                 if (t === tabs.getOrNull(curIdx)) { showUrl(url); updateNav(); updateStar(); scanOnce() }
                 if (adOn) v.evaluateJavascript(AdBlock.JS, null)
@@ -710,7 +732,7 @@ class BrowserActivity : Activity() {
             val r = try { YtExtract.fetch(id) } catch (_: Throwable) { emptyList() }
             runOnUiThread {
                 if (dead) return@runOnUiThread
-                r.forEach { addFound(it) }
+                r.forEach { ytIds[Sniff.key(it.url)] = id; addFound(it) }
                 if (r.isEmpty() && items.isEmpty()) hint.text = "يوتيوب ما رضيش يدّي لينك مباشر — شغّل الفيديو في الصفحة وأنا هحاول ألقطه"
             }
         }.apply { isDaemon = true }.start()
@@ -834,7 +856,12 @@ class BrowserActivity : Activity() {
 
     fun openPlayer(f: Found, noSub: Boolean) { if (noSub) openPlayerNow(f, true) else ensureKeys { openPlayerNow(f, false) } }
     fun openPlayerNow(f: Found, noSub: Boolean) {
+        // (v117) فيديو يوتيوب: بنعرف معرّفه (من لينك الصفحة) عشان يتسجل في بوابة يوتيوب ويتحفظ تقدمه وترجمته على معرّفه
+        val isYtStream = f.kind.startsWith("YT") || f.url.contains("googlevideo") || f.url.contains("videoplayback")
+        val yid = ytIds[Sniff.key(f.url)] ?: YtExtract.videoId(f.ref) ?: (if (isYtStream) YtExtract.videoId(wvOrNull?.url ?: "") else null) ?: ""
+        if (yid.isNotEmpty()) try { YtHistory.add(this, yid, titleFor(f)) } catch (e: Throwable) { LogStore.err("Browser:yt2", e) }
         startActivity(Intent(this, PlayerActivity::class.java).apply {
+            if (yid.isNotEmpty()) putExtra("ytid", yid)
             putExtra("url", f.url); putExtra("ref", f.ref)
             putExtra("cookie", try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" })
             putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("title", titleFor(f)); putExtra("nosub", noSub); putExtra("autotr", !noSub)

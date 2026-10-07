@@ -80,6 +80,11 @@ class PlayerActivity : Activity(), Host {
     val logBuf = StringBuilder()
     val h = Handler(Looper.getMainLooper())
     var url: String? = null
+    var aurl: String? = null
+    private var qOpts: List<YtExtract.Opt> = emptyList()   // (v118) جودات يوتيوب
+    private var qCur = -1
+    private var hlsH = 0                                   // جودة HLS المثبّتة (0 = تلقائي)
+    private var qualBRef: TextView? = null
     var uri: Uri? = null
     private var httpDsf: DefaultHttpDataSource.Factory? = null
     val hdr = HashMap<String, String>()
@@ -224,6 +229,7 @@ class PlayerActivity : Activity(), Host {
     private val probAuto = Runnable { if (probOn) toggleProb() }  // كبسولة الباتش الفاشل بتتلم لوحدها
     fun updateTr() { trUpdaters.forEach { try { it() } catch (e: Exception) { LogStore.err("Main:866", e) } } }
     fun beginTranslate() {
+        if (::engine.isInitialized && !engineReady) { pendingBegin = true; return }   // البيانات المحفوظة لسه بتتحمّل: هتبدأ لوحدها أول ما تخلص
         dismissStrip()
         if (noSub) { noSub = false; if (!ccOn) ccToggleFn() }   // بدأت ترجمة: رجّع إظهار الترجمة
         if (!engineStarted) { engineStarted = true; engine.userPaused = false; startEngine() } else engine.userPaused = false
@@ -413,7 +419,7 @@ class PlayerActivity : Activity(), Host {
         say("🌙 هكمّل الترجمة في الخلفية — التقدم في الإشعارات")
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:1017", e) }
         saveRecentForce()
-        val vidNow = vid; val uriS = uri?.toString(); val urlS = url; val hdrC = HashMap(hdr)
+        val vidNow = vid; val uriS = uri?.toString(); val urlS = aurl ?: url; val hdrC = HashMap(hdr)
         val app = applicationContext
         val eng = engine
         Thread {
@@ -614,6 +620,12 @@ class PlayerActivity : Activity(), Host {
         applyBars(th)
         speed = Cfg.str("speed", "1").toFloatOrNull() ?: 1f; fit = Cfg.int("fit", 0).coerceIn(0, 2); fsFit = Cfg.int("fs_fit", 2).coerceIn(0, 2); offsetMs = 0L
         uri = intent.data; url = intent.getStringExtra("url")
+        try {
+            intent.getStringExtra("qlist")?.let { sj -> val qa = org.json.JSONArray(sj)
+                qOpts = (0 until qa.length()).map { qi -> val o = qa.getJSONObject(qi); YtExtract.Opt(o.optString("l"), o.optString("u"), o.optString("a").ifEmpty { null }, o.optInt("h")) } }
+        } catch (e: Exception) { LogStore.err("Player:qlist", e) }
+        qCur = qOpts.indexOfFirst { it.url == url }
+        aurl = intent.getStringExtra("aurl")?.takeIf { it.isNotEmpty() }   // (v118) صوت منفصل ليوتيوب (جودة عالية)
         noSub = intent.getBooleanExtra("nosub", false); askSaved = intent.getBooleanExtra("ask", false); autoTr = intent.getBooleanExtra("autotr", false)
         intent.getStringExtra("ua")?.takeIf { it.isNotEmpty() }?.let { hdr["User-Agent"] = it }
         intent.getStringExtra("ref")?.takeIf { it.isNotEmpty() }?.let { hdr["Referer"] = it }
@@ -883,6 +895,27 @@ class PlayerActivity : Activity(), Host {
             }
             setOnLongClickListener { giShow("كمّل الترجمة في الخلفية لما أخرج", Gravity.CENTER); true }
         }
+        // (v118) زرار الجودة: يوتيوب بقايمة جودات (بحجمها التقريبي) · روابط HLS/DASH بمساراتها — للفرجة بداتا أقل
+        val gQ = gCol()
+        fun fillQ(): Boolean {
+            gQ.removeAllViews()
+            if (qOpts.size > 1) {
+                for ((qi, o) in qOpts.withIndex()) gQ.addView(pd((if (qi == qCur) "✓ " else "") + o.label) { switchYt(qi) })
+            } else {
+                val tg = ArrayList<Triple<Int, androidx.media3.common.Tracks.Group, Int>>()
+                for (g in player.currentTracks.groups) if (g.type == androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                    for (ti in 0 until g.length) if (g.isTrackSupported(ti)) tg.add(Triple(g.getTrackFormat(ti).height, g, ti))
+                val hs = tg.filter { it.first > 0 }.sortedByDescending { it.first }.distinctBy { it.first }
+                if (hs.size > 1) {
+                    gQ.addView(pd((if (hlsH == 0) "✓ " else "") + "تلقائي") { hlsAuto() })
+                    for (q in hs) gQ.addView(pd((if (hlsH == q.first) "✓ " else "") + q.first + "p") { hlsPick(q.second, q.third, q.first) })
+                }
+            }
+            return gQ.childCount > 0
+        }
+        val qualB = mini("HD") { v -> if (fillQ()) togglePop(v, gQ, true) else Notice.show(this, "مفيش جودات تانية للفيديو ده", 2300L) }
+        qualB.visibility = if (uri == null) View.VISIBLE else View.GONE
+        qualBRef = qualB
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
         val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
@@ -976,7 +1009,7 @@ class PlayerActivity : Activity(), Host {
         val leftB = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.START or Gravity.CENTER_VERTICAL }
         val lockB = ui.fsCircle("🔓") { setLock(true) }
         val lockLp = { LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(4) } }
-        leftB.addView(lockB, lockLp()); leftB.addView(aiB)
+        leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(qualB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(4) })
         btnRow.addView(leftB, LinearLayout.LayoutParams(0, -2, 1f))
         val pillBg = { ui.box(0xE00F0F12.toInt(), 0x29FFFFFF, 24) }
         val prevB = ui.fsCircle("⏮") { stepEpisode(-1); showChrome() }.apply { textSize = 20f; background = pillBg() }
@@ -1008,7 +1041,7 @@ class PlayerActivity : Activity(), Host {
             leftB.removeAllViews(); rightB.removeAllViews(); tbRow.removeAllViews()
             // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 🔁 تكرار, 💬 وضع الترجمة]
             fun lp(i: Int) = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(38), ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) }
-            leftB.addView(lockB, lockLp()); leftB.addView(aiB)
+            leftB.addView(lockB, lockLp()); leftB.addView(aiB); leftB.addView(qualB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(4) })
             rightB.addView(rotBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })
             rightB.addView(pipBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
             rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
@@ -1455,6 +1488,34 @@ class PlayerActivity : Activity(), Host {
         if (autoTr && !noSub && !askSaved) videoBoxRef.post { if (!engineStarted && !isFinishing && !isDestroyed) beginTranslate() }
     }
 
+    /** (v118) تبديل جودة يوتيوب في نفس المكان من غير ما التشغيل يتقطع كتير. الجودة بتتحفظ للفيديوهات الجاية (داتا أقل) */
+    private fun switchYt(i: Int) {
+        val o = qOpts.getOrNull(i) ?: return
+        if (i == qCur) return
+        try {
+            val pos = player.currentPosition; val play = player.playWhenReady
+            val f = httpDsf ?: DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true)
+            val pf = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(f)
+            val v = pf.createMediaSource(MediaItem.fromUri(Uri.parse(o.url)))
+            val au = o.audio
+            val src = if (au != null) androidx.media3.exoplayer.source.MergingMediaSource(v, pf.createMediaSource(MediaItem.fromUri(Uri.parse(au)))) else v
+            player.setMediaSource(src, pos); player.prepare(); player.playWhenReady = play
+            qCur = i; qualBRef?.text = o.h.toString()
+            Cfg.put("yt_maxh", o.h.toString())
+            Notice.show(this, "🎞 الجودة: " + o.label, 2000L)
+        } catch (e: Exception) { LogStore.err("Player:switchYt", e); Notice.show(this, "ما قدرتش أغيّر الجودة", 2300L) }
+    }
+    private fun hlsAuto() {
+        hlsH = 0
+        try { player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO).build() } catch (e: Exception) { LogStore.err("Player:hlsAuto", e) }
+        qualBRef?.text = "HD"; Notice.show(this, "🎞 الجودة: تلقائي", 1800L)
+    }
+    private fun hlsPick(g: androidx.media3.common.Tracks.Group, i: Int, h: Int) {
+        hlsH = h
+        try { player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setOverrideForType(androidx.media3.common.TrackSelectionOverride(g.mediaTrackGroup, i)).build() } catch (e: Exception) { LogStore.err("Player:hlsPick", e) }
+        qualBRef?.text = h.toString(); Notice.show(this, "🎞 الجودة: " + h + "p", 1800L)
+    }
+
     private fun buildPlayer() {
         val sv = svRef; val videoBox = videoBoxRef
         val factory = if (uri != null) DefaultMediaSourceFactory(this)
@@ -1508,7 +1569,11 @@ class PlayerActivity : Activity(), Host {
                 offerLinkRefresh()
             }
         })
-        player.setMediaItem(MediaItem.fromUri(uri ?: Uri.parse(url!!)))
+        val au = aurl
+        if (uri == null && au != null) {
+            val pf = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(httpDsf ?: DefaultHttpDataSource.Factory().setDefaultRequestProperties(hdr).setAllowCrossProtocolRedirects(true))
+            player.setMediaSource(androidx.media3.exoplayer.source.MergingMediaSource(pf.createMediaSource(MediaItem.fromUri(Uri.parse(url!!))), pf.createMediaSource(MediaItem.fromUri(Uri.parse(au)))))
+        } else player.setMediaItem(MediaItem.fromUri(uri ?: Uri.parse(url!!)))
         player.prepare(); player.playWhenReady = true
     }
 
@@ -1523,6 +1588,9 @@ class PlayerActivity : Activity(), Host {
         }.apply { isDaemon = true }.start()
     }
 
+    /** (v117) الدخول الفوري: تحميل الترجمة المحفوظة بيتم في خيط خلفي — الشاشة بتفتح على طول واللودنج بيلف لحد ما تتحمّل البيانات */
+    @Volatile private var engineReady = false
+    private var pendingBegin = false
     private fun initEngine() {
         vid = videoId()
         if (uri == null && url != null) webRegister()
@@ -1530,10 +1598,12 @@ class PlayerActivity : Activity(), Host {
         runCatching { offFsB?.text = String.format("%+.1fs", offsetMs / 1000.0) }
         lastSrtN = -1
         val wasBg = BgJobs.isActive(vid)
-        if (wasBg) BgJobs.stopAndWait(vid, 2500)
         val store = Store(File(filesDir, "progress"), Store.keyFor(vid))
         val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
-        engine = Engine(conf, { makeSource() }, store, this, pb)
+        engineReady = false; pendingBegin = false
+        val eng = Engine(conf, { makeSource() }, store, this, pb)
+        eng.persistBlocked = true
+        engine = eng
         engine.convDialect = Cfg.str("conv_dialect", "")
         engine.toneStyle = Cfg.str("tone_style", ""); engine.toneStrength = Cfg.str("tone_strength", "متوسطة")
         engine.onGenre = genreCb
@@ -1546,16 +1616,30 @@ class PlayerActivity : Activity(), Host {
         }
         Live.engine = engine
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Notice.show(this, (m).toString(), 2300L) } }, { })
-        val savedPos = engine.load()
-        if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
-        else if (uri == null && !freshOnce) {
-            // رابط من الإنترنت: لو مفيش مكان وقوف في الترجمة، كمّل من آخر مكان اتفرجت عليه (من السجل)
-            val rp = try { Recents.parse(File(filesDir, "recent.json").readText()).firstOrNull { it.id == vid }?.posSec ?: 0.0 } catch (_: Exception) { 0.0 }
-            if (rp > 5.0) { player.seekTo((rp * 1000).toLong()); cur = (rp * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
-        }
-        refreshList()
-        LogStore.add("🎬 فتح فيديو $vid · ${LogStore.heapLine()}")
-        maybePrompt(wasBg)
+        status = "⏳ بحمّل بيانات الفيديو…"
+        val vidNow = vid
+        Thread {
+            // (كانت بتتعمل على الـ UI وبتجمّد الشاشة): إيقاف ترجمة الخلفية + قراءة وتحليل ملف الترجمة المحفوظة
+            if (wasBg) try { BgJobs.stopAndWait(vidNow, 2500) } catch (e: Throwable) { LogStore.err("Player:stopBg", e) }
+            val savedPos = try { eng.load() } catch (e: Throwable) { LogStore.err("Player:load", e); 0.0 }
+            val rp = if (savedPos <= 5.0 && uri == null) {
+                try { Recents.parse(File(filesDir, "recent.json").readText()).firstOrNull { it.id == vidNow }?.posSec ?: 0.0 } catch (_: Exception) { 0.0 }
+            } else 0.0
+            eng.persistBlocked = false
+            runOnUiThread {
+                if (isFinishing || isDestroyed || engine !== eng) return@runOnUiThread
+                engineReady = true
+                if (savedPos > 5.0 && !freshOnce) { player.seekTo((savedPos * 1000).toLong()); cur = (savedPos * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}") }
+                else if (uri == null && !freshOnce && rp > 5.0) {
+                    // رابط من الإنترنت: لو مفيش مكان وقوف في الترجمة، كمّل من آخر مكان اتفرجت عليه (من السجل)
+                    player.seekTo((rp * 1000).toLong()); cur = (rp * 1000).toLong(); log("⏩ كملت من ${fmtMs(cur)}")
+                }
+                refreshList()
+                LogStore.add("🎬 فتح فيديو $vidNow · ${LogStore.heapLine()}")
+                maybePrompt(wasBg)
+                if (pendingBegin) { pendingBegin = false; beginTranslate() }
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     // ===== فشل لينك التحميل: تحديثه في الخلفية من صفحة الفيديو المحفوظة =====
@@ -1783,12 +1867,13 @@ class PlayerActivity : Activity(), Host {
             } catch (e: Exception) { LogStore.err("Main:2289", e) }
             return "f:$u"
         }
+        intent.getStringExtra("ytid")?.takeIf { it.length == 11 }?.let { return "yt:$it" }   // (v117) يوتيوب: التقدم والترجمة على معرّف الفيديو مش على لينك الستريم المتغيّر
         return "u:" + (url ?: "").substringBefore('?')
     }
 
     private fun makeSource(): AudioSource {
         val lg: (String) -> Unit = { log(it) }
-        val u = url
+        val u = aurl ?: url   // يوتيوب بصوت منفصل: المحرك بياخد الصوت من رابطه
         val src = AudioSources.make(applicationContext, uri, u, hdr, conf.audioTrack, lg)
         lg("🎙 مصدر الصوت: " + (if (uri != null) "ملف محلي" else if (src is HlsSource) "رابط HLS" else "رابط مباشر"))
         return src
@@ -1827,10 +1912,11 @@ class PlayerActivity : Activity(), Host {
 
     private fun saveRecent() { if (!handedOff) saveRecentForce() }
     private fun saveRecentForce() {
+        if (!::engine.isInitialized || !engineReady) return
         try {
             val f = File(filesDir, "recent.json")
             val old = Recents.parse(try { f.readText() } catch (_: Exception) { "" })
-            val r = Recent(vid, Recents.titleOf(vid), url ?: "", uri?.toString() ?: "", cur / 1000.0, durMs / 1000.0, engine.subs.size, engine.coveredSec(), System.currentTimeMillis())
+            val r = Recent(vid, (if (uri == null) intent.getStringExtra("title")?.takeIf { it.isNotBlank() } else null) ?: Recents.titleOf(vid), url ?: "", uri?.toString() ?: "", cur / 1000.0, durMs / 1000.0, engine.subs.size, engine.coveredSec(), System.currentTimeMillis())
             f.writeText(Recents.toJson(Recents.upsert(old, r, 300)))
         } catch (e: Exception) { LogStore.err("Main:2341", e) }
     }

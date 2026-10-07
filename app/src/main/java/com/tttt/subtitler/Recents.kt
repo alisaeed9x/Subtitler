@@ -59,6 +59,7 @@ object Recents {
     }
 
     fun titleOf(videoId: String): String {
+        if (videoId.startsWith("yt:")) return "يوتيوب · " + videoId.removePrefix("yt:")
         val raw = videoId.removePrefix("f:").removePrefix("u:")
         val name = if (videoId.startsWith("f:")) raw.substringBeforeLast(':') else raw.substringBefore('?').substringAfterLast('/')
         return name.ifBlank { raw }
