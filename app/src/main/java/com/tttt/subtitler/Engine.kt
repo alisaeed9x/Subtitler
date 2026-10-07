@@ -83,6 +83,7 @@ class Engine(
     private val rr = AtomicInteger(0)
     private val bounds = ConcurrentHashMap<Int, Double>()      // بداية المقطع بعد تعديلها لأقرب صمت
     private val prepared = ConcurrentHashMap.newKeySet<Int>()
+    private val trimLock = Any()
     private val inflight = ConcurrentHashMap.newKeySet<Int>()
     // ===== توزيع الباتشات على المفاتيح + نسخة احتياطية للباتش المتأخر (كل باتش يتحسب مرة واحدة بس) =====
     private val startedAt = ConcurrentHashMap<Int, Long>()          // وقت بداية الباتش الشغال
@@ -271,12 +272,20 @@ class Engine(
         return idx.size
     }
 
-    /** اختيار لهجة التحويل. existing=true: بيحوّل كمان اللي اتترجم قبل كده */
+    /** اختيار لهجة التحويل. existing=true: بيحوّل كمان اللي اتترجم قبل كده — من مكان المشاهدة وللقدّام الأول، وبعدين اللي قبله. بيحفظ نسخة باللهجة القديمة قبل التحويل (🗂) */
     fun setConvDialect(d: String, existing: Boolean) {
+        val prev = convDialect
+        if (existing && subs.isNotEmpty() && prev != d) { val lb = if (prev.isBlank()) "فصحى" else prev; saveVersion("ترجمة $lb", lb) }
         convDialect = d
         if (d.isBlank() || d == "فصحى") { pend.clear(); return }
+        lastConvFail = 0L
         if (existing) synchronized(lock) { subs = subs.map { it.copy(conv = false) }; pend.addAll(subs.map { pk(it) }) }
         maybeConvert(true)
+    }
+    /** تبديل اللهجة من غير تحويل (لما نرجّع نسخة محفوظة): الجمل الجديدة تتحوّل للهجة دي */
+    fun adoptDialect(d: String) {
+        convDialect = d
+        synchronized(lock) { subs = subs.map { it.copy(conv = true) } }; pend.clear()
     }
     /** بيحوّل الجمل اللي لسه ما اتحوّلتش كل ~3 باتشات (أو الباقي لما الترجمة تهدى) على المفاتيح الاحتياطية */
     fun maybeConvert(force: Boolean = false) {
@@ -286,17 +295,20 @@ class Engine(
         val todo = synchronized(lock) { subs.filter { !it.conv } }
         if (todo.isEmpty()) return
         val span = todo.maxOf { it.end } - todo.minOf { it.start }
-        if (!force && span < ch * 3 - 2) return
+        if (!force && span < ch * 0.5) return
         if (!convBusy.compareAndSet(false, true)) return
         try { bg.submit { try { convertSubs(tgt) } finally { convBusy.set(false) } } } catch (_: Exception) { convBusy.set(false) }
     }
     private fun convertSubs(tgt: String): Int {
         var changed = 0
         val snap = synchronized(lock) { subs }
-        val idx = snap.indices.filter { !snap[it].conv }
-        if (idx.isEmpty()) return 0
+        val idx0 = snap.indices.filter { !snap[it].conv }
+        if (idx0.isEmpty()) return 0
+        // من أول الباتش اللي المشاهد فيه ولقدّام الأول، وبعدين اللي قبله
+        val focus = try { cStart(maxOf(0, (host.position() / ch).toInt())) } catch (_: Exception) { 0.0 }
+        val idx = idx0.filter { snap[it].start >= focus - 0.05 } + idx0.filter { snap[it].start < focus - 0.05 }
         val batches = idx.chunked(40)
-        host.log("🌐 تحويل ${idx.size} جملة للهجة $tgt…")
+        host.log("🌐 تحويل ${idx.size} جملة للهجة $tgt (من ${(focus / 60).toInt()}:%02d وللقدّام الأول)…".format(focus.toInt() % 60))
         batches.forEachIndexed { bi, batch ->
             if (!running) return@forEachIndexed
             val list = JSONArray()
@@ -333,11 +345,11 @@ class Engine(
     fun chunkStartSec(i: Int) = cStart(i)
 
     /** يمسح ترجمة الباتشات من..إلى (شاملة، to < 0 = لحد النهاية) عشان تتترجم من جديد. بيحفظ نسخة قبلها (🗂 ترجمات الفيديو) */
-    fun redo(from: Int, to: Int) {
+    fun redo(from: Int, to: Int, keep: Boolean = true) {
         val d = currentDur()
         val hi = if (to < 0) Int.MAX_VALUE else to
         val a = cStart(from); val b = if (to < 0) Double.MAX_VALUE else cEnd(to, d)
-        if (subs.isNotEmpty()) saveVersion("قبل إعادة الترجمة من باتش ${from + 1}")
+        if (keep && subs.isNotEmpty()) saveVersion("قبل إعادة الترجمة من باتش ${from + 1}")
         synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
         done.remove(a, b); gapTried.remove(a, b)
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
@@ -346,11 +358,11 @@ class Engine(
         host.changed(); persist()
     }
     /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
-    fun redoFrom(i: Int) { redo(i, -1); onlyChunks = null; forcedCursor = i; paused = false }
+    fun redoFrom(i: Int, keep: Boolean = true) { redo(i, -1, keep); onlyChunks = null; forcedCursor = i; paused = false }
     /** باتش ده لوحده وخلاص */
-    fun redoOnly(i: Int) { redo(i, i); forceVad.add(i); onlyChunks = i..i; paused = false }
+    fun redoOnly(i: Int, keep: Boolean = true) { redo(i, i, keep); forceVad.add(i); onlyChunks = i..i; paused = false }
     /** من الأول خالص */
-    fun redoAll() { redo(0, -1); onlyChunks = null; forcedCursor = 0; paused = false }
+    fun redoAll(keep: Boolean = true) { redo(0, -1, keep); onlyChunks = null; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
     fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     fun saveNow() = doPersist()
@@ -522,18 +534,23 @@ class Engine(
         return false
     }
 
-    /** فك صوت المقطع هنا (بالترتيب)، وبعدين الإرسال لجيميناي في خيط من الحوض */
+    /** فك صوت المقطع + الإرسال لجيميناي كله في خيط من الحوض: عدة باتشات بتفك صوتها وتتبعت بالتوازي على كل المفاتيح (قبل كده الفك كان بالترتيب في حلقة واحدة فالباتشات كانت بتمشي واحد ورا التاني) */
     private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService, force: Boolean = false) {
-        guard(i) {
-            val p = prepare(i, force)
-            if (p == null) { failed.remove(i); return@guard }
-            inflight.add(i); startedAt[i] = System.currentTimeMillis(); preps[i] = p; hedged.remove(i)
-            try {
-                ex.submit {
-                    try { if (guard(i) { send(i, p) }) failed.remove(i) } finally { inflight.remove(i); preps.remove(i); startedAt.remove(i); keyOf.remove(i) }
-                }
-            } catch (_: RejectedExecutionException) { inflight.remove(i); preps.remove(i); startedAt.remove(i) }
-        }
+        if (!inflight.add(i)) return
+        startedAt[i] = System.currentTimeMillis(); hedged.remove(i)
+        try {
+            ex.submit {
+                try {
+                    var p: Prep? = null
+                    val ok = guard(i) { val got = prepare(i, force); p = got; if (got != null) preps[i] = got }
+                    if (ok) {
+                        val pp = p
+                        if (pp == null) failed.remove(i)
+                        else { startedAt[i] = System.currentTimeMillis(); if (guard(i) { send(i, pp) }) failed.remove(i) }
+                    }
+                } finally { inflight.remove(i); preps.remove(i); startedAt.remove(i); keyOf.remove(i); host.changed() }
+            }
+        } catch (_: RejectedExecutionException) { inflight.remove(i); preps.remove(i); startedAt.remove(i) }
     }
 
     /**
@@ -587,8 +604,9 @@ class Engine(
     private fun prepare(i: Int, force: Boolean = false): Prep? {
         claimed.remove(i)   // محاولة جديدة للباتش ده من الأول
         val d = currentDur()
-        val rawStart = cStart(i)
-        var rawEnd = cEnd(i, d)
+        // بنحجز الباتش ونقرا حدوده في خطوة واحدة: لو باتش قبله بيقصّر حدّه بالتوازي ماينفعش يسيب ثغرة
+        val firstTime: Boolean; val rawStart: Double; var rawEnd: Double
+        synchronized(trimLock) { firstTime = prepared.add(i); rawStart = cStart(i); rawEnd = cEnd(i, d) }
         val start = if (i == 0) 0.0 else maxOf(0.0, rawStart - OVERLAP)
         host.status("⏳ ترجمة المقطع ${i + 1}…")
         val t0 = System.currentTimeMillis()
@@ -607,16 +625,18 @@ class Engine(
         val forced = force || forceVad.remove(i)
         if (conf.vad && w.silent && !forced && !conf.soundTags) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى (لو غلط: «☝ ده بس» بيبعته غصب)"); done.add(rawStart, rawEnd); persist(); return null }
         val last = d > 0 && rawEnd >= d - 0.01
-        val firstTime = prepared.add(i)
         if (conf.silenceTrim && !last && firstTime && !bounds.containsKey(i + 1) && !prepared.contains(i + 1)) {
             val cut = Silence.findCut(w.bytes)
             if (cut != null) {
                 val adj = w.startSec + cut
                 if (adj > rawStart + 2.0 && adj < rawEnd - 0.2) {
-                    host.log("🌊 المقطع ${i + 1}: اتقصّر ${"%.1f".format(java.util.Locale.US, rawEnd - adj)}ث لأقرب لحظة صمت")
-                    w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent)
-                    rawEnd = adj; bounds[i + 1] = adj
-                    persist()
+                    val took = synchronized(trimLock) { if (!bounds.containsKey(i + 1) && !prepared.contains(i + 1)) { bounds[i + 1] = adj; true } else false }
+                    if (took) {
+                        host.log("🌊 المقطع ${i + 1}: اتقصّر ${"%.1f".format(java.util.Locale.US, rawEnd - adj)}ث لأقرب لحظة صمت")
+                        w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent)
+                        rawEnd = adj
+                        persist()
+                    }
                 }
             }
         }
@@ -634,7 +654,7 @@ class Engine(
         while (running && tries++ < MAX_TRIES) {
             if (claimed.contains(i)) return   // نسخة تانية من الباتش ده خلصت وطُبّقت قبلنا
             if (!hedge) keyOf[i] = key
-            val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0)
+            val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0, i)
             try {
                 val t0 = System.currentTimeMillis()
                 pool.begin(key)
@@ -698,10 +718,16 @@ class Engine(
         if (running) throw Exception("استنفدت المحاولات")
     }
 
-    private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false): String {
+    /** لهجة الباتش اللي بيتبعت: لو اتختارت لهجة، الباتش بيتترجم بيها مباشرة (من غير فصحى ثم تحويل — توفير على المفاتيح) */
+    private val dialOf = ConcurrentHashMap<Int, String>()
+    private val dialConf = ConcurrentHashMap<String, Conf>()
+    private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false, chunk: Int = -1): String {
+        val dl = convDialect.let { if (it.isBlank() || it == "فصحى") "" else it }
+        if (chunk >= 0) { if (dl.isEmpty()) dialOf.remove(chunk) else dialOf[chunk] = dl }
+        val c = if (dl.isEmpty() || dl == conf.lang) conf else dialConf.getOrPut(dl) { conf.withLang(dl) }
         val case = pb.caseOf(srcLang, detDone)
-        val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(conf, "other"))] } else null
-        return pb.build(conf, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
+        val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(c, "other"))] } else null
+        return pb.build(c, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
     }
 
     /** إصلاح الجمل اللي translated بتاعتها مش عربي: ترجمة نصية سريعة من original (وpivot) للهجة المختارة */
@@ -742,7 +768,8 @@ class Engine(
         }
         if (j != null) applyPrevCorrections(j)
         val spansAbs = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) }
-        var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i) }
+        val direct = dialOf[i]?.let { it == convDialect } ?: false
+        var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i, conv = direct) }
         if (spansAbs != null) {
             val n0 = tagged.size
             tagged = tagged.mapNotNull { Speech.fit(it, spansAbs) }
@@ -975,9 +1002,9 @@ class Engine(
 
     // --- ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز (_translatePromptTemplate) ---
     // ===== أدوات يدوية من المشغّل (أزرار الشاشة الكاملة في نسخة الـ HTML) =====
-    class Version(val name: String, val subs: List<Sub>)
+    class Version(val name: String, val subs: List<Sub>, val dialect: String = "")
     val versions = java.util.concurrent.CopyOnWriteArrayList<Version>()
-    fun saveVersion(name: String) { versions.add(Version(name, subs)); while (versions.size > 12) versions.removeAt(0) }
+    fun saveVersion(name: String, dialect: String = convDialect.ifBlank { "فصحى" }) { versions.add(Version(name, subs, dialect)); while (versions.size > 12) versions.removeAt(0) }
     /** يرجّع نص الترجمة (translated) بس من نسخة محفوظة على الجمل المطابقة (نفس البداية والأصل)، والجمل الجديدة بتفضل زي ما هي */
     fun applyVersion(i: Int): Int {
         val v = versions.getOrNull(i) ?: return 0

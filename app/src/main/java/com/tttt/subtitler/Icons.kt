@@ -430,9 +430,36 @@ object Icons {
     }
 }
 
+/** اسم عربي لكل أيقونة (لقارئ الشاشة TalkBack) — بيتحط تلقائيًا على أي زرار نصه أيقونة واحدة بس */
+object A11y {
+    private val L = mapOf(
+        "info" to "معلومات", "swap_h" to "تبديل", "swap_v" to "تبديل", "undo" to "تراجع", "rotate" to "تدوير الشاشة", "rot_screen" to "تدوير الشاشة",
+        "more_v" to "المزيد", "more_h" to "المزيد", "ff" to "تقديم", "rew" to "رجوع", "up2" to "للأول", "next" to "التالي", "prev" to "السابق",
+        "playpause" to "تشغيل أو إيقاف", "stopwatch" to "التوقيت", "hourglass" to "جاري التنفيذ", "pause" to "إيقاف مؤقت", "stop" to "إيقاف",
+        "play" to "تشغيل", "play_l" to "تشغيل", "chev_u" to "لأعلى", "chev_d" to "لأسفل", "chev_l" to "يسار", "chev_r" to "يمين",
+        "refresh" to "تحديث", "gear" to "الإعدادات", "warn" to "تنبيه", "bolt" to "سريع", "no_entry" to "ممنوع", "fullscreen" to "ملء الشاشة",
+        "scissors" to "قص", "check" to "تأكيد", "check_c" to "تأكيد", "check_box" to "تحديد", "box" to "تحديد", "cross" to "إغلاق", "cross_c" to "إغلاق",
+        "pencil" to "تعديل", "plus" to "إضافة", "expand" to "تكبير", "pip" to "نافذة صغيرة", "up" to "لأعلى", "down" to "لأسفل", "fit" to "ملاءمة الشاشة",
+        "box_in" to "ملاءمة الشاشة", "menu" to "القائمة", "translate" to "الترجمة", "note" to "صوت", "note2" to "صوت", "globe" to "اللغة", "moon" to "ترجمة في الخلفية",
+        "mic" to "الصوت", "sliders" to "ضبط", "film" to "فيديو", "headphones" to "الصوت", "palette" to "الألوان", "clapper" to "فيديو", "eye" to "عرض",
+        "eye_off" to "إخفاء", "chat" to "تعليق", "save" to "حفظ", "folder" to "مجلد", "folder_open" to "فتح", "bars" to "الإحصائيات", "clipboard" to "اللوجز",
+        "ruler" to "المقاس", "scroll" to "ملخص", "note_edit" to "الجمل", "upload" to "تصدير", "download" to "استيراد", "shuffle" to "عشوائي", "repeat" to "تكرار",
+        "mute" to "كتم", "vol_low" to "الصوت", "vol" to "الصوت", "search" to "بحث", "lock" to "قفل", "unlock" to "فتح القفل", "key" to "المفاتيح", "bell_off" to "إشعار مكتوم",
+        "link" to "رابط", "text_aa" to "النص", "flame" to "اللهجة", "wrench" to "أدوات", "clock" to "الوقت", "hole" to "سد الفجوات", "folders" to "الترجمات",
+        "trash" to "حذف", "prohibited" to "ممنوع", "shield" to "مانع الإعلانات", "robot" to "الذكاء الاصطناعي", "brain" to "ذكي", "toolbox" to "أدوات", "broom" to "مسح"
+    )
+    fun label(icon: String): String? = L[icon]
+}
+
 /** TextView بيرسم الإيموجي كأيقونات تلقائيًا (بديل TextView العادي في كل البرنامج) */
 open class IconTextView(ctx: Context) : TextView(ctx) {
-    override fun setText(text: CharSequence?, type: BufferType?) { super.setText(Icons.convert(text), type) }
+    private var autoCd: String? = null
+    override fun setText(text: CharSequence?, type: BufferType?) {
+        super.setText(Icons.convert(text), type)
+        val one = Icons.singleIcon(text)
+        if (one != null) { val l = A11y.label(one.first); if (l != null && (contentDescription == null || contentDescription == autoCd)) { contentDescription = l; autoCd = l } }
+        else if (autoCd != null && contentDescription == autoCd) { contentDescription = null; autoCd = null }
+    }
     /** (v96) نص = أيقونة واحدة بس → بنرسمها في نص الزرار مباشرة بلون النص (أبيض) بدل الـ Span */
     override fun onDraw(canvas: Canvas) {
         val one = Icons.singleIcon(text)
@@ -461,6 +488,7 @@ open class IconSwitch(ctx: Context) : Switch(ctx) {
 
 /** (v97) زرار أيقونة مرسومة مباشرة (View عادي من غير TextView) — لزرار القايمة اللي كان بيطلع أسود */
 class IconGlyphButton(ctx: Context, private val iconName: String) : android.view.View(ctx) {
+    init { contentDescription = A11y.label(iconName) }
     override fun onDraw(canvas: Canvas) {
         val sz = minOf(width, height) * 0.56f
         if (sz <= 0f) return

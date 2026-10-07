@@ -47,6 +47,7 @@ object LinkRefresh {
             val agent = try { wv.settings.userAgentString ?: "" } catch (_: Throwable) { "" }
             try { host?.removeView(wv) } catch (_: Throwable) {}
             try { wv.stopLoading(); wv.destroy() } catch (_: Throwable) {}
+            LogStore.add("🔄 تحديث اللينك: لقيت ${found.size} رابط · " + (if (same != null) "نفس الفيديو ✓" else if (pick != null) "رابط مختلف" else "ولا رابط (مهلة/صفحة محمية)") + " · الصفحة: " + page.take(80))
             onDone(if (pick == null) null else Res(pick, same != null, ck, agent))
         }
         fun add(raw: String) {
@@ -90,6 +91,7 @@ object LinkRefresh {
         }
         // WebView لازم يكون متركّب في الشاشة عشان الفيديو يبدأ — بنحطه 1×1 شفاف
         try { wv.alpha = 0.01f; host?.addView(wv, FrameLayout.LayoutParams(2, 2)) } catch (_: Throwable) {}
+        LogStore.add("🔄 تحديث اللينك: بفتح الصفحة في الخلفية — " + page.take(80))
         h.postDelayed({ finish() }, timeoutMs)
         wv.loadUrl(page)
         h.postDelayed({ scan() }, 1500)

@@ -11,6 +11,11 @@ class BootReceiver : BroadcastReceiver() {
         Cfg.init(c.applicationContext)
         if (!Cfg.bool("bg_autostart", true)) return
         // أندرويد 14/15 ممكن يمنع تشغيل خدمة dataSync من BOOT_COMPLETED — ماننهارش لو اترفض
-        try { if (BgJobs.restore(c) > 0) BgService.start(c) } catch (_: Exception) {}
+        try { LogStore.init(c.applicationContext) } catch (_: Exception) {}
+        try {
+            val n = BgJobs.restore(c)
+            LogStore.add("🔁 بعد الريستارت/التحديث: طابور الخلفية فيه $n مهمة")
+            if (n > 0) BgService.start(c)
+        } catch (e: Exception) { LogStore.err("BootReceiver", e); LogStore.add("⚠ الخدمة ماقدرتش تشتغل من الريستارت — هتكمّل لما تفتح البرنامج") }
     }
 }

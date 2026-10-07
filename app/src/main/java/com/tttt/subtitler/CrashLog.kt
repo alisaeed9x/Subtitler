@@ -49,7 +49,7 @@ object CrashLog {
             GAlert(a).setTitle("⚠ التطبيق قفل المرة اللي فاتت").setMessage(shown.take(3500))
                 .setPositiveButton("📋 نسخ") { _, _ ->
                     (a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("crash", full))
-                    Toast.makeText(a, "اتنسخ — ابعته لي", Toast.LENGTH_SHORT).show()
+                    Notice.show(a, ("اتنسخ — ابعته لي").toString(), 2300L)
                 }.setNegativeButton("إغلاق", null).show()
         } catch (_: Exception) {}
     }

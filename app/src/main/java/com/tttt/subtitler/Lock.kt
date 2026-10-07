@@ -80,7 +80,7 @@ class LockUi(private val act: Activity, private val ui: Ui, private val th: Them
     val isSet: Boolean get() = Cfg.str("lock_hash").isNotEmpty()
     val bioOn: Boolean get() = Cfg.bool("lock_bio", false)
     val bioAvailable: Boolean get() = Build.VERSION.SDK_INT >= 28 && act.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)
-    private fun toast(m: String) = Toast.makeText(act, m, Toast.LENGTH_LONG).show()
+    private fun toast(m: String) = Notice.show(act, (m).toString(), 3600L)
 
     private fun save(p: List<Int>) { val salt = LockCore.newSalt(); Cfg.put("lock_salt", salt); Cfg.put("lock_hash", LockCore.hash(salt, p)); Cfg.put("lock_fails", "0"); Cfg.put("lock_until", "0") }
     private fun check(p: List<Int>) = isSet && LockCore.hash(Cfg.str("lock_salt"), p) == Cfg.str("lock_hash")

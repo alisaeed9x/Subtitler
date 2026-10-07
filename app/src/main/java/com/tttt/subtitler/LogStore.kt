@@ -43,6 +43,14 @@ object LogStore {
         }
     }
 
+    private val errCount = HashMap<String, Int>()
+    /** خطأ اتبلع في catch: بيتسجّل في اللوج (أول 3 مرات لكل مكان ونوع بس، عشان اللوج ما يتملاش) */
+    fun err(tag: String, t: Throwable) {
+        val k = tag + "|" + t.javaClass.simpleName
+        val n = synchronized(errCount) { val c = (errCount[k] ?: 0) + 1; errCount[k] = c; c }
+        if (n <= 3) add("⚠ $tag · ${t.javaClass.simpleName}: ${(t.message ?: "").take(100)}" + (if (n == 3) " (مش هكرر)" else ""))
+    }
+
     private fun trim() {
         val d = dir ?: return
         val cf = File(d, "session_log.txt")

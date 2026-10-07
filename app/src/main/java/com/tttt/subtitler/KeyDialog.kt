@@ -52,8 +52,8 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     }
     fun paste() {
         val k = clipboardKey()
-        if (k == null) Toast.makeText(this, "مفيش مفتاح (بيبدأ بـ AQ. أو AIza) في الكليبورد — انسخه الأول", Toast.LENGTH_LONG).show()
-        else { onKey(k); Toast.makeText(this, "✓ اتحط المفتاح", Toast.LENGTH_SHORT).show(); d.dismiss() }
+        if (k == null) Notice.show(this, ("مفيش مفتاح (بيبدأ بـ AQ. أو AIza) في الكليبورد — انسخه الأول").toString(), 3600L)
+        else { onKey(k); Notice.show(this, ("✓ اتحط المفتاح").toString(), 2300L); d.dismiss() }
     }
     box.addView(pill("🌐 افتح صفحة المفتاح هنا (جوه البرنامج)", th.primary, Color.BLACK) {
         d.dismiss(); showKeyBrowser(onKey)
@@ -61,7 +61,7 @@ fun Activity.showKeyGuide(onKey: (String) -> Unit) {
     box.addView(pill("افتح في Chrome", th.surface, th.text) {
         auto = true
         try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(KEY_PAGE_URL))) }
-        catch (_: Exception) { Toast.makeText(this, "مفيش متصفح — افتح aistudio.google.com/apikey يدويًا", Toast.LENGTH_LONG).show() }
+        catch (_: Exception) { Notice.show(this, ("مفيش متصفح — افتح aistudio.google.com/apikey يدويًا").toString(), 3600L) }
     }, LinearLayout.LayoutParams(-1, ui.dp(42)).apply { topMargin = ui.dp(6) })
     box.addView(pill("📋 الصق من الكليبورد", th.surface, th.text) { paste() }, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { topMargin = ui.dp(6) })
     box.addView(pill("إغلاق", th.surface, th.muted) { d.dismiss() }, LinearLayout.LayoutParams(-1, ui.dp(40)).apply { topMargin = ui.dp(6) })
@@ -126,7 +126,7 @@ private fun Activity.ensureKeysUi(onDone: () -> Unit) {
     val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
     btns.addView(pill("حفظ ✓", th.primary, Color.BLACK) {
         val ks = fields.map { it.text.toString().trim() }.filter { it.length > 10 }.distinct()
-        if (ks.isEmpty()) Toast.makeText(this, "اكتب مفتاح صالح", Toast.LENGTH_SHORT).show()
+        if (ks.isEmpty()) Notice.show(this, ("اكتب مفتاح صالح").toString(), 2300L)
         else { Cfg.p.edit().putString("keys", ks.joinToString("\n")).apply(); d.dismiss() }
     }, LinearLayout.LayoutParams(0, ui.dp(44), 1f).apply { setMargins(0, 0, ui.dp(4), 0) })
     btns.addView(pill("بعدين", th.surface, th.muted) { d.dismiss() }, LinearLayout.LayoutParams(0, ui.dp(44), 1f).apply { setMargins(ui.dp(4), 0, 0, 0) })

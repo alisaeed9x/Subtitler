@@ -166,7 +166,7 @@ object YtExtract {
                 val hls = sd.optString("hlsManifestUrl")
                 if (hls.isNotEmpty() && seen.add(hls)) out.add(Found(hls, "HLS", title, "https://www.youtube.com/", c.ua))
                 if (out.isNotEmpty()) break
-            } catch (_: Throwable) {}
+            } catch (e: Throwable) { LogStore.err("Sniffer:169", e) }
         }
         return out
     }
@@ -179,7 +179,7 @@ object YtExtract {
  */
 @SuppressLint("SetJavaScriptEnabled")
 class BrowserActivity : Activity() {
-    override fun finish() { super.finish(); try { overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (_: Exception) {} }
+    override fun finish() { super.finish(); try { overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (e: Exception) { LogStore.err("Sniffer:182", e) } }
     lateinit var wv: WebView
     lateinit var badge: Button
     lateinit var hint: TextView
@@ -225,7 +225,7 @@ class BrowserActivity : Activity() {
         val addr = ui.input("رابط الموقع / يوتيوب / كلمة بحث", "").apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f); layoutDirection = View.LAYOUT_DIRECTION_LTR }
         val go = ui.button("اذهب", true) { }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2) }
         val copy = ui.button("📋") {
-            try { ClipWatch.markSeen(this, addr.text.toString()); (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("url", addr.text.toString())); Toast.makeText(this, "اتنسخ لينك الصفحة", Toast.LENGTH_SHORT).show() } catch (_: Throwable) {}
+            try { ClipWatch.markSeen(this, addr.text.toString()); (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("url", addr.text.toString())); Notice.show(this, ("اتنسخ لينك الصفحة").toString(), 2300L) } catch (e: Throwable) { LogStore.err("Sniffer:228", e) }
         }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2) }
         addrRef = addr
         addr.setSelectAllOnFocus(true)
@@ -304,15 +304,15 @@ class BrowserActivity : Activity() {
 
     private fun scanOnce() {
         if (dead) return
-        try { wv.evaluateJavascript("(function(){return document.querySelector('video')?1:0})()") { r -> if (!dead) ctl.visibility = if (r?.trim() == "1" || customView != null) View.VISIBLE else View.GONE } } catch (_: Throwable) {}
+        try { wv.evaluateJavascript("(function(){return document.querySelector('video')?1:0})()") { r -> if (!dead) ctl.visibility = if (r?.trim() == "1" || customView != null) View.VISIBLE else View.GONE } } catch (e: Throwable) { LogStore.err("Sniffer:307", e) }
         try {
             wv.evaluateJavascript(JS) { r ->
                 try {
                     val s = JSONTokener(r ?: "").nextValue() as? String
                     if (!s.isNullOrEmpty()) { val arr = JSONArray(s); for (i in 0 until arr.length()) Sniff.accept(arr.getString(i))?.let { addUrl(it) } }
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { LogStore.err("Sniffer:313", e) }
             }
-        } catch (_: Throwable) {}
+        } catch (e: Throwable) { LogStore.err("Sniffer:315", e) }
     }
     private fun scanLoop() { if (dead) return; scanOnce(); h.postDelayed({ scanLoop() }, 2000) }
 
@@ -342,7 +342,7 @@ class BrowserActivity : Activity() {
         badge.text = "🎬 لقيت ${items.size} فيديو — اضغط للاختيار"; badge.visibility = View.VISIBLE; hint.visibility = View.GONE
         if (autoOpen && !autoShown) { autoShown = true; showList() }
         else if (dlg?.isShowing == true) renderList()
-        else if (items.size == 1) Toast.makeText(this, "🎬 لقيت فيديو", Toast.LENGTH_SHORT).show()
+        else if (items.size == 1) Notice.show(this, ("🎬 لقيت فيديو").toString(), 2300L)
     }
 
     /** حجم ونوع الملف (طلب صغير بـ Range) — بعد ما يخلص بينادي done على الـ UI thread */
@@ -362,7 +362,7 @@ class BrowserActivity : Activity() {
                 f.size = cr ?: if (c.responseCode == 206) -1L else c.contentLengthLong
                 f.mime = c.contentType ?: ""
                 c.disconnect()
-            } catch (_: Throwable) {}
+            } catch (e: Throwable) { LogStore.err("Sniffer:365", e) }
             runOnUiThread { if (!dead) done() }
         }.apply { isDaemon = true }.start()
     }
@@ -393,7 +393,7 @@ class BrowserActivity : Activity() {
         br.addView(ui.button("🌐 ترجمة وفرجة", true) { dlg?.dismiss(); openPlayer(f, false) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1.3f).apply { marginEnd = ui.dp(4) } })
         br.addView(ui.button("▶ فرجة بس") { dlg?.dismiss(); openPlayer(f, true) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) } })
         br.addView(ui.button("📋") {
-            try { ClipWatch.markSeen(this, f.url); (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("video", f.url)); Toast.makeText(this, "اتنسخ اللينك", Toast.LENGTH_SHORT).show() } catch (_: Throwable) {}
+            try { ClipWatch.markSeen(this, f.url); (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("video", f.url)); Notice.show(this, ("اتنسخ اللينك").toString(), 2300L) } catch (e: Throwable) { LogStore.err("Sniffer:396", e) }
         }.apply { layoutParams = LinearLayout.LayoutParams(-2, -2) })
         c.addView(br)
         return c
@@ -402,7 +402,7 @@ class BrowserActivity : Activity() {
     private fun leaveCustom() {
         val v = customView ?: return
         customBox.removeView(v); customBox.visibility = View.GONE; content.visibility = View.VISIBLE
-        customView = null; try { customCb?.onCustomViewHidden() } catch (_: Throwable) {}; customCb = null
+        customView = null; try { customCb?.onCustomViewHidden() } catch (e: Throwable) { LogStore.err("Sniffer:405", e) }; customCb = null
         if (oldOrient != -1) requestedOrientation = oldOrient
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         applyBars(th)
@@ -414,7 +414,7 @@ class BrowserActivity : Activity() {
         wv.evaluateJavascript(js) { r ->
             if (!toast) return@evaluateJavascript
             val t = try { JSONTokener(r ?: "").nextValue() as? String ?: "" } catch (_: Throwable) { "" }
-            if (t.isNotEmpty()) Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+            if (t.isNotEmpty()) Notice.show(this, (t).toString(), 2300L)
         }
     }
     private fun buildControls(): LinearLayout {
@@ -435,14 +435,14 @@ class BrowserActivity : Activity() {
             wv.evaluateJavascript("(function(){var v=document.querySelector('video');return v?(v.currentSrc||v.src||''):''})()") { r ->
                 val u = try { JSONTokener(r ?: "").nextValue() as? String ?: "" } catch (_: Throwable) { "" }
                 if (u.startsWith("http")) { Sniff.accept(u)?.let { addUrl(it) } }
-                if (items.isEmpty()) Toast.makeText(this, "مفيش رابط مباشر للفيديو ده (محمي أو blob) — كمّل فرجة هنا بالأزرار", Toast.LENGTH_LONG).show() else showList()
+                if (items.isEmpty()) Notice.show(this, ("مفيش رابط مباشر للفيديو ده (محمي أو blob) — كمّل فرجة هنا بالأزرار").toString(), 3600L) else showList()
             }
         })
         shield = chip("🛡") {
-            adOn = !adOn; try { getSharedPreferences("p", 0).edit().putBoolean("adblock", adOn).apply() } catch (_: Exception) {}
+            adOn = !adOn; try { getSharedPreferences("p", 0).edit().putBoolean("adblock", adOn).apply() } catch (e: Exception) { LogStore.err("Sniffer:442", e) }
             shield.text = if (adOn) "🛡 $blockedN" else "🛡✗"; shield.alpha = if (adOn) 1f else 0.5f
-            Toast.makeText(this, if (adOn) "مانع الإعلانات شغال" else "مانع الإعلانات اتقفل", Toast.LENGTH_SHORT).show()
-            try { wv.reload() } catch (_: Throwable) {}
+            Notice.show(this, (if (adOn) "مانع الإعلانات شغال" else "مانع الإعلانات اتقفل").toString(), 2300L)
+            try { wv.reload() } catch (e: Throwable) { LogStore.err("Sniffer:445", e) }
         }
         shield.text = if (adOn) "🛡" else "🛡✗"; shield.alpha = if (adOn) 1f else 0.5f; shield.textSize = 12f
         col.addView(shield)
@@ -461,8 +461,8 @@ class BrowserActivity : Activity() {
     override fun onBackPressed() { if (customView != null) leaveCustom() else if (wv.canGoBack()) wv.goBack() else super.onBackPressed() }
     override fun onDestroy() {
         dead = true; h.removeCallbacksAndMessages(null)
-        try { dlg?.dismiss() } catch (_: Throwable) {}
-        try { wv.destroy() } catch (_: Throwable) {}
+        try { dlg?.dismiss() } catch (e: Throwable) { LogStore.err("Sniffer:464", e) }
+        try { wv.destroy() } catch (e: Throwable) { LogStore.err("Sniffer:465", e) }
         super.onDestroy()
     }
 }

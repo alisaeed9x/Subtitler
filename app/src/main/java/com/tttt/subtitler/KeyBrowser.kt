@@ -38,7 +38,7 @@ fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
         if (captured) return
         captured = true
         try { onKey(k) } catch (_: Throwable) {}
-        Toast.makeText(this, "✓ لقطت المفتاح واتحفظ في البرنامج", Toast.LENGTH_LONG).show()
+        Notice.show(this, ("✓ لقطت المفتاح واتحفظ في البرنامج").toString(), 3600L)
         d.dismiss()
     }
     val listener = ClipboardManager.OnPrimaryClipChangedListener { clipboardKey()?.let { capture(it) } }
@@ -50,13 +50,13 @@ fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
     }
     bar.addView(ui.text("🔑 اعمل المفتاح وانسخه — هلقطه وأحفظه لوحدي", 13f, th.text, true), LinearLayout.LayoutParams(0, -2, 1f))
     fun chip(t: String, f: () -> Unit) = IconTextView(this).apply {
-        text = t; textSize = 13f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7))
+        text = t; textSize = 13f; setTextColor(th.text); gravity = Gravity.CENTER; minHeight = ui.dp(44); setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7))
         background = ui.box(th.surface, th.border, 8); layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6) }; setOnClickListener { f() }
     }
     bar.addView(chip("Chrome") {
         inChrome = true
         try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(KEY_PAGE_URL))) }
-        catch (_: Exception) { Toast.makeText(this, "مفيش متصفح", Toast.LENGTH_SHORT).show() }
+        catch (_: Exception) { Notice.show(this, ("مفيش متصفح").toString(), 2300L) }
     })
     bar.addView(chip("✕") { d.dismiss() })
 

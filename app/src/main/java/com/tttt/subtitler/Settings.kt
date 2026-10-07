@@ -173,11 +173,11 @@ fun Ui.charactersEditor(act: Activity, roster: EditText, gloss: EditText): Linea
     box.addView(button("➕ إضافة شخصية") { list.add(Row("", "male", "")); rebuild() })
     box.addView(button("📥 استيراد الشخصيات المكتشفة تلقائيًا") {
         val found = Live.engine?.charactersNow().orEmpty()
-        if (found.isEmpty()) Toast.makeText(act, "لسه مفيش شخصيات متحللة (شغّل ترجمة فيديو لحد ما يتحلل أول 12 جملة)", Toast.LENGTH_LONG).show()
+        if (found.isEmpty()) Notice.show(act, ("لسه مفيش شخصيات متحللة (شغّل ترجمة فيديو لحد ما يتحلل أول 12 جملة)").toString(), 3600L)
         else {
             parse()
             found.forEach { c -> val ix = list.indexOfFirst { it.name == c.name }; if (ix >= 0) { list[ix].gender = c.gender; if (c.role.isNotBlank()) list[ix].role = c.role } else list.add(Row(c.name, c.gender, c.role)) }
-            flush(); rebuild(); Toast.makeText(act, "اتستوردت ${found.size} شخصية", Toast.LENGTH_SHORT).show()
+            flush(); rebuild(); Notice.show(act, ("اتستوردت ${found.size} شخصية").toString(), 2300L)
         }
     })
     box.addView(text("مسرد المصطلحات (كل سطر: الكلمة = ترجمتها)", 13f, th.muted).apply { setPadding(0, dp(12), 0, 0) })

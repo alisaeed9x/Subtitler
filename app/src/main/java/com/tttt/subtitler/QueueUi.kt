@@ -16,7 +16,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
     val showing: Boolean get() = dlg?.isShowing == true
 
     private fun chip(t: String, f: () -> Unit) = IconTextView(act).apply {
-        text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
+        text = t; textSize = 12f; setTextColor(th.text); gravity = Gravity.CENTER; minHeight = ui.dp(44); setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7)); background = ui.box(th.surface, th.border, 8)
         layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }; setOnClickListener { f() }
     }
     private fun stateText(j: BgJob): String = when {
@@ -53,7 +53,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
                     btns.addView(chip("⬆") { BgJobs.moveUp(j) }); btns.addView(chip("⬇") { BgJobs.moveDown(j) })
                     btns.addView(chip("⏫ أول واحد") { BgJobs.moveTop(j) }); btns.addView(chip("▶ ابدأ دلوقتي") { BgJobs.startNow(act, j) })
                 }
-            } else if (j.state != "done" || j.err.isNotEmpty()) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) Toast.makeText(act, "بيترجم بالفعل", Toast.LENGTH_SHORT).show() })
+            } else if (j.state != "done" || j.err.isNotEmpty()) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) Notice.show(act, ("بيترجم بالفعل").toString(), 2300L) })
             btns.addView(chip("✕ إزالة") { BgJobs.remove(j) })
             val card = LinearLayout(act).apply {
                 orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.box(th.card, th.border, 12)

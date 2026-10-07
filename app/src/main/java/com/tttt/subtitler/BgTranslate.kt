@@ -39,7 +39,7 @@ class BgJob(val vid: String, val title: String, val uri: String?, val url: Strin
 object BgJobs {
     val jobs = CopyOnWriteArrayList<BgJob>()
     @Volatile var onChange: (() -> Unit)? = null
-    fun notifyChange() { try { onChange?.invoke() } catch (_: Exception) {}; persist() }
+    fun notifyChange() { try { onChange?.invoke() } catch (e: Exception) { LogStore.err("BgTranslate:42", e) }; persist() }
 
     // ===== الطابور بيتحفظ في filesDir/bg_queue.json (الشغّال والمستني بس) عشان يكمّل بعد قفل البرنامج/إعادة تشغيل الجهاز =====
     @Volatile private var app: Context? = null
@@ -60,7 +60,7 @@ object BgJobs {
                     .put("hdr", JSONObject(j.hdr as Map<*, *>)).put("paused", j.paused))
             }
             qFile(c).writeText(arr.toString())
-        } catch (_: Exception) {}
+        } catch (e: Exception) { LogStore.err("BgTranslate:63", e) }
     }
     /** بيرجّع الطابور المحفوظ (مرة واحدة في كل عملية). بيرجّع عدد المهام المستنية/الشغالة */
     @Synchronized fun restore(ctx: Context): Int {
@@ -83,7 +83,7 @@ object BgJobs {
                         jobs.add(j)
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { LogStore.err("BgTranslate:86", e) }
             lastSig = sigOf(jobs.filter { it.active })
             notifyChange()
         }
@@ -102,7 +102,7 @@ object BgJobs {
                 ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
                     if (c.moveToFirst()) return "f:" + c.getString(0) + ":" + c.getLong(1)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { LogStore.err("BgTranslate:105", e) }
             return "f:$uri"
         }
         return "u:" + (url ?: "").substringBefore('?')
@@ -210,7 +210,7 @@ class BgService : Service() {
         try {
             val pi = PendingIntent.getForegroundService(this, 2, Intent(this, BgService::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 4000, pi)
-        } catch (_: Exception) {}
+        } catch (e: Exception) { LogStore.err("BgTranslate:213", e) }
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(this, 0,
@@ -239,13 +239,13 @@ class BgService : Service() {
         val now = System.currentTimeMillis()
         if (!force && now - lastNotif < 1500) return
         lastNotif = now
-        try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ID, build(job)) } catch (_: Exception) {}
+        try { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ID, build(job)) } catch (e: Exception) { LogStore.err("BgTranslate:242", e) }
     }
 
     private fun work() {
         try {
             wake = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "subtitler:bg").apply { setReferenceCounted(false); acquire(6 * 3600 * 1000L) }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { LogStore.err("BgTranslate:248", e) }
         var stopId = 0
         try {
             while (true) {
@@ -254,12 +254,12 @@ class BgService : Service() {
                     if (j == null) { workerAlive = false; stopId = lastStartId }
                     j
                 } ?: break
-                try { wake?.acquire(6 * 3600 * 1000L) } catch (_: Exception) {}
+                try { wake?.acquire(6 * 3600 * 1000L) } catch (e: Exception) { LogStore.err("BgTranslate:257", e) }
                 runJob(job)
             }
         } finally {
-            try { wake?.release() } catch (_: Exception) {}
-            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+            try { wake?.release() } catch (e: Exception) { LogStore.err("BgTranslate:261", e) }
+            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) { LogStore.err("BgTranslate:262", e) }
             if (stopId != 0) stopSelf(stopId) else stopSelf()
         }
     }
@@ -316,7 +316,7 @@ class BgService : Service() {
         when {
             job.stopReq && job.requeue -> { job.state = "queued"; job.stopReq = false; job.requeue = false; job.err = "" }
             job.stopReq -> job.state = "stopped"
-            ok -> { job.state = "done"; job.pct = 100; try { SrtWriter.save(app, job.uri, engine.subs, Cfg.str("sub_offset_ms:" + job.vid, "0").toLongOrNull() ?: 0L)?.let { job.srt = it } } catch (_: Exception) {}; val nf = engine.failedCount(); job.err = if (nf > 0) "فيها $nf مقطع فاشل — افتح الفيديو وادوس سد الفجوات" else "" }
+            ok -> { job.state = "done"; job.pct = 100; try { SrtWriter.save(app, job.uri, engine.subs, Cfg.str("sub_offset_ms:" + job.vid, "0").toLongOrNull() ?: 0L)?.let { job.srt = it } } catch (e: Exception) { LogStore.err("BgTranslate:319", e) }; val nf = engine.failedCount(); job.err = if (nf > 0) "فيها $nf مقطع فاشل — افتح الفيديو وادوس سد الفجوات" else "" }
             else -> { job.state = "failed"; job.err = engine.fatal ?: "الترجمة وقفت قبل ما تخلص" }
         }
         job.engine = null
@@ -331,7 +331,7 @@ class BgService : Service() {
         val n = Notification.Builder(this, CH_DONE).setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
             .setContentTitle(Icons.plain(if (ok) "✅ خلصت الترجمة" else "⚠ الترجمة وقفت")).setContentText(job.title + (if (job.err.isNotEmpty()) " — " + job.err else ""))
             .setContentIntent(openApp()).setAutoCancel(true).build()
-        try { nm.notify(1000 + (job.vid.hashCode() and 0xFFFF), n) } catch (_: Exception) {}
+        try { nm.notify(1000 + (job.vid.hashCode() and 0xFFFF), n) } catch (e: Exception) { LogStore.err("BgTranslate:334", e) }
     }
 
     companion object {
@@ -339,6 +339,6 @@ class BgService : Service() {
         private const val CH_DONE = "bg_translate_done"
         private const val ID = 78
         const val ACTION_STOP = "com.tttt.subtitler.BG_STOP"
-        fun start(c: Context) { try { c.startForegroundService(Intent(c, BgService::class.java)) } catch (_: Exception) {} }
+        fun start(c: Context) { try { c.startForegroundService(Intent(c, BgService::class.java)) } catch (e: Exception) { LogStore.err("BgTranslate:342", e) } }
     }
 }

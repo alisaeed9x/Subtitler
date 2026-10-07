@@ -21,7 +21,7 @@ private const val DRM_MSG = "الفيديو محمي (DRM) ومش هينفع ي�
 object Tracks {
     private fun canDecode(f: MediaFormat): Boolean {
         val mime = f.getString(MediaFormat.KEY_MIME) ?: return false
-        try { if (MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(f) != null) return true } catch (_: Exception) {}
+        try { if (MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(f) != null) return true } catch (e: Exception) { LogStore.err("AudioIO:24", e) }
         return try { MediaCodec.createDecoderByType(mime).release(); true } catch (_: Exception) { false }
     }
 
@@ -53,7 +53,7 @@ object Decoder {
             try {
                 val curMax = if (fmt.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) fmt.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else 0
                 if (curMax < (1 shl 20)) fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1 shl 20)
-            } catch (_: Exception) {}
+            } catch (e: Exception) { LogStore.err("AudioIO:56", e) }
             try { codec.configure(fmt, null, null, 0) } catch (x: IllegalArgumentException) { throw HlsBadMedia("configure فشل لصيغة الصوت: $fmt") }
             codec.start()
             val info = MediaCodec.BufferInfo()
@@ -130,7 +130,7 @@ object Decoder {
                 throw HlsBadMedia("[$st] " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: "") + " | $dg")
             }
         } finally {
-            try { codec.stop() } catch (_: Exception) {}
+            try { codec.stop() } catch (e: Exception) { LogStore.err("AudioIO:133", e) }
             codec.release()
         }
     }
@@ -141,58 +141,84 @@ class FileSource(
     private val ctx: Context, private val uri: Uri?, private val url: String?,
     private val hdr: Map<String, String>, private val pref: Int, private val log: (String) -> Unit
 ) : AudioSource {
-    private var ex: MediaExtractor? = null
-    private var fmt: MediaFormat? = null
+    // حوض Extractors: كل باتش بياخد واحد لوحده (قبل كده كان واحد بس بقفل @Synchronized فكل الباتشات كانت بتستنى بعض — وده كان بيخلّي الفيديوهات اللي من لينك تتترجم باتش ورا باتش)
+    private val idle = java.util.ArrayDeque<MediaExtractor>()
+    private val lock = Any()
+    @Volatile private var fmt: MediaFormat? = null
+    @Volatile private var track = -1
     @Volatile private var durUs = 0L
     @Volatile private var preRollUs = 0L
+    @Volatile private var closed = false
+    private val slots = java.util.concurrent.Semaphore(if (uri != null) 2 else 4)   // أقصى عدد فك متوازي (محلي أخف من الشبكة)
     override fun setPreRoll(sec: Double) { preRollUs = (sec * 1_000_000).toLong() }
 
-    private fun open() {
+    private fun openNew(): MediaExtractor {
         var e = MediaExtractor()
         try {
             if (uri != null) e.setDataSource(ctx, uri, null)
             else try { e.setDataSource(url!!, hdr) } catch (t: Throwable) {
                 // الـ HTTP الداخلي بتاع MediaExtractor بيضيّع الهيدرز (كوكيز/Referer/UA) بعد التحويلات وبيفشل مع سيرفرات كتير — نقرأ بالـ HTTP بتاعنا
-                try { e.release() } catch (_: Exception) {}
+                try { e.release() } catch (e: Exception) { LogStore.err("AudioIO:156", e) }
                 log("⚠ فتح الرابط المباشر فشل (" + (t.message ?: t.javaClass.simpleName).take(70) + ") — بجرّب القراءة بالـ HTTP بتاعي")
                 e = MediaExtractor()
                 e.setDataSource(HttpRangeSource(url!!, hdr))
             }
-            val t = Tracks.pick(e, pref, log)
+            val t = if (track >= 0) track else Tracks.pick(e, pref, log)
             e.selectTrack(t)
             val f = e.getTrackFormat(t)
-            durUs = if (f.containsKey(MediaFormat.KEY_DURATION)) f.getLong(MediaFormat.KEY_DURATION) else 0L
-            ex = e; fmt = f
-        } catch (t: Throwable) { try { e.release() } catch (_: Exception) {}; throw t }
+            if (fmt == null) {
+                durUs = if (f.containsKey(MediaFormat.KEY_DURATION)) f.getLong(MediaFormat.KEY_DURATION) else 0L
+                track = t; fmt = f
+            }
+            return e
+        } catch (t: Throwable) { try { e.release() } catch (e: Exception) { LogStore.err("AudioIO:166", e) }; throw t }
     }
 
-    /** من غير قفل لو المدة معروفة: الواجهة بتسأل عليها كل ثانية، وwav() ماسك القفل طول فك الصوت */
+    private fun acquire(): MediaExtractor {
+        synchronized(lock) { idle.pollFirst()?.let { return it } }
+        return openNew()
+    }
+    private fun giveBack(e: MediaExtractor) {
+        val keep = synchronized(lock) { if (closed) false else { idle.addFirst(e); true } }
+        if (!keep) try { e.release() } catch (_: Exception) {}
+    }
+
+    /** من غير قفل لو المدة معروفة: الواجهة بتسأل عليها كل ثانية */
     override fun durationSec(): Double {
         val d = durUs; if (d > 0) return d / 1_000_000.0
         return durationSlow()
     }
-    @Synchronized private fun durationSlow(): Double {
-        if (ex == null) try { open() } catch (_: Exception) { return 0.0 }
+    private fun durationSlow(): Double {
+        if (fmt == null) {
+            val e = try { acquire() } catch (_: Exception) { return 0.0 }
+            giveBack(e)
+        }
         return durUs / 1_000_000.0
     }
 
-    @Synchronized override fun wav(startSec: Double, endSec: Double): WavChunk? {
-        if (ex == null) open()
-        val e = ex!!; val f = fmt!!
-        val startUs = (startSec * 1_000_000).toLong(); val endUs = (endSec * 1_000_000).toLong()
+    override fun wav(startSec: Double, endSec: Double): WavChunk? {
+        slots.acquireUninterruptibly()
         try {
-            e.seekTo(maxOf(0L, startUs - preRollUs), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-            val sink = PcmSink(endSec - startSec)
-            Decoder.decode(e, f, startUs, endUs, sink)
-            if (sink.isEmpty()) return null
-            return sink.finish(sink.firstPtsUs / 1_000_000.0)
-        } catch (t: Throwable) {
-            if (t !is Unsupported) { try { e.release() } catch (_: Exception) {}; ex = null }
-            throw t
-        }
+            val e = acquire(); val f = fmt ?: e.getTrackFormat(track.coerceAtLeast(0))
+            val startUs = (startSec * 1_000_000).toLong(); val endUs = (endSec * 1_000_000).toLong()
+            try {
+                e.seekTo(maxOf(0L, startUs - preRollUs), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val sink = PcmSink(endSec - startSec)
+                Decoder.decode(e, f, startUs, endUs, sink)
+                giveBack(e)
+                if (sink.isEmpty()) return null
+                return sink.finish(sink.firstPtsUs / 1_000_000.0)
+            } catch (t: Throwable) {
+                if (t is Unsupported) giveBack(e) else try { e.release() } catch (x: Exception) { LogStore.err("AudioIO:190", x) }
+                throw t
+            }
+        } finally { slots.release() }
     }
 
-    @Synchronized override fun close() { try { ex?.release() } catch (_: Exception) {}; ex = null }
+    override fun close() {
+        val all = synchronized(lock) { closed = true; val l = ArrayList(idle); idle.clear(); l }
+        for (e in all) try { e.release() } catch (x: Exception) { LogStore.err("AudioIO:195", x) }
+    }
 }
 
 /** قراءة عشوائية من رابط http بطلبات Range وبنفس الهيدرز (كوكيز/Referer/UA) — احتياطي لما MediaExtractor يفشل يفتح الرابط بنفسه */
@@ -464,9 +490,9 @@ class HlsSource(
                 for (grp in segs.chunked(2)) {
                     if (preGen.get() != gen) return@execute
                     val fs = grp.map { s -> PRE.submit<File> { segFile(s, hasMap) } }
-                    for (f in fs) try { f.get() } catch (_: Exception) {}   // الفشل هنا مش مهم: الباتش نفسه هيعيد المحاولة وقت ما يحتاجه
+                    for (f in fs) try { f.get() } catch (e: Exception) { LogStore.err("AudioIO:467", e) }   // الفشل هنا مش مهم: الباتش نفسه هيعيد المحاولة وقت ما يحتاجه
                 }
-            } catch (_: Throwable) {}
+            } catch (e: Throwable) { LogStore.err("AudioIO:469", e) }
         }
     }
 
@@ -483,7 +509,7 @@ class HlsSource(
                 if (now - f.lastModified() < 90_000) continue
                 total -= f.length(); f.delete()
             }
-        } catch (_: Throwable) {}
+        } catch (e: Throwable) { LogStore.err("AudioIO:486", e) }
     }
 
     // ---------- فك الصوت ----------
@@ -537,7 +563,7 @@ class HlsSource(
             return sink.finish(base + (sink.firstPtsUs - first) / 1_000_000.0)
         } catch (x: IllegalArgumentException) { throw HlsBadMedia("فك الصوت فشل [خطوة: $step]: " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: ""))
         } catch (x: IllegalStateException) { throw HlsBadMedia("فك الصوت فشل [خطوة: $step]: " + x.javaClass.simpleName + (x.message?.let { " $it" } ?: ""))
-        } finally { try { e.release() } catch (_: Exception) {}; tmp.delete() }
+        } finally { try { e.release() } catch (e: Exception) { LogStore.err("AudioIO:540", e) }; tmp.delete() }
     }
 
     override fun close() {

@@ -62,7 +62,7 @@ object Notice {
         if (act == null) { onNo?.let { main.post { it() } }; return }
         main.post {
             if (act.isFinishing || act.isDestroyed) { onNo?.invoke(); return@post }
-            try { if (act.isInPictureInPictureMode) { onNo?.invoke(); return@post } } catch (_: Throwable) {}
+            try { if (act.isInPictureInPictureMode) { LogStore.add("🔕 إشعار (PiP): $msg"); onNo?.invoke(); return@post } } catch (_: Throwable) {}
             removeNow()
             val th = theme(act); val ui = Ui(act, th)
             val d = act.resources.displayMetrics.density
@@ -96,7 +96,7 @@ object Notice {
 
             if (yes != null && no != null) {
                 fun chip(t: String, primary: Boolean, f: () -> Unit) = IconTextView(act).apply {
-                    text = t; textSize = 12.5f; gravity = Gravity.CENTER
+                    text = t; textSize = 12.5f; gravity = Gravity.CENTER; minHeight = dp(40)
                     setPadding(dp(14), dp(6), dp(14), dp(6))
                     setTextColor(if (primary) onPrimary else th.text)
                     background = ui.box(if (primary) th.primary else th.surface, if (primary) th.primary else th.border, 16)
@@ -148,14 +148,4 @@ object Notice {
             timeout = t; main.postDelayed(t, ms)
         }
     }
-}
-
-/** بديل Toast بنفس الشكل: Toast.makeText(ctx, "..", Toast.LENGTH_SHORT).show() بيطلع إشعار صغير فوق بدل التوست */
-object Toast {
-    const val LENGTH_SHORT = 0
-    const val LENGTH_LONG = 1
-    class T(private val c: Context, private val m: CharSequence, private val d: Int) {
-        fun show() { Notice.show(c, m.toString(), if (d == LENGTH_LONG) 3600L else 2300L) }
-    }
-    fun makeText(c: Context, m: CharSequence, d: Int): T = T(c, m, d)
 }

@@ -14,6 +14,9 @@ jobs:
         with: { gradle-version: "8.9" }
       - name: Accept SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - name: Compile-check + tests (dev-tests/run_tests.sh)
+        continue-on-error: true
+        run: bash dev-tests/run_tests.sh
       - run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:

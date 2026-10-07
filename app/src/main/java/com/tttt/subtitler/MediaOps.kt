@@ -34,7 +34,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
 
     /** مع صلاحية «إدارة كل الملفات» (أو أندرويد 9-) بنتعامل مع الملف مباشرة من غير نافذة موافقة النظام */
     private fun fileOps(v: VideoItem) = v.folderKey.startsWith("/") && (Build.VERSION.SDK_INT < 30 && Build.VERSION.SDK_INT < 29 || (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()))
-    private fun toast(m: String) = Toast.makeText(act, m, Toast.LENGTH_LONG).show()
+    private fun toast(m: String) = Notice.show(act, (m).toString(), 3600L)
     private fun busy(v: VideoItem): Boolean {
         if (BgJobs.isActive(v.videoId)) { toast("الفيديو ده بيترجم في الخلفية — وقّف الترجمة الأول من ⋮"); return true }
         return false
@@ -111,7 +111,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
             val o = File(dir, Store.keyFor(oldId) + ".json"); val n = File(dir, Store.keyFor(newId) + ".json")
             if (o.exists() && !n.exists()) o.renameTo(n)
             Recents.rename(act, oldId, newId, Recents.titleOf(newId))
-        } catch (_: Exception) {}
+        } catch (e: Exception) { LogStore.err("MediaOps:114", e) }
     }
 
     // ===== نقل =====
@@ -167,7 +167,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
                 val uris = f.videos.map { Uri.parse(it.uri) }
                 val cleanup = {
                     for (v in f.videos) {
-                        try { File(File(act.filesDir, "progress"), Store.keyFor(v.videoId) + ".json").delete() } catch (_: Exception) {}
+                        try { File(File(act.filesDir, "progress"), Store.keyFor(v.videoId) + ".json").delete() } catch (e: Exception) { LogStore.err("MediaOps:170", e) }
                         Recents.drop(act, v.videoId)
                     }
                     toast("🗑 اتمسح الفولدر"); onChanged()
@@ -241,7 +241,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
             .setPositiveButton("احذف") { _, _ ->
                 val uri = Uri.parse(v.uri)
                 val cleanup = {
-                    try { File(File(act.filesDir, "progress"), Store.keyFor(v.videoId) + ".json").delete() } catch (_: Exception) {}
+                    try { File(File(act.filesDir, "progress"), Store.keyFor(v.videoId) + ".json").delete() } catch (e: Exception) { LogStore.err("MediaOps:244", e) }
                     Recents.drop(act, v.videoId)
                     toast("🗑 اتمسح"); onChanged()
                 }
@@ -276,8 +276,8 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
                     mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.let { L += "معدل البت الكلي" to String.format(Locale.US, "%.2f Mbps", it / 1_000_000.0) }
                     if (Build.VERSION.SDK_INT >= 23) mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull()?.let { L += "الإطارات/ثانية" to String.format(Locale.US, "%.2f", it) }
                     mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.takeIf { it != "0" }?.let { L += "الدوران" to "$it°" }
-                } finally { try { mr.release() } catch (_: Exception) {} }
-            } catch (_: Exception) {}
+                } finally { try { mr.release() } catch (e: Exception) { LogStore.err("MediaOps:279", e) } }
+            } catch (e: Exception) { LogStore.err("MediaOps:280", e) }
             if (w > 0 && h > 0) L.add(4.coerceAtMost(L.size), "الأبعاد" to "$w × $h")
             try {
                 val ex = MediaExtractor()
@@ -298,8 +298,8 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
                             else -> L += "ترجمة/نص" to mime
                         }
                     }
-                } finally { try { ex.release() } catch (_: Exception) {} }
-            } catch (_: Exception) {}
+                } finally { try { ex.release() } catch (e: Exception) { LogStore.err("MediaOps:301", e) } }
+            } catch (e: Exception) { LogStore.err("MediaOps:302", e) }
             if (rec != null && rec.subs > 0) L += "ترجمة التطبيق" to "${rec.subs} جملة · تغطية ${rec.percent}%"
             val body = L.joinToString("\n\n") { it.first + ":\n" + it.second }
             act.runOnUiThread {

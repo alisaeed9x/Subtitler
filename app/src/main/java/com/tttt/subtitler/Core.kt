@@ -45,7 +45,11 @@ class Conf(
     val soundTags: Boolean = true,
     /** مفاتيح خاصة بالوضع البصري بس (لو موجودة الوضع البصري مايستخدمش غيرها) */
     val visKeys: List<String> = emptyList()
-)
+) {
+    /** نسخة من الإعدادات بلهجة تانية (الباتشات الجديدة بتتبعت باللهجة المختارة مباشرة بدل فصحى ثم تحويل) */
+    fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, vad, crossReview, autoChars,
+        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys)
+}
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
