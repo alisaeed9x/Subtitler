@@ -62,8 +62,9 @@ class MainActivity : Activity() {
     private var permDone: (() -> Unit)? = null
     private var scanFn: () -> Unit = {}
     private var libStarted = false
-    private var curTab = 0                       // (v125) 0 = الفيديوهات · 1 = مكتبتي الخاصة
-        private var navUi: BottomNav? = null
+    private var curTab = 0                       // (v117) 0 = الفيديوهات · 1 = يوتيوب
+    private var ytUi: YoutubeUi? = null
+    private var navUi: BottomNav? = null
     private var showTabFn: (Int) -> Unit = {}
     override fun onCreate(b: Bundle?) {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
@@ -75,13 +76,7 @@ class MainActivity : Activity() {
         val th = Themes.byId(Cfg.str("theme", "mx"))
         val ui = Ui(this, th)
         applyBars(th)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, ui.dp(32), 0, 0)
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            clipChildren = false
-            clipToPadding = false
-        }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, ui.dp(32), 0, ui.dp(110)); layoutDirection = View.LAYOUT_DIRECTION_RTL; clipChildren = false; clipToPadding = false }
         val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
         val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
         val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
@@ -468,31 +463,17 @@ class MainActivity : Activity() {
         lib.onPull = { VideoScan.cache = null; doScan() }
         lib.onRefresh = { VideoScan.cache = null; Thumbs.clear(); lib.showScanning(); doScan() }
 
-        // (v128) الشريط السفلي: الفيديوهات المحلية · الأنمي · المتصفح
+        // (v124) الشريط السفلي: بوابتين — الفيديوهات (المكتبة) · المتصفح (تبويب يوتيوب اتشال)
         showTabFn = { i ->
             if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; navUi?.set(0) }
         }
-        val nav = BottomNav(this, ui, th, 0) { i ->
-            when (i) {
-                1 -> {
-                    save()
-                    startActivity(Intent(this, PrivateLibraryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                }
-                2 -> {
-                    save()
-                    startActivity(Intent(this, BrowserActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                }
-                else -> showTabFn(i)
-            }
-        }
+        val nav = BottomNav(this, ui, th, 0) { i -> if (i == 1) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
         navUi = nav
         val pane = FrameLayout(this)
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
-        shell.addView(nav.view, LinearLayout.LayoutParams(-1, ui.dp(72)).apply {
-            gravity = Gravity.BOTTOM
-        })
+        shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
         val frame = FrameLayout(this).apply { setBackgroundColor(th.bg); layoutDirection = View.LAYOUT_DIRECTION_LTR }
         frame.addView(shell, FrameLayout.LayoutParams(-1, -1))
         if (fromPlayer) {
@@ -696,6 +677,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
         super.onActivityResult(r, c, d)
+        if (r == 47) { if (c == RESULT_OK) d?.data?.let { ytUi?.importUri(it) }; return }   // (v118) ملف اشتراكات يوتيوب
         if (lockUi?.onResult(r, c == RESULT_OK) == true) return
         if (mediaOps?.onResult(r, c == RESULT_OK) == true) return
         if (r == 14) { nextPerm(); return }
@@ -780,15 +762,16 @@ class MainActivity : Activity() {
         if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
         stoppedAt = 0L
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
-        
+        if (!fromPlayer && curTab == 1) ytUi?.refresh()
     }
     /** (v117) الرجوع من المتصفح بشريط البوابات: بيفتح البوابة اللي اخترتها */
     override fun onNewIntent(i: Intent?) {
         super.onNewIntent(i)
-        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0) }
+        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1) }
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        if (!fromPlayer && curTab == 1 && ytUi?.back() == true) return   // (v118) رجوع جوه يوتيوب الأول
         if (!fromPlayer && curTab != 0) { showTabFn(0); return }
         if (!fromPlayer && libUi?.back() == true) return
         super.onBackPressed()

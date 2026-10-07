@@ -15,6 +15,3 @@
 
 ===== الاختبارات (للمطوّر) =====
 bash dev-tests/run_tests.sh   # compile-check للتطبيق كله + اختبارات JVM للمحرك والصوت وHLS والـ prompts
-
-
-V127: روابط حلقات Anime Witcher تفتح داخل BrowserActivity المدمج في Subtitler بدل PlayerActivity/المشغل الخاص بالتطبيق القديم. لا يتم تشغيل مشغل Anime Witcher الخارجي.

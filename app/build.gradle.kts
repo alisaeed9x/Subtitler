@@ -8,7 +8,7 @@ android {
     }
     namespace = "com.tttt.subtitler"
     compileSdk = 34
-    defaultConfig { applicationId = "com.tttt.subtitler"; minSdk = 26; targetSdk = 34; versionCode = 94; versionName = "0.126" }
+    defaultConfig { applicationId = "com.tttt.subtitler"; minSdk = 26; targetSdk = 34; versionCode = 92; versionName = "0.92" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
@@ -18,5 +18,4 @@ dependencies {
     implementation("androidx.media3:media3-datasource:1.4.1")
     implementation("androidx.media3:media3-effect:1.4.1")
     implementation("androidx.webkit:webkit:1.11.0")
-    implementation("com.github.bumptech.glide:glide:4.16.0")
 }
