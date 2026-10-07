@@ -52,6 +52,7 @@ class PlayerActivity : Activity(), Host {
     lateinit var sub: SubtitleView
     lateinit var visual: VisualMode
     lateinit var visOv: VisualOverlay
+    lateinit var miniBar: DualProgress
     lateinit var st: TextView
     lateinit var floatBar: View
     lateinit var batchTv: TextView
@@ -366,7 +367,7 @@ class PlayerActivity : Activity(), Host {
     }
 
     /** يوقف المشغّل خالص، يسلّم الترجمة لخدمة الخلفية (إشعار بالتقدم والوقت المتبقي) ويطلع بره التطبيق من غير ما يقفله */
-    fun translateInBackground() {
+    fun translateInBackground(goHome: Boolean = true) {
         if (Cfg.allMainKeys().isEmpty() && conf.keys.isEmpty() && conf.backup.isEmpty()) { say("ضيف مفتاح API الأول"); return }
         if (handedOff) return
         handedOff = true
@@ -384,7 +385,7 @@ class PlayerActivity : Activity(), Host {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 12) } catch (e: Exception) { LogStore.err("Main:1027", e) }
         }
-        try { startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { LogStore.err("Main:1029", e) }
+        if (goHome) try { startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { LogStore.err("Main:1029", e) }
         finish()
     }
 
@@ -392,6 +393,7 @@ class PlayerActivity : Activity(), Host {
     var offFsB: TextView? = null
     private var lastSrtN = -1
     private var lastSrtOff = Long.MIN_VALUE
+    private var srtToastShown = false   // (v104) إشعار «اتحفظ SRT» مرة واحدة بس في الجلسة
     private val srtRun = Runnable { srtCheck() }
     fun srtSoon() { h.removeCallbacks(srtRun); h.postDelayed(srtRun, 2500) }
     private fun srtCheck() {
@@ -402,8 +404,37 @@ class PlayerActivity : Activity(), Host {
         if (n == lastSrtN && offsetMs == lastSrtOff) return
         lastSrtN = n; lastSrtOff = offsetMs
         val subsNow = engine.subs; val off = offsetMs; val app = applicationContext
-        Thread { SrtWriter.save(app, u, subsNow, off)?.let { p -> runOnUiThread { log("💾 اتحفظ SRT: $p"); say("💾 اتحفظ SRT جنب الفيديو") } } }.start()
+        Thread { SrtWriter.save(app, u, subsNow, off)?.let { p -> runOnUiThread { log("💾 اتحفظ SRT: $p"); if (!srtToastShown) { srtToastShown = true; say("💾 اتحفظ SRT جنب الفيديو") } } } }.start()
     }
+
+    // ===== (v108) فلتر ألوان الشاشة: تلقائي حسب نوع العمل / أصلي / متشبع / بارد / دافئ / أبيض وأسود =====
+    private val filterLabels = linkedMapOf("auto" to "تلقائي (حسب نوع العمل)", "orig" to "أصلي", "vivid" to "ألوان متشبعة", "cool" to "بارد (كول)", "warm" to "دافئ", "bw" to "أبيض وأسود")
+    private fun fxSat(v: Float) = androidx.media3.effect.HslAdjustment.Builder().adjustSaturation(v).build()
+    private fun fxRgb(r: Float, g: Float, b: Float) = androidx.media3.effect.RgbAdjustment.Builder().setRedScale(r).setGreenScale(g).setBlueScale(b).build()
+    private fun presetEffects(id: String): List<androidx.media3.common.Effect> = when (id) {
+        "vivid" -> listOf(fxSat(35f), androidx.media3.effect.Contrast(0.08f))
+        "cool" -> listOf(fxRgb(0.92f, 0.98f, 1.1f))
+        "warm" -> listOf(fxRgb(1.1f, 1.0f, 0.9f))
+        "bw" -> listOf(fxSat(-100f))
+        "action" -> listOf(fxSat(20f), androidx.media3.effect.Contrast(0.18f), fxRgb(0.97f, 1.0f, 1.05f))
+        "comedy" -> listOf(fxSat(30f), androidx.media3.effect.Brightness(0.04f), fxRgb(1.05f, 1.02f, 0.96f))
+        "horror" -> listOf(fxSat(-30f), androidx.media3.effect.Contrast(0.2f), androidx.media3.effect.Brightness(-0.04f), fxRgb(0.95f, 1.0f, 1.06f))
+        "romance" -> listOf(fxSat(10f), androidx.media3.effect.Brightness(0.02f), fxRgb(1.07f, 1.0f, 0.95f))
+        "scifi" -> listOf(fxSat(15f), androidx.media3.effect.Contrast(0.12f), fxRgb(0.94f, 1.0f, 1.1f))
+        else -> emptyList()
+    }
+    fun applyFilter() {
+        if (!::player.isInitialized) return
+        val mode = Cfg.str("vfilter", "orig")
+        val id = if (mode == "auto") Cfg.str("vgenre:$vid", "") else mode
+        try { player.setVideoEffects(presetEffects(id)) } catch (e: Throwable) { LogStore.err("filter", e) }
+    }
+    fun setFilterMode(id: String) {
+        Cfg.put("vfilter", id); applyFilter()
+        if (id == "auto" && Cfg.str("vgenre:$vid", "").isEmpty() && ::engine.isInitialized) { engine.onGenre = genreCb; engine.detectGenre() }
+        giShowFn(filterLabels[id] ?: "")
+    }
+    private val genreCb: (String) -> Unit = { g -> runOnUiThread { Cfg.put("vgenre:$vid", g); applyFilter() } }
 
     // ===== PiP =====
     private var inPip = false
@@ -527,7 +558,7 @@ class PlayerActivity : Activity(), Host {
             if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.isSound && !b.isSound && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
                 ends[j] - starts[j] <= 4000 && ends[j + 1] - starts[j + 1] in 600..5000) ends[j] = ends[j + 1]
         }
-        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound }
+        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound && !l[it].translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") } }   // (v105) أوصاف الأصوات القديمة [موسيقى] متظهرش
         spMap = sp.toIntArray(); spStarts = LongArray(sp.size) { starts[sp[it]] }; spEnds = LongArray(sp.size) { ends[sp[it]] }
         sdMap = sd.toIntArray(); sdStarts = LongArray(sd.size) { starts[sd[it]] }; sdEnds = LongArray(sd.size) { ends[sd[it]] }
         if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
@@ -727,7 +758,7 @@ class PlayerActivity : Activity(), Host {
         var tbScrolled = false
         tb.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (!tbScrolled && tbRow.width > 0) { tbScrolled = true; tb.post { tb.scrollTo(tbRow.width, 0) } } }
         var textAtBottom = false
-        fun grp(label: String, col: LinearLayout, above: Boolean = false): TextView = ui.fsBtn("$label ▾") { v ->
+        fun togglePop(v: View, col: LinearLayout, above: Boolean) {
             val had = popupOwner === v; dismissPop()
             if (!had) {
                 (col.parent as? android.view.ViewGroup)?.removeView(col)
@@ -741,6 +772,7 @@ class PlayerActivity : Activity(), Host {
             }
             showChrome(); if (popup != null) h.removeCallbacks(hideChrome)
         }
+        fun grp(label: String, col: LinearLayout, above: Boolean = false): TextView = ui.fsBtn("$label ▾") { v -> togglePop(v, col, above) }
         gText.addView(pk("🔤 " + fontLabel()) { v ->
             val fs = SubStyle.fonts; val cf = curStyle().font
             val n = fs[(fs.indexOfFirst { it.id == cf } + 1) % fs.size]
@@ -788,7 +820,28 @@ class PlayerActivity : Activity(), Host {
             v.text = "⬛ " + PlayerLogic.fitNames[curFit()]; applyFit(sv, videoBox)
         }
         fitFsB = fitB
-        val menuB = IconGlyphButton(this, "menu").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { openSide(); showChrome() } }
+        val menuB = IconGlyphButton(this, "menu").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { togglePop(this, gTool, false) } }
+        val gFilter = gCol()
+        fun fillFilterMenu() {
+            gFilter.removeAllViews()
+            val cur = Cfg.str("vfilter", "orig")
+            for ((id, label) in filterLabels) gFilter.addView(pd((if (id == cur) "✓ " else "") + label) { setFilterMode(id) })
+        }
+        val filterB = IconGlyphButton(this, "palette").apply {
+            background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12)
+            setOnClickListener { fillFilterMenu(); togglePop(this, gFilter, false) }
+            setOnLongClickListener { giShow("فلتر الألوان", Gravity.CENTER); true }
+        }
+        val bgOnB = IconGlyphButton(this, if (Cfg.bool("bg_on_exit", false)) "check_box" else "box").apply {
+            background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12)
+            setOnClickListener {
+                val on = !Cfg.bool("bg_on_exit", false)
+                Cfg.put("bg_on_exit", if (on) "1" else "0"); iconName = if (on) "check_box" else "box"
+                giShowFn(if (on) "هكمّل الترجمة في الخلفية لما تخرج: شغّال" else "كمّل في الخلفية لما تخرج: مقفول")
+                showChrome()
+            }
+            setOnLongClickListener { giShow("كمّل الترجمة في الخلفية لما أخرج", Gravity.CENTER); true }
+        }
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
         val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
@@ -798,19 +851,21 @@ class PlayerActivity : Activity(), Host {
         val offB = pk(String.format("%+.1fs", offsetMs / 1000.0)) { setOff(-offsetMs) }
         offFsB = offB; gSub.addView(offB)
         gSub.addView(pk("⏱ تأخير +0.1") { setOff(100) })
+        // (v103) قايمة ☰ = قايمة منسدلة صغيرة فيها بس الأزرار اللي مش موجودة في المشغّل نفسه
         gTool.addView(pd("📤 تصدير SRT") { doExport() })
-        gTool.addView(pd("🔁 سد الفجوات") { engine.retryFailed(); Notice.show(this, ("بحاول أسد الفجوات").toString(), 2300L) })
-        gTool.addView(pd("⧉ نافذة صغيرة") { enterPip() })
-        gTool.addView(pd("⚙️ الإعدادات") { openSettings() })
-
-        gTool.addView(pd("🗂 ترجمات") { versionsDialog() })
+        gTool.addView(pd("📥 استيراد SRT") { doImport() })
+        gTool.addView(pd("📂 فتح فيديو") { doOpen() })
+        gTool.addView(pd("🕳 سد الفجوات") { engine.retryFailed(); Notice.show(this, ("بحاول أسد الفجوات").toString(), 2300L) })
+        gTool.addView(pd("🗂 ترجمات الفيديو") { versionsDialog() })
         gTool.addView(pd("🔄 إعادة ترجمة") { batchDialog() })
+        gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
+        gTool.addView(pd("📜 ذكّرني") { recapDialog() })
+        gTool.addView(pd("⚙️ الإعدادات") { openSettings() })
         gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
         gAi.addView(pd("😐 عائلي/صريح") { familyDialog() })
         gAi.addView(pd("🌐 لهجة لايف") { liveDialectDialog() })
         gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
         gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Notice.show(this, (if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة").toString(), 2300L); curIdx = -2 })
-        gTool.addView(pd("📜 ذكّرني") { recapDialog() })
         // ===== الصف العلوي: الأساسي ظاهر دايمًا (☰ 📝 CC وضع-الترجمة Aa) والباقي بيتفرد بسهم ❮ وبيتلم بعد 5 ثواني =====
         fun tip(v: TextView, name: String): TextView { v.setOnLongClickListener { giShow(name, Gravity.CENTER); true }; return v }   // ضغطة طويلة = اسم الزرار
         // (v96) الزرار ❮ اتشال: كل أزرار الصف العلوي ظاهرة على طول (☰ القائمة + 🔤 النص)
@@ -904,6 +959,8 @@ class PlayerActivity : Activity(), Host {
             tbRow.addView(toolBtns[4], lp(4)); tbRow.addView(toolBtns[1], lp(1)); tbRow.addView(toolBtns[2], lp(2))
             tbRow.addView(textB, LinearLayout.LayoutParams(-2, ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(toolBtns[0], lp(0)); tbRow.addView(toolBtns[5], lp(5)); tbRow.addView(toolBtns[3], lp(3))
+            tbRow.addView(bgOnB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
+            tbRow.addView(filterB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             textB.minimumWidth = ui.dp(38); textB.setPadding(ui.dp(8), 0, ui.dp(8), 0)
             textAtBottom = false
@@ -959,6 +1016,12 @@ class PlayerActivity : Activity(), Host {
         lockOv = ui.fsCircle("🔒") { setLock(false) }.apply { visibility = View.GONE }
         videoBox.addView(lockOv, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.BOTTOM or Gravity.START).apply { setMargins(ui.dp(22), 0, 0, ui.dp(22)) })
         videoBox.addView(chromeFrame, FrameLayout.LayoutParams(-1, -1))
+        // (v104) شرايط التقدم الـ3 بحجم رفيع جدًا دايمًا تحت الفيديو؛ لمسة على الشاشة بتظهر الشريط الكبير ولمسة تانية ترجّعها صغيرة
+        miniBar = DualProgress(this, th).apply { thin = true; isClickable = false; isFocusable = false; alpha = 0.33f }
+        videoBox.addView(miniBar, FrameLayout.LayoutParams(-1, 3, Gravity.BOTTOM))
+        videoBox.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+            if (b - t != ob - ot) { val hh = ((b - t) * 0.025f).toInt().coerceAtLeast(3); val lp = miniBar.layoutParams; if (lp.height != hh) { lp.height = hh; miniBar.layoutParams = lp } }
+        }
         // زرار ⛶ (.fullscreen-btn): أسفل يسار الفيديو 10dp في الرأسي، 18dp في الشاشة الكاملة
         fsBtnV = ui.fsCircle("⛶") { toggleFs(); showChrome() }
         fsBtnLp = FrameLayout.LayoutParams(ui.dp(34), ui.dp(34), Gravity.BOTTOM or Gravity.LEFT)
@@ -992,6 +1055,7 @@ class PlayerActivity : Activity(), Host {
             val cv = (!fullMode || chromeShown) && !pipNow()
             floatBar.visibility = if (!pipNow()) View.VISIBLE else View.GONE
             batchBtn.visibility = if (cv) View.VISIBLE else View.GONE
+            miniBar.visibility = if (!on && !pipNow()) View.VISIBLE else View.GONE
             updateTrChip()
             fsBtnV.visibility = if (!fullMode) View.VISIBLE else View.GONE   // في الشاشة الكاملة ⛶ جوه الشريط السفلي
             subLp.bottomMargin = if (on) maxOf(ui.dp(128), fsBar.height + ui.dp(12)) else ui.dp(12); sub.requestLayout()
@@ -1212,40 +1276,7 @@ class PlayerActivity : Activity(), Host {
         logDlg.setOnShowListener { logShow(0) }
         mem = ui.memRow()
 
-        fun menuItems(mk: (String, String, () -> Unit) -> View): List<View> = listOf<View>(
-            mk("📝", "الجمل") { sentDlg.show() },
-            mk("📜", "اللوجز") { logDlg.show() },
-            mk("🕳", "سد الفجوات") { engine.retryFailed(); Notice.show(this, ("بحاول أسد الفجوات").toString(), 2300L) },
-            mk("📤", "تصدير SRT") { doExport() },
-            mk("📥", "استيراد SRT") { doImport() },
-            mk("📂", "فتح فيديو") { doOpen() },
-            mk("⧉", "نافذة عائمة") { enterPip() },
-            mk("⚙️", "الإعدادات") { openSettings() },
-            mk("🗂", "ترجمات الفيديو") { versionsDialog() },
-            mk("🔄", "إعادة ترجمة") { batchDialog() },
-            mk("🌙", "ترجمة بالخلفية") { translateInBackground() },
-            mk("🔥", "لهجة أقوى") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) },
-            mk("😐", "عائلي / صريح") { familyDialog() },
-            mk("🌐", "لهجة لايف") { liveDialectDialog() },
-            mk("🔧", "صحّح الضمائر") { pronounsNow() },
-            mk("🧠", "دمج مكرر") { val n = engine.removeDuplicates(); Notice.show(this, (if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة").toString(), 2300L); curIdx = -2 },
-            mk("📜", "ذكّرني") { recapDialog() }
-        )
-        // ---- القايمة الجانبية (أفقي): نفس أزرار اللي تحت المشغل، 3 في الصف وتحتهم صف تاني وهكذا. أي زرار بيفتح صفحة كاملة، والرجوع بيرجّع خطوة ----
-        val keepOpen = setOf("إعادة ترجمة", "الجمل", "اللوجز", "ترجمات الفيديو", "عائلي / صريح", "لهجة لايف", "ذكّرني", "الوضع البصري", "الإعدادات")
-        val sideGrid = ui.grid(menuItems { i, l, f -> ui.sideBtn(i, l) { if (l !in keepOpen) closeSide(); f() } }, 3)
-        sidePanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10)); background = ui.box(th.card, th.border, 0)
-            isClickable = true
-        }
-        val sideHead = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, 0, 0, ui.dp(8)) }
-        sideHead.addView(ui.text("☰ القائمة", 16f, th.primary, true), LinearLayout.LayoutParams(0, -2, 1f))
-        sideHead.addView(IconTextView(this).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(4)); setOnClickListener { closeSide() } })
-        sidePanel.addView(sideHead, LinearLayout.LayoutParams(-1, -2))
-        sidePanel.addView(ScrollView(this).apply { addView(sideGrid) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        sideMenuV = FrameLayout(this).apply { visibility = View.GONE; setBackgroundColor(0x99000000.toInt()); isClickable = true; setOnClickListener { closeSide() } }
-        sideMenuV.addView(sidePanel, FrameLayout.LayoutParams(ui.dp(300), -1, Gravity.RIGHT))
+        // (v103) القايمة الجانبية اتشالت: ☰ بقت قايمة منسدلة (gTool)
         val extrasCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, ui.dp(2), 0, ui.dp(20)) }
         extrasCol.addView(ctl.root)
         extrasCol.addView(makeTrRow(false), LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(16), ui.dp(8), ui.dp(16), 0) })
@@ -1262,7 +1293,6 @@ class PlayerActivity : Activity(), Host {
         page.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         val rootFrame = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
         rootFrame.addView(page, FrameLayout.LayoutParams(-1, -1))
-        rootFrame.addView(sideMenuV, FrameLayout.LayoutParams(-1, -1))
         setContentView(rootFrame)
         applyFull(true)   // شاشة كاملة دايمًا (أفقي ورأسي) — الأزرار في الشريط العلوي وزرار ☰ القائمة
         // فيديو اتفتح من فولدرات الجهاز: يشتغل لاندسكيب مباشرة زي MX Player
@@ -1294,6 +1324,7 @@ class PlayerActivity : Activity(), Host {
                 }
                 pr.durSec = durMs / 1000.0; pr.cov = segCov; pr.pend = segPend
                 pr.invalidate()
+                if (miniBar.visibility == View.VISIBLE) { miniBar.played = frac; miniBar.durSec = durMs / 1000.0; miniBar.cov = segCov; miniBar.pend = segPend; miniBar.invalidate() }
                 val tEl = PlayerLogic.clock(cur); val tDu = PlayerLogic.clock(durMs)
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
@@ -1373,6 +1404,7 @@ class PlayerActivity : Activity(), Host {
         val rf = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this, rf).setMediaSourceFactory(factory).build()
         player.setVideoSurfaceView(sv)
+        applyFilter()
         player.setPlaybackSpeed(speed)
         var firstFrame = false
         player.addListener(object : Player.Listener {
@@ -1444,6 +1476,14 @@ class PlayerActivity : Activity(), Host {
         val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
         engine = Engine(conf, { makeSource() }, store, this, pb)
         engine.convDialect = Cfg.str("conv_dialect", "")
+        engine.onGenre = genreCb
+        engine.genreWanted = Cfg.str("vfilter", "orig") == "auto" && Cfg.str("vgenre:$vid", "").isEmpty()
+        applyFilter()
+        engine.titleHint = run {
+            val t = (intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)).substringBeforeLast('.', Recents.titleOf(vid))
+            val folder = try { uri?.toString()?.let { SrtWriter.pathOf(applicationContext, it)?.parentFile?.name } } catch (_: Exception) { null } ?: ""
+            listOf(t, folder).filter { it.isNotBlank() }.distinct().joinToString(" | ")
+        }
         Live.engine = engine
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Notice.show(this, (m).toString(), 2300L) } }, { })
         val savedPos = engine.load()
@@ -1731,6 +1771,9 @@ class PlayerActivity : Activity(), Host {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (sideOpen) { closeSide(); return }
+        // (v110) علامة ✔ فوق: لو الترجمة لسه ما خلصتش، كمّلها في الخلفية أول ما أخرج
+        if (!handedOff && Cfg.bool("bg_on_exit", false) && durMs > 0 && PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0) < 99 &&
+            (Cfg.allMainKeys().isNotEmpty() || conf.keys.isNotEmpty() || conf.backup.isNotEmpty())) { translateInBackground(false); return }
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:2347", e) }
         saveRecent(); Thread { engine.saveNow() }.start()
         super.onBackPressed()
@@ -1760,7 +1803,7 @@ class PlayerActivity : Activity(), Host {
     fun runTool(label: String, instruction: String, all: Boolean) {
         if (Cfg.allMainKeys().isEmpty() && conf.keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
         say("بدأ: $label…")
-        engine.rewriteAll(label, instruction, if (all) 0.0 else player.currentPosition / 1000.0, { m -> runOnUiThread { giShowFn(m) } }) { n ->
+        engine.rewriteAll(label, instruction, if (all) 0.0 else player.currentPosition / 1000.0, { _ -> }) { n ->
             say(if (n > 0) "✅ $label: اتغيّرت $n جملة (تقدر ترجع من 🗂 ترجمات الفيديو)" else "$label: مفيش جمل اتغيّرت"); touchSubs()
         }
     }
@@ -1768,7 +1811,7 @@ class PlayerActivity : Activity(), Host {
 
     fun pronounsNow() {
         say("🔧 بصحّح الضمائر…")
-        engine.correctPronounsNow({ m -> runOnUiThread { giShowFn(m) } }) { n -> say(if (n > 0) "✅ اتصحّحت $n جملة" else "الضمائر سليمة (أو مفيش جدول شخصيات)"); touchSubs() }
+        engine.correctPronounsNow({ _ -> }) { n -> say(if (n > 0) "✅ اتصحّحت $n جملة" else "الضمائر سليمة (أو مفيش جدول شخصيات)"); touchSubs() }
     }
 
     fun familyDialog() {

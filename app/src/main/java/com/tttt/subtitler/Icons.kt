@@ -487,8 +487,10 @@ open class IconSwitch(ctx: Context) : Switch(ctx) {
 }
 
 /** (v97) زرار أيقونة مرسومة مباشرة (View عادي من غير TextView) — لزرار القايمة اللي كان بيطلع أسود */
-class IconGlyphButton(ctx: Context, private val iconName: String) : android.view.View(ctx) {
-    init { contentDescription = A11y.label(iconName) }
+class IconGlyphButton(ctx: Context, iconName0: String) : android.view.View(ctx) {
+    var iconName: String = iconName0
+        set(v) { field = v; invalidate() }
+    init { contentDescription = A11y.label(iconName0) }
     override fun onDraw(canvas: Canvas) {
         val sz = minOf(width, height) * 0.56f
         if (sz <= 0f) return

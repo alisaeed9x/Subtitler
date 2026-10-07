@@ -29,7 +29,7 @@ class VisualMode(
         const val STEP = 2.0            // ثانية بين كل فريم والتاني
         const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
         const val WAIT_429 = 30_000L
-        const val SNAP_DUR = 8.0        // ثواني عرض نتيجة اللقطة
+        const val SNAP_DUR = 6.0        // ثواني عرض نتيجة اللقطة
 
         const val PROMPT_SCENE = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك فريم واحد من فيديو.\n" +
             "🔍 افحص الصورة بأقصى دقة ممكنة — النصوص أحياناً صغيرة ويسهل تفويتها.\n" +
@@ -69,6 +69,7 @@ class VisualMode(
 
     /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
     fun snap(bmp: Bitmap, nowSec: () -> Double, onDone: () -> Unit = {}) {
+        frames.removeIf { it.dur == SNAP_DUR }   // (v104) لقطة جديدة = نتيجة اللقطة القديمة تتشال فورًا
         Thread {
             try { snapWork(bmp, nowSec) } catch (e: Exception) { say("⚠ " + (e.message ?: "").take(80)) }
             finally { try { onDone() } catch (_: Exception) {} }
@@ -91,7 +92,7 @@ class VisualMode(
                 // رد فاضي مرة واحدة ممكن يكون عشوائية من الموديل — نعيد مرة قبل ما نقول «مفيش نصوص»
                 if (boxes.isEmpty() && emptyTries++ < 1) { say("👁 مفيش نصوص — محاولة تانية للتأكد"); Thread.sleep(300); continue }
                 val t = nowSec()   // الفيديو واقف: النتيجة بتتعرض من لحظة اللقطة
-                frames.removeIf { Math.abs(it.t - t) < 0.5 }
+                frames.removeIf { Math.abs(it.t - t) < 0.5 || it.dur == SNAP_DUR }
                 frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
                 say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
                 changed(); return

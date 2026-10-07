@@ -37,6 +37,8 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     var dragging = false
     /** mini = شكل شريط التقدم الرئيسي في الأصل (.progress-bar-bg: خط 4dp بتدرج كهرماني→سماوي + خريطة التغطية تحته) */
     var mini = false
+    /** (v104) شريط رفيع جدًا دايم تحت الفيديو: 3 خطوط (برتقالي/تقدم/أخضر) من غير لمس */
+    var thin = false
     var onSeek: ((Float) -> Unit)? = null
     /** أثناء السحب (قبل رفع الصباع): الفيديو بيتحرك معاك */
     var onScrub: ((Float) -> Unit)? = null
@@ -51,7 +53,7 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     private val d = ctx.resources.displayMetrics.density
 
     override fun onMeasure(w: Int, h: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(w), ((if (mini) 30 else 34) * d).toInt())
+        setMeasuredDimension(MeasureSpec.getSize(w), if (thin) MeasureSpec.getSize(h).coerceAtLeast(3) else ((if (mini) 30 else 34) * d).toInt())
     }
 
     private fun strip(c: Canvas, w: Float, y0: Float, hh: Float, segs: List<DoubleArray>, color: Int, trackColor: Int?) {
@@ -70,6 +72,14 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
         p.style = Paint.Style.FILL; p.shader = null
+        if (thin) {   // (v107) الارتفاع نسبة من الفيديو (2.5%): 3 خطوط متساوية
+            val hh = height / 3f
+            if (pend.isNotEmpty()) strip(c, w, 0f, hh, pend, 0xFFF59E0B.toInt(), null)
+            p.color = 0x44FFFFFF; c.drawRect(0f, hh, w, 2f * hh, p)
+            p.color = 0xFF3B82F6.toInt(); c.drawRect(0f, hh, w * played.coerceIn(0f, 1f), 2f * hh, p)
+            strip(c, w, 2f * hh, hh, cov, 0xFF22C55E.toInt(), 0x33FFFFFF)
+            return
+        }
         if (mini) {
             val cy = height / 2f - 3f * d
             val tr = 2f * d
@@ -110,6 +120,7 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (thin) return false
         if (width <= 0) return true
         val f = (e.x / width).coerceIn(0f, 1f)
         when (e.action) {

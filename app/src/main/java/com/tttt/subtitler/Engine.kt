@@ -104,6 +104,10 @@ class Engine(
     private val gapEx = Executors.newFixedThreadPool(Gaps.MAX_PARALLEL) { r -> Thread(r).also { it.isDaemon = true } }
     private var exec: java.util.concurrent.ExecutorService? = null
     private var autoCharsAttempts = 0
+    /** (v107) اسم الفيلم/المسلسل من اسم الملف + الفولدر — بنبحث بيه عن الشخصيات مرة واحدة */
+    @Volatile var titleHint: String = ""
+    @Volatile private var lookupState = 0   // 0 لسه · 1 شغال · 2 خلص
+    private var chunksDone = 0; private var lastCharChunk = 0
     private var charsTrySize = 0
     private var charsBusy = false
     private var pronUpTo = 0
@@ -823,8 +827,37 @@ class Engine(
             try { bg.submit { try { crossReview(prior, fresh, off) } catch (e: Exception) { host.log("⚠ المراجعة بين المقاطع فشلت: " + (e.message ?: "").take(100)) } finally { reviews.decrementAndGet() } } }
             catch (_: Exception) { reviews.decrementAndGet() }
         }
+        synchronized(lock) { chunksDone++ }
         maybeAnalyze()
         maybePronouns()
+        maybeGenre()
+        maybeRefine()
+    }
+
+    // (v108) نوع العمل (أكشن/كوميدي/رعب…) من أول جمل مترجمة — للفلتر التلقائي
+    @Volatile var genreWanted = false
+    @Volatile var onGenre: ((String) -> Unit)? = null
+    @Volatile private var genreBusy = false
+    fun detectGenre() { genreWanted = true; maybeGenre() }
+    private fun maybeGenre() {
+        if (!genreWanted || genreBusy) return
+        val sample: String
+        synchronized(lock) {
+            if (subs.size < 40) return
+            genreBusy = true
+            sample = subs.filter { !it.isSound && !it.isSong }.take(70).joinToString("\n") { it.translated.ifEmpty { it.original } }
+        }
+        try {
+            bg.submit {
+                try {
+                    val prompt = "دي أول جمل من فيلم أو مسلسل مترجم:\n$sample\n\nحدد نوع العمل بدقة من القائمة دي بس: action (أكشن/قتال/مطاردات)، comedy (كوميدي)، horror (رعب/إثارة مظلمة)، romance (رومانسي)، scifi (خيال علمي/فانتازيا)، drama (دراما عادية)، other (مش واضح أو وثائقي).\nلو مش متأكد رجّع other. رد JSON فقط: {\"genre\":\"...\"}"
+                    val r = bgCall(prompt, 128, 0.1)
+                    val g = Parse.json(r.text)?.optString("genre", "")?.trim()?.lowercase() ?: ""
+                    if (g in setOf("action", "comedy", "horror", "romance", "scifi", "drama", "other")) { genreWanted = false; host.log("🎨 نوع العمل: $g"); onGenre?.invoke(g) }
+                } catch (e: Exception) { host.log("⚠ تحديد نوع العمل فشل: " + (e.message ?: "").take(80)) }
+                finally { genreBusy = false }
+            }
+        } catch (_: Exception) { genreBusy = false }
     }
 
     private fun helperKey(i: Int = 0): String? {
@@ -834,11 +867,11 @@ class Engine(
         return pool.helper()
     }
 
-    private fun bgCall(prompt: String, maxTokens: Int, temp: Double, json: Boolean = true, i: Int = 0): Api.Result {
+    private fun bgCall(prompt: String, maxTokens: Int, temp: Double, json: Boolean = true, i: Int = 0, search: Boolean = false): Api.Result {
         var key = helperKey(i) ?: throw Exception("مفيش مفتاح")
         var tries = 0
         while (true) {
-            try { return Api.generate(conf.model, key, prompt, null, maxTokens, temp, json) }
+            try { return Api.generate(conf.model, key, prompt, null, maxTokens, temp, json, search) }
             catch (e: ApiErr) {
                 if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else throw e
                 val alt = helperKey(i + 1)
@@ -851,10 +884,15 @@ class Engine(
     // --- تحليل الشخصيات تلقائيًا (_maybeAutoAnalyzeCharacters / analyzeCharacters) ---
     private fun maybeAnalyze() {
         if (!conf.autoChars || conf.manualChars.isNotEmpty()) return
+        maybeLookup()
         synchronized(lock) {
-            if (chars.isNotEmpty() || charsBusy || autoCharsAttempts >= 2 || subs.size < CHAR_MIN_LINES) return
-            if (autoCharsAttempts > 0 && subs.size < charsTrySize + 30) return
-            charsBusy = true; charsTrySize = subs.size
+            if (charsBusy || lookupState == 1 || subs.size < CHAR_MIN_LINES) return
+            // أول تحليل: لما مفيش شخصيات. بعد كده: تحديث كل 5 باتشات (لو الترجمة زادت 20 جملة على الأقل)
+            val first = chars.isEmpty() && autoCharsAttempts == 0
+            val refresh = chunksDone - lastCharChunk >= 5 && subs.size >= charsTrySize + 20
+            val retry = chars.isEmpty() && autoCharsAttempts in 1..1 && subs.size >= charsTrySize + 30
+            if (!first && !refresh && !retry) return
+            charsBusy = true; charsTrySize = subs.size; lastCharChunk = chunksDone
         }
         try {
             bg.submit {
@@ -862,6 +900,46 @@ class Engine(
                 finally { synchronized(lock) { charsBusy = false; autoCharsAttempts++ }; persist() }
             }
         } catch (_: Exception) { synchronized(lock) { charsBusy = false } }
+    }
+
+    /** (v107) بحث تلقائي عن شخصيات الفيلم/المسلسل بالاسم الكامل (بحث جوجل عبر Gemini). لو الاسم مش واضح أو مش متأكد: مفيش تخمين والشخصيات بتتطلع من الترجمة. */
+    private fun maybeLookup() {
+        val hint = titleHint.trim()
+        synchronized(lock) {
+            if (lookupState != 0 || hint.length < 3 || chars.isNotEmpty()) return
+            lookupState = 1
+        }
+        try {
+            bg.submit {
+                try { lookupCast(hint) } catch (e: Exception) { host.log("⚠ البحث عن الشخصيات فشل: " + (e.message ?: "").take(100)) }
+                finally { synchronized(lock) { lookupState = 2 }; persist() }
+            }
+        } catch (_: Exception) { synchronized(lock) { lookupState = 2 } }
+    }
+
+    private fun lookupCast(hint: String) {
+        host.log("🔎 بدور على الشخصيات باسم: $hint")
+        val prompt = "اسم ملف الفيديو واسم الفولدر بتاعه: «$hint».\n" +
+            "مهمتك: تحدد لو ده اسم فيلم أو مسلسل أو أنمي كامل وواضح، وتدوّر عليه في جوجل وتجيب شخصياته الرئيسية.\n" +
+            "🔴 ممنوع التخمين: لو الاسم ناقص أو عام أو فيه رقم حلقة بس أو لقيت أكتر من عمل بنفس الاسم ومش قادر تحدد بثقة، أو ملقيتش مصدر موثوق، رجّع found=false وخلاص.\n" +
+            "لو لقيته بثقة: رجّع الشخصيات الرئيسية والمهمة (حد أقصى 15) بأسمائها المعروفة مكتوبة بالعربي، وجنس كل شخصية، ودورها في سطر قصير (حد أقصى 12 كلمة) من غير حرق أحداث.\n" +
+            "رد JSON فقط بدون أي شرح أو markdown:\n" +
+            "{\"found\":true,\"title\":\"الاسم الكامل للعمل\",\"characters\":[{\"name\":\"...\",\"gender\":\"male\",\"role\":\"...\"}]}\n" +
+            "أو {\"found\":false}"
+        val r = bgCall(prompt, 2048, 0.1, true, 0, true)
+        val j = Parse.json(r.text)
+        if (j == null || !j.optBoolean("found", false)) { host.log("🔎 الاسم مش واضح أو مش متأكد — هطلّع الشخصيات من الترجمة نفسها"); return }
+        var n = 0
+        synchronized(lock) {
+            val ca = j.optJSONArray("characters")
+            for (k in 0 until (ca?.length() ?: 0)) {
+                val o = ca!!.optJSONObject(k) ?: continue
+                val name = o.optString("name").trim(); if (name.isEmpty() || chars.any { it.name == name }) continue
+                val g = if (o.optString("gender").lowercase().startsWith("f")) "female" else "male"
+                chars.add(Chr(name, g, o.optString("role").trim())); n++
+            }
+        }
+        host.log("🔎 لقيت العمل «" + j.optString("title") + "» — اتضافت $n شخصية هتتحط في الـ prompt من المقطع الجاي")
     }
 
     private fun analyzeChars() {
@@ -873,8 +951,10 @@ class Engine(
             val names = if (s.people.isNotEmpty()) " [أسماء مذكورة: ${s.people.joinToString("، ")}]" else ""
             "[متكلم:$g]$names ${s.translated.ifEmpty { s.original }}"
         }
+        val known = synchronized(lock) { chars.map { it.name } }
+        val dialogueK = if (known.isEmpty()) dialogue else "(شخصيات معروفة مسبقًا — لو نفس الشخصية اتذكرت استخدم نفس الاسم بالظبط ومتكررهاش: " + known.joinToString("، ") + ")\n" + dialogue
         host.log("🧑‍🤝‍🧑 بحلل الشخصيات من ${sample.size} جملة…")
-        val r = bgCall(pb.read("prompts/analyze_chars.txt").replace("§DIALOGUE§", dialogue), 3072, 0.2)
+        val r = bgCall(pb.read("prompts/analyze_chars.txt").replace("§DIALOGUE§", dialogueK), 3072, 0.2)
         val j = Parse.json(r.text) ?: throw Exception("رد غير صالح")
         var nc = 0; var ng = 0
         synchronized(lock) {
@@ -998,6 +1078,69 @@ class Engine(
             if (n > 0) subs = cur
         }
         if (n > 0) { host.log("🔎 مراجعة بين المقاطع: صححت $n جملة قديمة"); host.changed(); persist() }
+    }
+
+    // ===== (v109) تنقيح الترجمة: كل 3 باتشات بنبعت للمفتاح الاحتياطي كل الجمل (الأصل + الترجمة الحالية) عشان يفهم السياق ويصلّح المعاني الغلط =====
+    private val refineEvery = 3
+    @Volatile private var refineBusy = false
+    private var refineSaved = false
+    private fun maybeRefine() {
+        synchronized(lock) {
+            if (refineBusy || chunksDone % refineEvery != 0 || subs.size < 20) return
+            refineBusy = true
+        }
+        try {
+            bg.submit {
+                try { refinePass() } catch (e: Exception) { host.log("⚠ تنقيح الترجمة فشل: " + (e.message ?: "").take(100)) }
+                finally { refineBusy = false }
+            }
+        } catch (_: Exception) { refineBusy = false }
+    }
+
+    private fun refinePass() {
+        val snap = subs.filter { !it.isSound && it.original.isNotBlank() && it.translated.isNotBlank() && !it.translated.startsWith("«") }.sortedBy { it.start }
+        if (snap.size < 20) return
+        val roster = pb.rosterText(effectiveChars(), effectiveGloss())
+        val WIN = 600; val STEP = 560
+        var fixedTotal = 0; var from = 0; var win = 0
+        while (from < snap.size && running) {
+            val part = snap.subList(from, minOf(snap.size, from + WIN))
+            val arr = JSONArray()
+            for ((k, q) in part.withIndex()) arr.put(JSONObject().put("i", k).put("original", q.original).put("translated", q.translated).put("gender", q.gender))
+            val prompt = "أنت مراجع ترجمة محترف. دي كل جمل فيلم/مسلسل بالترتيب، لكل جملة النص الأصلي (original) والترجمة الحالية (translated) — الترجمة الحالية ممكن تكون اتنقّحت قبل كده.\n" +
+                (if (roster.isNotBlank()) "معلومات الشخصيات والمصطلحات:\n$roster\n" else "") +
+                "\nالجمل:\n$arr\n\n" +
+                "مهمتك تنقيح الترجمة: افهم معنى كل كلمة في الأصل ومعناها في السياق اللي حواليها (الكلمة ممكن تتقال بمعنى لوحدها ومعنى تاني وسط الكلام، أو تكون مثل أو سخرية أو تلميح أو اسم)، وصحّح بس الجمل اللي فيها خطأ حقيقي: كلمة مترجمة بمعنى غلط، أو معنى متغيّر، أو اسم/مصطلح مش ثابت، أو ضمير/جنس غلط، أو جملة مش مفهومة.\n" +
+                "- حافظ على لهجة ${conf.lang} وأسلوب ${conf.style} زي الترجمة الحالية. ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس.\n" +
+                "- ممنوع تضيف أو تحذف جمل، والتوقيت مش بتاعك.\n" +
+                "رجّع JSON فقط: {\"corrections\":[{\"i\":12,\"translated\":\"النص المصحح الكامل للجملة\"}]} — الجمل السليمة ماتتحطش. لو كله سليم: {\"corrections\":[]}"
+            val r = bgCall(prompt, 8192, 0.1, true, win)
+            val ca = Parse.json(r.text)?.optJSONArray("corrections")
+            if (ca != null && ca.length() > 0) {
+                var n = 0
+                synchronized(lock) {
+                    val cur = subs.toMutableList()
+                    if (!refineSaved) { refineSaved = true; versions.add(Version("قبل التنقيح", subs, convDialect.ifBlank { "فصحى" })); while (versions.size > 12) versions.removeAt(0) }
+                    for (q in 0 until ca.length()) {
+                        val c = ca.optJSONObject(q) ?: continue
+                        val k = c.optInt("i", -1); if (k < 0 || k >= part.size) continue
+                        val nt = c.optString("translated").trim(); if (nt.isEmpty()) continue
+                        val t = part[k]
+                        if (nt == t.translated || nt.length > t.translated.length * 3 + 20 || nt.length * 3 + 20 < t.translated.length) continue
+                        val at = cur.indexOfFirst { Math.abs(it.start - t.start) < 0.05 && it.original == t.original }
+                        if (at < 0 || cur[at].translated != t.translated) continue   // اتغيّرت في الأثناء (تعديل تاني): ماندوسش عليها
+                        cur[at] = cur[at].copy(translated = nt); n++
+                    }
+                    if (n > 0) subs = cur
+                }
+                fixedTotal += n
+            }
+            win++
+            if (from + WIN >= snap.size) break
+            from += STEP; nap(3000)
+        }
+        host.log("✍ تنقيح الترجمة: راجعت ${snap.size} جملة بالأصل والسياق وصحّحت $fixedTotal")
+        if (fixedTotal > 0) { host.changed(); persist() }
     }
 
     // --- ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز (_translatePromptTemplate) ---

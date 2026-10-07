@@ -289,6 +289,11 @@ class BgService : Service() {
             AudioSources.make(app, uri, u, job.hdr, conf.audioTrack, lg)
         }, store, host, pb)
         engine.headless = true
+        engine.titleHint = run {
+            val t = job.title.substringBeforeLast('.', job.title)
+            val folder = try { job.uri?.let { SrtWriter.pathOf(app, it)?.parentFile?.name } } catch (_: Exception) { null } ?: ""
+            listOf(t, folder).filter { it.isNotBlank() }.distinct().joinToString(" | ")
+        }
         engine.convDialect = Cfg.str("conv_dialect", "")
         job.engine = engine
         var ok = false
