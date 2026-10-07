@@ -123,6 +123,8 @@ class BTab(val id: Long) {
     var opener = -1L
     var errUrl = ""
     var loaded = false
+    var priv = false                 // (v124) تبويب متخفي: من غير سجل ولا حفظ
+    var thumb: android.graphics.Bitmap? = null
 }
 
 /**
@@ -280,8 +282,13 @@ class BrowserActivity : Activity() {
         }
         root.addView(bar); root.addView(progTrack, LinearLayout.LayoutParams(-1, ui.dp(3))); root.addView(findBar); root.addView(hint)
         root.addView(webHolder, LinearLayout.LayoutParams(-1, 0, 1f)); root.addView(badge)
-        // (v117) شريط البوابات: الفيديوهات · يوتيوب · المتصفح (إحنا فيه دلوقتي)
-        val gates = BottomNav(this, ui, th, 2) { i -> if (i == 0) goMain("videos") else if (i == 1) goMain("yt") }
+        // (v128) شريط البوابات: الفيديوهات · الأنمي · المتصفح (إحنا فيه دلوقتي)
+        val gates = BottomNav(this, ui, th, 2) { i ->
+            when (i) {
+                0 -> goMain("videos")
+                1 -> { startActivity(Intent(this, PrivateLibraryActivity::class.java)); finish() }
+            }
+        }
         root.addView(gates.view, LinearLayout.LayoutParams(-1, -2))
         content = root
         frame = FrameLayout(this); frame.setBackgroundColor(th.bg)
@@ -313,13 +320,7 @@ class BrowserActivity : Activity() {
     /** (v117) أي صفحة فيديو يوتيوب بتتفتح في المتصفح بتتسجل في سجل بوابة يوتيوب (المعرّف + الاسم) */
     private var lastYtId = ""
     private val ytIds = HashMap<String, String>()
-    private fun noteYt(url: String?, title: String?) {
-        val id = YtExtract.videoId(url ?: "") ?: return
-        val t = (title ?: "").trim().removeSuffix("- YouTube").trim().let { if (it.equals("YouTube", true)) "" else it }
-        if (id == lastYtId && t.isEmpty()) return
-        lastYtId = id
-        try { YtHistory.add(this, id, t) } catch (e: Throwable) { LogStore.err("Browser:yt", e) }
-    }
+    private fun noteYt(url: String?, title: String?) { /* (v124) سجل يوتيوب اتشال */ }
 
     // ===== إنشاء WebView لتبويب =====
     private fun makeWebView(t: BTab): WebView {
@@ -332,13 +333,14 @@ class BrowserActivity : Activity() {
         }
         if (uaWeb.isEmpty()) uaWeb = w.settings.userAgentString ?: ""
         if (t.desktop) w.settings.userAgentString = DESK_UA
+        if (t.priv) { w.settings.cacheMode = WebSettings.LOAD_NO_CACHE; @Suppress("DEPRECATION") w.settings.saveFormData = false }
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
         w.setBackgroundColor(Color.WHITE)
         w.webChromeClient = object : WebChromeClient() {
             override fun onCreateWindow(v: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
                 // نافذة جديدة بلمسة منك = تبويب جديد؛ من غير لمسة (بوب-أب) بتتمنع لو مانع الإعلانات شغال
                 if (!isUserGesture && adOn) return true
-                val nt = newTab(null, true, t.id)
+                val nt = newTab(null, true, t.id, t.priv)
                 val tr = resultMsg?.obj as? WebView.WebViewTransport
                 if (tr == null || nt.wv == null) return false
                 tr.webView = nt.wv; resultMsg?.sendToTarget(); return true
@@ -346,7 +348,7 @@ class BrowserActivity : Activity() {
             override fun onProgressChanged(v: WebView?, p: Int) { t.progress = p; if (t === tabs.getOrNull(curIdx)) updateProgress() }
             override fun onReceivedTitle(v: WebView?, title: String?) {
                 if (title.isNullOrBlank()) return
-                t.title = title; v?.url?.let { BrowserStore.setTitle(this@BrowserActivity, it, title); pageTitles[it] = title }
+                t.title = title; v?.url?.let { if (!t.priv) BrowserStore.setTitle(this@BrowserActivity, it, title); pageTitles[it] = title }
                 noteYt(v?.url, title)
                 if (tabsDlg?.isShowing == true) renderTabs()
             }
@@ -397,7 +399,7 @@ class BrowserActivity : Activity() {
                     t.url = url
                     val ti = v.title?.takeIf { it.isNotBlank() } ?: ""
                     if (ti.isNotEmpty()) { t.title = ti; pageTitles[url] = ti }
-                    BrowserStore.addHistory(this@BrowserActivity, url, ti)
+                    if (!t.priv) BrowserStore.addHistory(this@BrowserActivity, url, ti)
                     noteYt(url, ti)
                 }
                 if (t === tabs.getOrNull(curIdx)) { showUrl(url); updateNav(); updateStar(); scanOnce() }
@@ -430,8 +432,8 @@ class BrowserActivity : Activity() {
 
     // ===== إدارة التبويبات =====
     /** url = null: تبويب فاضي بيستنى WebViewTransport (نافذة جديدة من صفحة) */
-    private fun newTab(url: String?, switchTo: Boolean, opener: Long = -1L): BTab {
-        val t = BTab(nextId++); t.opener = opener
+    private fun newTab(url: String?, switchTo: Boolean, opener: Long = -1L, priv: Boolean = false): BTab {
+        val t = BTab(nextId++); t.opener = opener; t.priv = priv
         t.desktop = prefs().getBoolean("br_desktop_default", false)
         if (url == null) { t.wv = makeWebView(t); t.loaded = true } else t.url = url
         tabs.add(t)
@@ -441,6 +443,7 @@ class BrowserActivity : Activity() {
     }
     private fun select(i: Int) {
         if (i !in tabs.indices) return
+        tabs.getOrNull(curIdx)?.let { snapTab(it) }
         wvOrNull?.let { try { it.onPause() } catch (_: Throwable) {} }
         webHolder.removeAllViews()
         curIdx = i
@@ -453,6 +456,8 @@ class BrowserActivity : Activity() {
         try { w.onResume() } catch (_: Throwable) {}
         if (!t.loaded) { t.loaded = true; if (t.url.isNotBlank()) loadIn(w, t, t.url) }
         showUrl(t.url, true); updateNav(); updateProgress(); updateStar(); refreshTabsCount(); closeFind()
+        addr.hint = if (t.priv) "🕶 متخفي — رابط الموقع / كلمة بحث" else "رابط الموقع / كلمة بحث"
+        tabsB.setTextColor(if (t.priv) 0xFFE53935.toInt() else th.text)
         ctl.visibility = View.GONE
         scanOnce(); persistTabs()
     }
@@ -461,7 +466,7 @@ class BrowserActivity : Activity() {
         val t = tabs[i]
         val wasCur = i == curIdx
         val openerIdx = tabs.indexOfFirst { it.id == t.opener }
-        try { t.wv?.let { (it.parent as? ViewGroup)?.removeView(it); it.stopLoading(); it.destroy() } } catch (_: Throwable) {}
+        try { t.wv?.let { (it.parent as? ViewGroup)?.removeView(it); it.stopLoading(); if (t.priv) { it.clearCache(true); it.clearHistory(); it.clearFormData() }; it.destroy() } } catch (_: Throwable) {}
         tabs.removeAt(i)
         if (tabs.isEmpty()) { newTab(home(), true); return }
         if (wasCur) select(if (openerIdx in tabs.indices) openerIdx else (i - 1).coerceAtLeast(0).coerceAtMost(tabs.size - 1))
@@ -470,7 +475,10 @@ class BrowserActivity : Activity() {
     private fun refreshTabsCount() { if (::tabsB.isInitialized) tabsB.text = tabs.size.toString() }
     private fun persistTabs() {
         if (!prefs().getBoolean("br_save_tabs", true)) return
-        BrowserStore.saveTabs(this, tabs.map { BrowserStore.SavedTab(it.wv?.url?.takeIf { u -> !u.startsWith("data:") } ?: it.url, it.title, it.desktop) }, curIdx)
+        // (v124) التبويبات المتخفية عمرها ما بتتحفظ
+        val keep = tabs.filter { !it.priv }
+        val ci = keep.indexOf(tabs.getOrNull(curIdx)).let { if (it < 0) 0 else it }
+        BrowserStore.saveTabs(this, keep.map { BrowserStore.SavedTab(it.wv?.url?.takeIf { u -> !u.startsWith("data:") } ?: it.url, it.title, it.desktop) }, ci)
     }
 
     // ===== تحميل لينك / بحث =====
@@ -525,6 +533,7 @@ class BrowserActivity : Activity() {
         val marked = BrowserStore.isMarked(this, url)
         popupMenu(anchor, listOf(
             "➕ تبويب جديد" to { newTab(home(), true) },
+            "🕶 تبويب متخفي جديد" to { newTab(home(), true, -1L, true) },
             (if (marked) "★ شيل من المفضلة" else "☆ ضيف للمفضلة") to {
                 val added = BrowserStore.toggleMark(this, url, tab.title.ifBlank { Sniff.nameOf(url) })
                 Notice.show(this, if (added) "اتضافت للمفضلة" else "اتشالت من المفضلة", 1800L)
@@ -571,38 +580,90 @@ class BrowserActivity : Activity() {
     // ===== شاشات (sheets) =====
     private fun sheet(title: String, vararg views: View): Dialog = ui.sheet(this, title, views.toList(), false)
 
+    // ===== (v124) شاشة التبويبات زي كروم: مربعات فيها لقطة من الصفحة + العنوان + ✕، وقسم منفصل للمتخفي =====
+    private var tabsPrivView = false
+    private fun snapTab(t: BTab) {
+        val w = t.wv ?: return
+        if (w.width <= 0 || w.height <= 0 || w.parent == null) return
+        try {
+            val tw = ui.dp(190); val th2 = (tw * 1.15f).toInt()
+            val sc = tw.toFloat() / w.width
+            val srcH = minOf(w.height, (th2 / sc).toInt())
+            val bmp = android.graphics.Bitmap.createBitmap(tw, (srcH * sc).toInt().coerceAtLeast(1), android.graphics.Bitmap.Config.RGB_565)
+            val c = android.graphics.Canvas(bmp); c.scale(sc, sc); w.draw(c)
+            t.thumb = bmp
+        } catch (_: Throwable) {}
+    }
     private fun showTabs() {
         if (tabsDlg?.isShowing == true) return
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        tabs.getOrNull(curIdx)?.let { snapTab(it) }
+        tabsPrivView = tabs.getOrNull(curIdx)?.priv == true
+        val d = Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar)
+        tabsDlg = d
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, ui.dp(28), 0, 0) }
+        val head = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4)) }
+        val modeNormal = ui.button("التبويبات") { tabsPrivView = false; renderTabs() }
+        val modePriv = ui.button("🕶 متخفي") { tabsPrivView = true; renderTabs() }
+        head.addView(modeNormal, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
+        head.addView(modePriv, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
+        head.addView(IconTextView(this).apply { text = "✕"; textSize = 20f; setTextColor(th.text); setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6)); setOnClickListener { d.dismiss() } })
+        val actions = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(10), 0, ui.dp(10), ui.dp(4)) }
+        actions.addView(ui.button("➕ تبويب جديد", true) { d.dismiss(); newTab(home(), true, -1L, tabsPrivView) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) } })
+        actions.addView(ui.button("🗑 اقفل الكل") { closeAllTabs(tabsPrivView) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(16)) }
         tabsBox = box
-        val top = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        top.addView(ui.button("➕ تبويب جديد", true) { tabsDlg?.dismiss(); newTab(home(), true) }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) } })
-        top.addView(ui.button("🗑 اقفل الكل") { closeAllTabs() }.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-        val d = sheet("🗂 التبويبات", top, box); tabsDlg = d
+        root.addView(head); root.addView(actions)
+        root.addView(ScrollView(this).apply { addView(box) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        d.setContentView(root)
+        d.window?.apply { setBackgroundDrawable(ColorDrawable(th.bg)); setLayout(-1, -1) }
         d.setOnDismissListener { tabsDlg = null; tabsBox = null }
         renderTabs(); d.show()
     }
     private fun renderTabs() {
         val box = tabsBox ?: return
         box.removeAllViews()
-        tabs.forEachIndexed { i, t ->
-            val c = ui.card()
-            c.background = ui.box(th.card, if (i == curIdx) th.primary else th.border, 14)
-            val row = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL }
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-            val url = t.wv?.url ?: t.url
-            col.addView(ui.text(t.title.ifBlank { Sniff.nameOf(url).ifBlank { "تبويب جديد" } }, 14f, th.text, i == curIdx).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-            col.addView(ui.text(url, 11f, th.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; layoutDirection = View.LAYOUT_DIRECTION_LTR; textDirection = View.TEXT_DIRECTION_LTR })
-            row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(IconTextView(this).apply { text = "✕"; textSize = 18f; setTextColor(th.muted); setPadding(ui.dp(12), ui.dp(6), ui.dp(4), ui.dp(6)); setOnClickListener { closeTab(i); if (tabsDlg?.isShowing == true) renderTabs() } })
-            c.addView(row)
-            c.setOnClickListener { tabsDlg?.dismiss(); select(i) }
-            box.addView(c)
+        val list = tabs.withIndex().filter { it.value.priv == tabsPrivView }
+        if (list.isEmpty()) box.addView(ui.text(if (tabsPrivView) "مفيش تبويبات متخفية — مفيش سجل ولا حفظ فيها" else "مفيش تبويبات", 13f, th.muted).apply { setPadding(ui.dp(12), ui.dp(16), ui.dp(12), 0) })
+        val cardW = (resources.displayMetrics.widthPixels - ui.dp(12) * 3) / 2
+        for (pair in list.chunked(2)) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
+            for ((i, t) in pair) {
+                val url = t.wv?.url ?: t.url
+                val ttl = t.title.ifBlank { Sniff.nameOf(url).ifBlank { "تبويب جديد" } }
+                val dark = t.priv
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = ui.box(if (dark) 0xFF2B2D31.toInt() else th.card, if (i == curIdx) th.primary else th.border, 14, if (i == curIdx) 3 else 1)
+                    setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
+                    setOnClickListener { tabsDlg?.dismiss(); select(i) }
+                }
+                val bar = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
+                bar.addView(ui.text((if (dark) "🕶 " else "") + ttl, 12f, if (dark) Color.WHITE else th.text, i == curIdx).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(ui.dp(6), 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+                bar.addView(IconTextView(this).apply { text = "✕"; textSize = 16f; setTextColor(if (dark) 0xFFBBBBBB.toInt() else th.muted); setPadding(ui.dp(10), ui.dp(6), ui.dp(8), ui.dp(6)); setOnClickListener { closeTab(i); if (tabsDlg?.isShowing == true) renderTabs() } })
+                card.addView(bar)
+                val thumbH = (cardW * 1.1f).toInt()
+                val bmp = t.thumb
+                if (bmp != null) {
+                    card.addView(android.widget.ImageView(this).apply { setImageBitmap(bmp); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP; background = ui.box(Color.WHITE, 0x00000000, 10) }, LinearLayout.LayoutParams(-1, thumbH))
+                } else {
+                    card.addView(FrameLayout(this).apply {
+                        background = ui.box(if (dark) 0xFF1B1C1F.toInt() else th.surface, 0x00000000, 10)
+                        addView(ui.text(Sniff.nameOf(url).ifBlank { "🌐" }.take(24), 14f, if (dark) 0xFFBBBBBB.toInt() else th.muted).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(-1, -1))
+                    }, LinearLayout.LayoutParams(-1, thumbH))
+                }
+                row.addView(card, LinearLayout.LayoutParams(cardW, -2).apply { setMargins(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)) })
+            }
+            box.addView(row)
         }
     }
-    private fun closeAllTabs() {
-        for (t in tabs) try { t.wv?.let { (it.parent as? ViewGroup)?.removeView(it); it.destroy() } } catch (_: Throwable) {}
-        tabs.clear(); tabsDlg?.dismiss(); newTab(home(), true)
+    private fun closeAllTabs(priv: Boolean = false) {
+        val victims = tabs.filter { it.priv == priv }
+        val curT = tabs.getOrNull(curIdx)
+        for (t in victims) try { t.wv?.let { (it.parent as? ViewGroup)?.removeView(it); if (t.priv) { it.clearCache(true); it.clearHistory(); it.clearFormData() }; it.destroy() } } catch (_: Throwable) {}
+        tabs.removeAll(victims.toSet())
+        tabsDlg?.dismiss()
+        if (tabs.isEmpty()) { newTab(home(), true); return }
+        if (curT != null && curT in victims) select(0) else { curIdx = tabs.indexOf(curT).coerceAtLeast(0); refreshTabsCount(); persistTabs() }
     }
 
     private fun entryRow(e: BrowserStore.Entry, onOpen: () -> Unit, onDel: () -> Unit): View {
@@ -908,7 +969,6 @@ class BrowserActivity : Activity() {
         // (v117) فيديو يوتيوب: بنعرف معرّفه (من لينك الصفحة) عشان يتسجل في بوابة يوتيوب ويتحفظ تقدمه وترجمته على معرّفه
         val isYtStream = f.kind.startsWith("YT") || f.url.contains("googlevideo") || f.url.contains("videoplayback")
         val yid = ytIds[Sniff.key(f.url)] ?: YtExtract.videoId(f.ref) ?: (if (isYtStream) YtExtract.videoId(wvOrNull?.url ?: "") else null) ?: ""
-        if (yid.isNotEmpty()) try { YtHistory.add(this, yid, titleFor(f)) } catch (e: Throwable) { LogStore.err("Browser:yt2", e) }
         startActivity(Intent(this, PlayerActivity::class.java).apply {
             if (yid.isNotEmpty()) {
                 putExtra("ytid", yid)
@@ -917,7 +977,7 @@ class BrowserActivity : Activity() {
             if (yid.isEmpty()) try { webQlist(f)?.let { putExtra("qlist", it) } } catch (e: Throwable) { LogStore.err("Browser:wq", e) }
             putExtra("url", f.url); putExtra("ref", f.ref)
             putExtra("cookie", try { CookieManager.getInstance().getCookie(f.url) ?: "" } catch (_: Throwable) { "" })
-            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("title", titleFor(f)); putExtra("nosub", noSub); putExtra("autotr", !noSub)
+            putExtra("ua", f.ua.ifEmpty { uaWeb }); putExtra("title", titleFor(f)); putExtra("nosub", noSub); putExtra("autotr", !noSub); putExtra("incognito", tabs.getOrNull(curIdx)?.priv == true)
         })
     }
 

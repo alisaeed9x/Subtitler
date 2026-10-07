@@ -25,7 +25,7 @@ interface Host {
 private class BadReply(msg: String) : Exception(msg)
 
 class Engine(
-    private val conf: Conf,
+    @Volatile private var conf: Conf,
     private val openSource: () -> AudioSource,
     private val store: Store?,
     private val host: Host,
@@ -388,6 +388,8 @@ class Engine(
     /** كمّل الترجمة من المكان ده (من غير مسح حاجة): بيقفز بالمؤشر لباتش الوقت ده ويلغي الإيقاف */
     fun translateFrom(sec: Double) { onlyChunks = null; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
     fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    /** (v122) إعدادات اتغيّرت من شاشة الإعدادات (لهجة / أسلوب / موديل / شخصيات…): تتطبّق على الباتشات والتحويلات الجاية من غير إعادة تشغيل المحرك */
+    fun applyConf(c: Conf) { conf = c; dialConf.clear() }
     fun saveNow() = doPersist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }

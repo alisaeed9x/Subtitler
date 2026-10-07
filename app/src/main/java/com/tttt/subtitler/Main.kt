@@ -62,9 +62,8 @@ class MainActivity : Activity() {
     private var permDone: (() -> Unit)? = null
     private var scanFn: () -> Unit = {}
     private var libStarted = false
-    private var curTab = 0                       // (v117) 0 = الفيديوهات · 1 = يوتيوب
-    private var ytUi: YoutubeUi? = null
-    private var navUi: BottomNav? = null
+    private var curTab = 0                       // (v125) 0 = الفيديوهات · 1 = مكتبتي الخاصة
+        private var navUi: BottomNav? = null
     private var showTabFn: (Int) -> Unit = {}
     override fun onCreate(b: Bundle?) {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
@@ -247,7 +246,10 @@ class MainActivity : Activity() {
             e.apply()
         }
         val themeChips = ui.chips(Themes.all.map { it.name }, { Themes.byId(themeId).name }) { n ->
-            themeId = Themes.all.first { it.name == n }.id; save(); recreate()
+            themeId = Themes.all.first { it.name == n }.id; save()
+            Cfg.p.edit().putString("theme", themeId).commit()
+            if (!fromPlayer) intent?.putExtra("reopen_tab", "theme")
+            recreate()
         }
         // ===== الواجهة بشكل نسخة الـ HTML: دوائر علوية + كارت فيديو + كبسولة + شبكة أزرار + زرار الترجمة =====
         var recentDlg: android.app.Dialog? = null
@@ -325,8 +327,8 @@ class MainActivity : Activity() {
             TabDef("anim", "✨ الأنيميشن", sp.anim, true, "حركة ظهور الترجمة وسرعتها"),
             TabDef("look", "🎬 العرض والألوان", sp.look, true, "وضع العرض · اللون · تقسيم الجمل · الخلفية"),
             TabDef("general", "🌐 اللهجة والأسلوب", listOf<View>(
-                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it }),
-                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it })), false, "لهجة الترجمة وأسلوبها"),
+                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it; save() }),
+                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it; save() })), false, "لهجة الترجمة وأسلوبها"),
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
@@ -460,27 +462,20 @@ class MainActivity : Activity() {
         lib.onPull = { VideoScan.cache = null; doScan() }
         lib.onRefresh = { VideoScan.cache = null; Thumbs.clear(); lib.showScanning(); doScan() }
 
-        // (v117) الشريط السفلي: ثلاث بوابات — الفيديوهات (المكتبة) · يوتيوب (سجل + دخول مباشر) · المتصفح
-        val yt = YoutubeUi(this, ui, th, { Recents.parse(try { recentFile.readText() } catch (_: Exception) { "" }).associateBy { it.id } },
-            { id, title, tr -> playYt(id, title, tr) },
-            { u -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", u).putExtra("noauto", true)) },
-            { try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 47) } catch (e: Throwable) { LogStore.err("Main:ytsubs", e) } })
-        ytUi = yt
+        // (v128) الشريط السفلي: الفيديوهات المحلية · الأنمي · المتصفح
         showTabFn = { i ->
-            if (i == 0 || i == 1) {
-                curTab = i
-                lib.root.visibility = if (i == 0) View.VISIBLE else View.GONE
-                yt.root.visibility = if (i == 1) View.VISIBLE else View.GONE
-                navUi?.set(i)
-                if (i == 1) yt.refresh() else yt.onHide()
+            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; navUi?.set(0) }
+        }
+        val nav = BottomNav(this, ui, th, 0) { i ->
+            when (i) {
+                1 -> { save(); startActivity(Intent(this, PrivateLibraryActivity::class.java)) }
+                2 -> { save(); startActivity(Intent(this, BrowserActivity::class.java)) }
+                else -> showTabFn(i)
             }
         }
-        val nav = BottomNav(this, ui, th, 0) { i -> if (i == 2) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
         navUi = nav
         val pane = FrameLayout(this)
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
-        pane.addView(yt.root, FrameLayout.LayoutParams(-1, -1))
-        yt.root.visibility = View.GONE
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
         shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
@@ -492,6 +487,7 @@ class MainActivity : Activity() {
             return
         }
         setContentView(frame)
+        intent?.getStringExtra("reopen_tab")?.let { t -> intent?.removeExtra("reopen_tab"); frame.post { if (!isFinishing && !isDestroyed) settingsDlg.show(t) } }
         // لو مفيش مفتاح Gemini: القايمة بتظهر مباشرة أول البرنامج، وبعدها الفحص
         val coldStart = b == null
         if (coldStart) showSplash()
@@ -686,7 +682,6 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
         super.onActivityResult(r, c, d)
-        if (r == 47) { if (c == RESULT_OK) d?.data?.let { ytUi?.importUri(it) }; return }   // (v118) ملف اشتراكات يوتيوب
         if (lockUi?.onResult(r, c == RESULT_OK) == true) return
         if (mediaOps?.onResult(r, c == RESULT_OK) == true) return
         if (r == 14) { nextPerm(); return }
@@ -738,7 +733,6 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 val ttl = title.ifBlank { best.title }
-                YtHistory.add(this, id, ttl)
                 val go = {
                     startActivity(Intent(this, PlayerActivity::class.java).apply {
                         putExtra("url", best.url); putExtra("aurl", best.audio ?: ""); putExtra("qlist", best.optsJson()); putExtra("ref", "https://www.youtube.com/"); putExtra("ua", best.ua)
@@ -772,16 +766,15 @@ class MainActivity : Activity() {
         if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
         stoppedAt = 0L
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
-        if (!fromPlayer && curTab == 1) ytUi?.refresh()
+        
     }
     /** (v117) الرجوع من المتصفح بشريط البوابات: بيفتح البوابة اللي اخترتها */
     override fun onNewIntent(i: Intent?) {
         super.onNewIntent(i)
-        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1) }
+        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0) }
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        if (!fromPlayer && curTab == 1 && ytUi?.back() == true) return   // (v118) رجوع جوه يوتيوب الأول
         if (!fromPlayer && curTab != 0) { showTabFn(0); return }
         if (!fromPlayer && libUi?.back() == true) return
         super.onBackPressed()

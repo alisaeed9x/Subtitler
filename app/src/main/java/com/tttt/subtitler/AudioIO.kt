@@ -155,7 +155,19 @@ class FileSource(
     private fun openNew(): MediaExtractor {
         var e = MediaExtractor()
         try {
+            // (v123) روابط الإنترنت: قراءة بكتل 1MB + تحميل مقدّم (أسرع بكتير من طلب لكل قراءة صغيرة)؛ لو السيرفر مابيدعمش Range أو فشلت نرجع للطريقة القديمة
+            var fast = false
+            if (uri == null && url!!.startsWith("http", true)) {
+                try {
+                    val rs = HttpRangeSource(url, hdr)
+                    if (rs.rangeSupported()) { e.setDataSource(rs); fast = true }
+                } catch (t: Throwable) {
+                    try { e.release() } catch (_: Exception) {}
+                    e = MediaExtractor()
+                }
+            }
             if (uri != null) e.setDataSource(ctx, uri, null)
+            else if (fast) { /* اتفتح بالمصدر السريع */ }
             else try { e.setDataSource(url!!, hdr) } catch (t: Throwable) {
                 // الـ HTTP الداخلي بتاع MediaExtractor بيضيّع الهيدرز (كوكيز/Referer/UA) بعد التحويلات وبيفشل مع سيرفرات كتير — نقرأ بالـ HTTP بتاعنا
                 try { e.release() } catch (e: Exception) { LogStore.err("AudioIO:156", e) }
@@ -225,6 +237,15 @@ class FileSource(
 class HttpRangeSource(private val url: String, private val hdr: Map<String, String>) : MediaDataSource() {
     @Volatile private var total = -2L
     @Volatile private var finalUrl = url
+    @Volatile private var rangeOk = false
+    // (v123) كتل 1MB بدل طلب HTTP جديد لكل قراءة صغيرة (ده كان سبب بطء الفيديوهات من الإنترنت) + تحميل الكتلة اللي بعدها مقدّمًا في الخلفية
+    private val BLOCK = 1 shl 20
+    private val cache = object : LinkedHashMap<Long, ByteArray>(16, 0.75f, true) { override fun removeEldestEntry(e: MutableMap.MutableEntry<Long, ByteArray>?) = size > 14 }
+    private val inflight = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    @Volatile private var lastBlk = -10L
+    private companion object {
+        val PF: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(3) { r -> Thread(r).also { it.isDaemon = true } }
+    }
 
     private fun connect(pos: Long, len: Int): HttpURLConnection {
         var u = finalUrl
@@ -250,26 +271,31 @@ class HttpRangeSource(private val url: String, private val hdr: Map<String, Stri
         val c = connect(0, 1)
         try {
             val cr = c.getHeaderField("Content-Range")
+            rangeOk = c.responseCode == 206 && cr != null
             total = if (cr != null && cr.contains('/')) (cr.substringAfter('/').trim().toLongOrNull() ?: -1L)
                     else if (c.responseCode == 200) c.contentLengthLong else -1L
         } finally { c.disconnect() }
         return total
     }
+    /** السيرفر بيدعم Range وحجم الملف معروف؟ (غير كده منستخدمش القراءة بالكتل) */
+    fun rangeSupported(): Boolean = try { getSize() > 0 && rangeOk } catch (_: Throwable) { false }
 
-    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
-        if (size <= 0) return 0
+    /** كتلة كاملة (BLOCK بايت أو الباقي لآخر الملف) */
+    private fun fetchBlock(idx: Long): ByteArray {
+        val start = idx * BLOCK
         val t = if (total == -2L) getSize() else total
-        if (t >= 0 && position >= t) return -1
+        val want = if (t >= 0) minOf(BLOCK.toLong(), t - start).toInt() else BLOCK
+        if (want <= 0) return ByteArray(0)
         var attempt = 0
         while (true) {
             try {
-                val c = connect(position, size)
+                val c = connect(start, want)
                 try {
-                    c.inputStream.use { ins ->
-                        if (c.responseCode == 200 && position > 0) { var left = position; while (left > 0) { val k = ins.skip(left); if (k <= 0) break; left -= k } }
-                        var got = 0
-                        while (got < size) { val n = ins.read(buffer, offset + got, size - got); if (n < 0) break; got += n }
-                        return if (got == 0) -1 else got
+                    return c.inputStream.use { ins ->
+                        if (c.responseCode == 200 && start > 0) { var left = start; while (left > 0) { val k = ins.skip(left); if (k <= 0) break; left -= k } }   // سيرفر مابيدعمش Range
+                        val out = ByteArray(want); var got = 0
+                        while (got < want) { val n = ins.read(out, got, want - got); if (n < 0) break; got += n }
+                        if (got == want) out else out.copyOf(got)
                     }
                 } finally { c.disconnect() }
             } catch (e: IOException) {
@@ -278,8 +304,37 @@ class HttpRangeSource(private val url: String, private val hdr: Map<String, Stri
             }
         }
     }
+    private fun block(idx: Long): ByteArray {
+        synchronized(cache) { cache[idx]?.let { return it } }
+        val b = fetchBlock(idx)
+        synchronized(cache) { cache[idx] = b }
+        return b
+    }
+    private fun prefetch(idx: Long) {
+        val t = total; if (t >= 0 && idx * BLOCK >= t) return
+        if (synchronized(cache) { cache.containsKey(idx) } || !inflight.add(idx)) return
+        PF.execute { try { block(idx) } catch (_: Throwable) {} finally { inflight.remove(idx) } }
+    }
 
-    override fun close() {}
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (size <= 0) return 0
+        val t = if (total == -2L) getSize() else total
+        if (t >= 0 && position >= t) return -1
+        var done = 0; var pos = position
+        while (done < size) {
+            val idx = pos / BLOCK
+            val b = block(idx)
+            val inOff = (pos - idx * BLOCK).toInt()
+            if (inOff >= b.size) break
+            val n = minOf(size - done, b.size - inOff)
+            System.arraycopy(b, inOff, buffer, offset + done, n)
+            done += n; pos += n
+            if (idx != lastBlk) { if (idx == lastBlk + 1) { prefetch(idx + 1); prefetch(idx + 2) }; lastBlk = idx }
+        }
+        return if (done == 0) -1 else done
+    }
+
+    override fun close() { synchronized(cache) { cache.clear() } }
 }
 
 /** مصدر الصوت المناسب للرابط: HLS (حتى لو الرابط من غير .m3u8 بنفحص أول بايتات) أو ملف/رابط مباشر */

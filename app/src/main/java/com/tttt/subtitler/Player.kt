@@ -42,6 +42,7 @@ import android.util.Rational
 
 /** مشغّل الفيديو والترجمة (اتنقل من Main.kt في v100 — من غير أي تغيير في الكود) */
 class PlayerActivity : Activity(), Host {
+    companion object { private val liveList = ArrayList<java.lang.ref.WeakReference<PlayerActivity>>() }
     override fun finish() { super.finish(); try { overridePendingTransition(R.anim.act_stay, R.anim.act_exit) } catch (e: Exception) { LogStore.err("Main:725", e) } }
     @Volatile var cur = 0L
     @Volatile var durMs = 0L
@@ -427,6 +428,7 @@ class PlayerActivity : Activity(), Host {
     /** يوقف المشغّل خالص، يسلّم الترجمة لخدمة الخلفية (إشعار بالتقدم والوقت المتبقي) ويطلع بره التطبيق من غير ما يقفله */
     fun translateInBackground(goHome: Boolean = true) {
         if (Cfg.allMainKeys().isEmpty() && conf.keys.isEmpty() && conf.backup.isEmpty()) { say("ضيف مفتاح API الأول"); return }
+        if (incognito) { say("🕶 الترجمة بالخلفية مش متاحة في التخفي"); return }
         if (handedOff) return
         handedOff = true
         closeSide(); resumePending = false
@@ -625,8 +627,24 @@ class PlayerActivity : Activity(), Host {
         if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
     }
 
+    /** (v121) أي فيديو جديد يفتح = أي مشغّل قديم لسه حي (PiP / خلفية / تحت في الستاك) يتوقف ويتقفل خالص: صوت + ترجمة */
+    fun killForNewVideo() {
+        try { visual.stop() } catch (_: Throwable) {}
+        try { player.pause() } catch (_: Throwable) {}
+        try { saveRecent() } catch (_: Throwable) {}
+        try { pipOv?.hide(); pipOv = null } catch (_: Throwable) {}
+        try { engine.stop() } catch (_: Throwable) {}
+        Thread { try { engine.saveNow() } catch (_: Throwable) {} }.start()
+        if (!isFinishing) finish()
+    }
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        synchronized(liveList) {
+            liveList.removeAll { it.get() == null }
+            liveList.toList().forEach { r -> r.get()?.let { o -> if (o !== this) try { o.runOnUiThread { o.killForNewVideo() } } catch (_: Throwable) {} } }
+            liveList.removeAll { it.get() !== this }
+            liveList.add(java.lang.ref.WeakReference(this))
+        }
         UiWatchdog.start()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Cfg.init(this); CrashLog.install(this); conf = Cfg.snapshot()
@@ -1616,7 +1634,7 @@ class PlayerActivity : Activity(), Host {
     private var pendingBegin = false
     private fun initEngine() {
         vid = videoId()
-        if (uri == null && url != null) webRegister()
+        if (uri == null && url != null && !incognito) webRegister()
         offsetMs = Cfg.str("sub_offset_ms:$vid", "0").toLongOrNull() ?: 0L
         runCatching { offFsB?.text = String.format("%+.1fs", offsetMs / 1000.0) }
         lastSrtN = -1
@@ -1935,12 +1953,15 @@ class PlayerActivity : Activity(), Host {
 
     private fun saveRecent() { if (!handedOff) saveRecentForce() }
     private fun saveRecentForce() {
+        if (incognito) return
         if (!::engine.isInitialized || !engineReady) return
         try {
+            if (!incognito) {
             val f = File(filesDir, "recent.json")
             val old = Recents.parse(try { f.readText() } catch (_: Exception) { "" })
             val r = Recent(vid, (if (uri == null) intent.getStringExtra("title")?.takeIf { it.isNotBlank() } else null) ?: Recents.titleOf(vid), url ?: "", uri?.toString() ?: "", cur / 1000.0, durMs / 1000.0, engine.subs.size, engine.coveredSec(), System.currentTimeMillis())
             f.writeText(Recents.toJson(Recents.upsert(old, r, 300)))
+            }
         } catch (e: Exception) { LogStore.err("Main:2341", e) }
     }
     /** أفقي: يرجع للرأسي من غير ما يقفل. رأسي: يحفظ التقدم ويوقف الفيديو ويقفل. */
@@ -1948,7 +1969,7 @@ class PlayerActivity : Activity(), Host {
     override fun onBackPressed() {
         if (sideOpen) { closeSide(); return }
         // (v110) علامة ✔ فوق: لو الترجمة لسه ما خلصتش، كمّلها في الخلفية أول ما أخرج
-        if (!handedOff && Cfg.bool("bg_on_exit", false) && durMs > 0 && PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0) < 99 &&
+        if (!incognito && !handedOff && Cfg.bool("bg_on_exit", false) && durMs > 0 && PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0) < 99 &&
             (Cfg.allMainKeys().isNotEmpty() || conf.keys.isNotEmpty() || conf.backup.isNotEmpty())) { translateInBackground(false); return }
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:2347", e) }
         saveRecent(); Thread { engine.saveNow() }.start()
@@ -2017,6 +2038,7 @@ class PlayerActivity : Activity(), Host {
             val v = if (l == "فصحى") "" else l
             Cfg.p.edit().putString("conv_dialect", v).apply()
             engine.setConvDialect(v, true)
+            if (v.isNotEmpty() && v == conf.lang) { say("لهجة الترجمة في الإعدادات أصلًا $v — مفيش تحويل مطلوب"); touchSubs(); return@fsBtn }
             say(if (l == "فصحى") "الترجمة بالفصحى الحرفية" else "هحوّل للهجة $l من الباتش اللي إنت فيه وللقدّام، وبعدين اللي قبله — والباتشات الجديدة هتيجي باللهجة دي (النسخة القديمة اتحفظت في 🗂)")
             touchSubs()
         }.apply { minimumWidth = ui.dp(150) })
@@ -2231,7 +2253,11 @@ class PlayerActivity : Activity(), Host {
     }
 
     /** الإعدادات من المشغّل: بتفتح شاشة الإعدادات فوق الفيديو من غير ما تقفله — الرجوع (Back) بيرجّعك للفيديو */
+    private var settingsOpened = false
+    /** (v124) تشغيل من تبويب متخفي: مفيش «فيديوهات الإنترنت المحفوظة» ولا «الأخيرة» ولا لقطة مصغّرة ولا ترجمة خلفية */
+    private val incognito: Boolean by lazy { intent?.getBooleanExtra("incognito", false) == true }
     fun openSettings(tab: String? = null) {
+        settingsOpened = true
         resumeAfterSettings = try { player.isPlaying } catch (_: Exception) { false }
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:2566", e) }
         saveRecent(); Thread { engine.saveNow() }.start()
@@ -2242,6 +2268,17 @@ class PlayerActivity : Activity(), Host {
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)
         if (Cfg.str("theme", "mx") != th.id) { recreate(); return }
+        if (settingsOpened) {
+            settingsOpened = false
+            // (v122) رجعنا من الإعدادات: اللهجة / الأسلوب / الموديل / الشخصيات / المسرد لازم توصل للمحرك الشغّال فعلًا مش بس تتحفظ
+            try {
+                val nc = Cfg.snapshot(); conf = nc
+                if (::engine.isInitialized) {
+                    engine.applyConf(nc)
+                    engine.toneStyle = Cfg.str("tone_style", ""); engine.toneStrength = Cfg.str("tone_strength", "متوسطة")
+                }
+            } catch (e: Throwable) { LogStore.err("Player:applyConf", e) }
+        }
         restyleFn()
         if (resumeAfterSettings) { resumeAfterSettings = false; try { player.play() } catch (e: Exception) { LogStore.err("Main:2576", e) } }
     }
@@ -2258,9 +2295,15 @@ class PlayerActivity : Activity(), Host {
         pipOv?.hide(); pipOv = null
         saveRecent()
         try { visual.stop() } catch (e: Exception) { LogStore.err("Main:2590", e) }
-        Live.engine = null
+        if (Live.engine === engine) Live.engine = null
         engine.stop()
         if (!handedOff) try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2593", e) }
-        player.release(); if (PlayerRemote.act?.get() === this) PlayerRemote.act = null; KeepAliveService.stop(this); super.onDestroy()
+        if (incognito && isFinishing) try { File(File(filesDir, "progress"), Store.keyFor(vid) + ".json").delete() } catch (_: Throwable) {}   // (v124) المتخفي: الترجمة المحفوظة بتتمسح أول ما تقفل
+        player.release()
+        synchronized(liveList) { liveList.removeAll { it.get() == null || it.get() === this } }
+        val cur0 = PlayerRemote.act?.get()
+        if (cur0 === this) PlayerRemote.act = null
+        if (cur0 == null || cur0 === this) KeepAliveService.stop(this)
+        super.onDestroy()
     }
 }
