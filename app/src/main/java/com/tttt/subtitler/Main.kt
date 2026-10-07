@@ -426,7 +426,18 @@ class MainActivity : Activity() {
         lib.onQueue = { qui.show() }
         BgJobs.onChange = { runOnUiThread { if (!isDestroyed) { libUi?.refreshRows(); if (qui.showing) qui.refresh() } } }
         lib.gate = { open -> lk.gate(open) }
-        lib.onSettings = { settingsDlg.show() }
+        // (v87) ⚙️ في المكتبة: قايمة صغيرة منسدلة بالأقسام، دوسة على قسم تفتحه دايركت (بدل شاشة القايمة الكبيرة)
+        lib.onSettings = { anchor ->
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(th.card, th.border, 14); elevation = ui.dp(8).toFloat() }
+            val pw = android.widget.PopupWindow(col, -2, -2, true)
+            pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+            for (t in settingsDlg.tabs) col.addView(IconTextView(this).apply {
+                text = t.label; textSize = 14f; setTextColor(th.text); minHeight = ui.dp(42); gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6)); minimumWidth = ui.dp(190)
+                setOnClickListener { pw.dismiss(); settingsDlg.show(t.id) }
+            })
+            try { pw.showAsDropDown(anchor, 0, ui.dp(2)) } catch (_: Throwable) { settingsDlg.show() }
+        }
         lib.onLink = { recentDlg?.show() }
         lib.onPick = { save(); pickVideo() }
         lib.onGrant = { requestPermissions(arrayOf(VideoScan.permission()), 11) }

@@ -20,7 +20,8 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
         </activity>
-        <activity android:name=".BrowserActivity" android:exported="false"/>
+        <activity android:name=".BrowserActivity" android:exported="false" android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|density"/>
         <activity android:name=".PlayerActivity" android:exported="false"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|density"/>

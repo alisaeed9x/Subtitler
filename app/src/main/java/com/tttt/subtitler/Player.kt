@@ -148,6 +148,44 @@ class PlayerActivity : Activity(), Host {
         if (b) { h.removeCallbacks(hideChrome); chromeShown = false; applyChromeFn(); say("🔒 الشاشة مقفولة — المس الشاشة واضغط على القفل لفتحها") }
         else { lockOv.visibility = View.GONE; showChrome() }
     }
+    // ===== إشعار التحكم (v87): الحالة بتتبعت للخدمة، والأوامر بترجع من الإشعار على remote() =====
+    private var lastNotifAt = 0L
+    private var notifTitleOv: String? = null
+    fun notifTitle(): String {
+        val t = notifTitleOv ?: intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)
+        return t.substringBeforeLast('.', t)
+    }
+    fun pushNotif() {
+        try {
+            val st = NotifState
+            st.title = notifTitle(); st.posMs = player.currentPosition.coerceAtLeast(0); st.durMs = if (durMs > 0) durMs else 0L
+            st.playing = player.isPlaying
+            st.trState = if (!::engine.isInitialized || !engineStarted) 0 else if (engine.userPaused) 2 else 1
+            st.trPct = if (durMs > 0 && ::engine.isInitialized) PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0).toInt() else 0
+            KeepAliveService.refresh()
+        } catch (e: Throwable) { LogStore.err("pushNotif", e) }
+    }
+    fun exitAll() {
+        try { player.pause() } catch (e: Exception) { LogStore.err("exitAll", e) }
+        saveRecent(); Thread { try { engine.saveNow() } catch (_: Exception) {} }.start()
+        finishAndRemoveTask()
+    }
+    /** أوامر الإشعار: toggle / prev / next / seek / tr / exit */
+    fun remote(cmd: String, arg: Long = 0L) {
+        runOnUiThread {
+            try {
+                when (cmd) {
+                    "toggle" -> togglePlay()
+                    "prev" -> stepEpisode(-1)
+                    "next" -> stepEpisode(1)
+                    "seek" -> if (durMs > 0) player.seekTo(arg.coerceIn(0L, durMs))
+                    "tr" -> if (engineStarted && !engine.userPaused) pauseTranslate() else { beginTranslate(); engine.translateFrom(player.currentPosition / 1000.0) }
+                    "exit" -> exitAll()
+                }
+                lastNotifAt = System.currentTimeMillis(); pushNotif()
+            } catch (e: Throwable) { LogStore.err("remote:$cmd", e) }
+        }
+    }
     fun cycleFitNow() {
         if (isLandNow()) { fsFit = (fsFit + 1) % 3; Cfg.p.edit().putString("fs_fit", fsFit.toString()).apply() }
         else { fit = (fit + 1) % 3; Cfg.p.edit().putString("fit", fit.toString()).apply() }
@@ -423,11 +461,14 @@ class PlayerActivity : Activity(), Host {
         "scifi" -> listOf(fxSat(15f), androidx.media3.effect.Contrast(0.12f), fxRgb(0.94f, 1.0f, 1.1f))
         else -> emptyList()
     }
+    private var fxApplied = false
     fun applyFilter() {
         if (!::player.isInitialized) return
         val mode = Cfg.str("vfilter", "orig")
         val id = if (mode == "auto") Cfg.str("vgenre:$vid", "") else mode
-        try { player.setVideoEffects(presetEffects(id)) } catch (e: Throwable) { LogStore.err("filter", e) }
+        val fx = presetEffects(id)
+        if (fx.isEmpty() && !fxApplied) return   // من غير فلتر: ماندخلش خط الإيفكتس خالص (هو اللي كان بيمنع التمديد/الملء)
+        try { player.setVideoEffects(fx); fxApplied = fx.isNotEmpty() || fxApplied } catch (e: Throwable) { LogStore.err("filter", e) }
     }
     fun setFilterMode(id: String) {
         Cfg.put("vfilter", id); applyFilter()
@@ -856,14 +897,30 @@ class PlayerActivity : Activity(), Host {
         gTool.addView(pd("📥 استيراد SRT") { doImport() })
         gTool.addView(pd("📂 فتح فيديو") { doOpen() })
         gTool.addView(pd("🕳 سد الفجوات") { engine.retryFailed(); Notice.show(this, ("بحاول أسد الفجوات").toString(), 2300L) })
-        gTool.addView(pd("🗂 ترجمات الفيديو") { versionsDialog() })
+        // (v87) ترجمات الفيديو: قايمة صغيرة منسدلة بالنسخ المحفوظة (دوسة على نسخة ترجّعها)
+        val gVer = gCol()
+        fun fillVer() {
+            gVer.removeAllViews()
+            gVer.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
+            gVer.addView(pd("💾 احفظ النسخة الحالية") { engine.saveVersion("نسخة " + fmtMs(player.currentPosition).substring(3)); Notice.show(this, "اتحفظت نسخة", 1800L) })
+            val vs = engine.versions.toList()
+            if (vs.isEmpty()) gVer.addView(ui.text("مفيش نسخ محفوظة لسه", 12f, Color.WHITE).apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)) })
+            vs.forEachIndexed { i, v -> gVer.addView(pd("${v.name} — ${v.subs.size} جملة") { restoreVersion(i) }) }
+        }
+        gTool.addView(pk("🗂 ترجمات الفيديو ›") { fillVer(); dismissPop(); togglePop(menuB, gVer, false) })
         gTool.addView(pd("🔄 إعادة ترجمة") { batchDialog() })
         gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
-        gTool.addView(pd("⚙️ الإعدادات") { openSettings() })
+        // (v87) الإعدادات: قايمة صغيرة منسدلة بالأقسام — دوسة على قسم تفتحه دايركت (من غير شاشة القايمة الكبيرة)
+        val gSet = gCol()
+        gSet.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
+        for ((tid, tl) in listOf("fonts" to "🔤 الخطوط", "anim" to "✨ الأنيميشن", "look" to "🎬 العرض والألوان", "general" to "🌐 اللهجة والأسلوب", "chars" to "🧑 الشخصيات",
+            "engine" to "⚙ الترجمة والمحرك", "keys" to "🔑 المفاتيح", "bg" to "🌙 الترجمة في الخلفية", "sec" to "🔒 الأمان", "theme" to "🎨 المظهر"))
+            gSet.addView(pd(tl) { openSettings(tid) })
+        gTool.addView(pk("⚙️ الإعدادات ›") { dismissPop(); togglePop(menuB, gSet, false) })
         gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
-        gAi.addView(pd("😐 عائلي/صريح") { familyDialog() })
-        gAi.addView(pd("🌐 لهجة لايف") { liveDialectDialog() })
+        gAi.addView(pd("🧹 عائلي") { runTool("عائلي", "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام.", true) })
+        gAi.addView(pd("🔞 صريح") { runTool("صريح", "رجّع الترجمة لمطابقة صراحة النص الأصلي بالظبط (الألفاظ والإيحاءات زي ما هي في الأصل من غير تلطيف ولا حذف).", true) })
         gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
         gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Notice.show(this, (if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة").toString(), 2300L); curIdx = -2 })
         // ===== الصف العلوي: الأساسي ظاهر دايمًا (☰ 📝 CC وضع-الترجمة Aa) والباقي بيتفرد بسهم ❮ وبيتلم بعد 5 ثواني =====
@@ -1243,7 +1300,7 @@ class PlayerActivity : Activity(), Host {
         val sentCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         sentCol.addView(copyChip, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(6) })
         sentCol.addView(listView, LinearLayout.LayoutParams(-1, 0, 1f))
-        sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(sentCol), true, frac = 0.45f)
+        sentDlg = ui.sheet(this, "📝 الجمل", listOf<View>(sentCol), true, frac = 0.5f)
         sentDlg.setOnShowListener { adapter.notifyDataSetChanged() }
         val logCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; layoutParams = LinearLayout.LayoutParams(-1, -1) }
         fun logChip(t: String, f: () -> Unit) = IconTextView(this).apply {
@@ -1306,6 +1363,7 @@ class PlayerActivity : Activity(), Host {
         freshOnce = intent.getBooleanExtra("fresh", false)
         initEngine()
         if (Build.VERSION.SDK_INT >= 33) { try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7) } catch (e: Exception) { LogStore.err("Main:1892", e) } }
+        PlayerRemote.act = java.lang.ref.WeakReference(this)
         KeepAliveService.start(this)
 
         h.post(object : Runnable {
@@ -1328,6 +1386,7 @@ class PlayerActivity : Activity(), Host {
                 val tEl = PlayerLogic.clock(cur); val tDu = PlayerLogic.clock(durMs)
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
+                if (now - lastNotifAt >= 1000) { lastNotifAt = now; pushNotif() }
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
                 visOv.showBoxes(visual.boxesAt(visNow))
@@ -1476,6 +1535,7 @@ class PlayerActivity : Activity(), Host {
         val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
         engine = Engine(conf, { makeSource() }, store, this, pb)
         engine.convDialect = Cfg.str("conv_dialect", "")
+        engine.toneStyle = Cfg.str("tone_style", ""); engine.toneStrength = Cfg.str("tone_strength", "متوسطة")
         engine.onGenre = genreCb
         engine.genreWanted = Cfg.str("vfilter", "orig") == "auto" && Cfg.str("vgenre:$vid", "").isEmpty()
         applyFilter()
@@ -1601,6 +1661,7 @@ class PlayerActivity : Activity(), Host {
         resumePending = false; applyCard()
         engineStarted = false; autoRotDone = false
         buildPlayer(); initEngine()
+        notifTitleOv = Recents.titleOf(vid)
         updateTr()
     }
 
@@ -1700,10 +1761,16 @@ class PlayerActivity : Activity(), Host {
         }
     }
 
+    private var lastFitTag = ""
     private fun applyFit(sv: SurfaceView, box: View) {
+        if ((vidW == 0 || vidH == 0) && ::player.isInitialized) { val vs = player.videoSize; if (vs.width > 0 && vs.height > 0) { vidW = vs.width; vidH = vs.height } }
         if (vidW == 0 || box.width == 0) return
-        val (w, hh) = PlayerLogic.fitSize(box.width, box.height, vidW, vidH, if (pipNow()) 0 else curFit())
-        sv.layoutParams = FrameLayout.LayoutParams(w, hh, Gravity.CENTER)
+        val mode = if (pipNow()) 0 else curFit()
+        val (w, hh) = PlayerLogic.fitSize(box.width, box.height, vidW, vidH, mode)
+        val lp = FrameLayout.LayoutParams(w, hh, Gravity.CENTER)
+        sv.layoutParams = lp; sv.requestLayout(); box.requestLayout()
+        val tag = "$mode:${box.width}x${box.height}:${vidW}x$vidH"
+        if (tag != lastFitTag) { lastFitTag = tag; LogStore.add("⬛ احتواء/تمديد: وضع=${PlayerLogic.fitNames[mode]} الحاوية=${box.width}x${box.height} الفيديو=${vidW}x$vidH ← السطح=${w}x$hh") }
     }
 
     private fun videoId(): String {
@@ -1844,6 +1911,35 @@ class PlayerActivity : Activity(), Host {
             say(if (l == "فصحى") "الترجمة بالفصحى الحرفية" else "هحوّل للهجة $l من الباتش اللي إنت فيه وللقدّام، وبعدين اللي قبله — والباتشات الجديدة هتيجي باللهجة دي (النسخة القديمة اتحفظت في 🗂)")
             touchSubs()
         }.apply { minimumWidth = ui.dp(150) })
+        // (v89) أسلوب الترجمة وشدته: بيتحفظوا وبيدخلوا في برومبت كل باتش جديد وكل تحويل لهجة، ومعاهم زرار تطبيق على اللي اتترجم فعلًا
+        fun hdr(t: String) = col.addView(ui.text(t, 11f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(2)) })
+        val toneStyles = listOf("حرفي", "شعبي", "جرئ", "+18"); val toneDegrees = listOf("خفيفة", "متوسطة", "شديدة")
+        val styleBtns = ArrayList<Pair<String, TextView>>(); val degBtns = ArrayList<Pair<String, TextView>>()
+        fun curStyle() = Cfg.str("tone_style", "").ifBlank { "حرفي" }
+        fun curDeg() = Cfg.str("tone_strength", "متوسطة")
+        fun paintTone() {
+            styleBtns.forEach { (k, v) -> v.text = (if (k == curStyle()) "✓ " else "") + k }
+            degBtns.forEach { (k, v) -> v.text = (if (k == curDeg()) "✓ " else "") + k; v.alpha = if (curStyle() == "حرفي") 0.4f else 1f }
+        }
+        hdr("الأسلوب")
+        for (k in toneStyles) { val b = ui.fsBtn(k) { _ ->
+            Cfg.put("tone_style", if (k == "حرفي") "" else k); engine.toneStyle = if (k == "حرفي") "" else k; paintTone()
+            say(if (k == "حرفي") "الأسلوب حرفي — الباتشات الجاية من غير تعديل أسلوب" else "الأسلوب $k (${curDeg()}) — الباتشات الجاية هتتترجم بيه. لو عايزه على اللي اتترجم دوس «طبّق»")
+        }.apply { minimumWidth = ui.dp(150) }; styleBtns.add(k to b); col.addView(b) }
+        hdr("الشدة")
+        for (k in toneDegrees) { val b = ui.fsBtn(k) { _ ->
+            Cfg.put("tone_strength", k); engine.toneStrength = k; paintTone()
+            say(if (curStyle() == "حرفي") "الشدة بتشتغل مع شعبي / جرئ / +18 بس" else "الشدة $k — الباتشات الجاية هتتترجم بيها")
+        }.apply { minimumWidth = ui.dp(150) }; degBtns.add(k to b); col.addView(b) }
+        paintTone()
+        fun toneInstr(): String {
+            val st = curStyle()
+            val what = when (st) { "شعبي" -> "كلام الشارع الشعبي والتعبيرات اليومية بدل الرسمي"; "جرئ" -> "أجرأ وأكتر حرية في الألفاظ من غير تلطيف زيادة"; "+18" -> "صريح بلا تلطيف: الألفاظ والإيحاءات تطابق صراحة الأصل بالظبط"; else -> "" }
+            return if (what.isEmpty()) "رجّع كل جملة لترجمة حرفية أمينة قريبة من الأصل من غير مبالغة في العامية أو الجرأة."
+            else "أعد صياغة كل جملة بأسلوب «$st»: $what. الشدة: ${curDeg()}. حافظ على المعنى والجنس."
+        }
+        col.addView(ui.fsBtn("🔁 طبّق من هنا للآخر") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), false) }.apply { minimumWidth = ui.dp(150) })
+        col.addView(ui.fsBtn("🔁 طبّق على الفيديو كله") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), true) }.apply { minimumWidth = ui.dp(150) })
         val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
         col.measure(View.MeasureSpec.makeMeasureSpec(ui.dp(170), View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2); anchor.getLocationOnScreen(loc)
@@ -1896,27 +1992,6 @@ class PlayerActivity : Activity(), Host {
         if (n > 0) Notice.show(this, if (n == 1) "🔁 بعيد ترجمة باتش ${i + 1}" else "🔁 بعيد ترجمة $n باتش", 2200L)
     }
 
-    fun liveDialectDialog() {
-        val langs = listOf("مصري", "شامي", "لبناني", "خليجي", "مغربي", "عراقي", "سوداني", "فصحى")
-        val strengths = listOf("خفيفة", "متوسطة", "شديدة")
-        val styles = listOf("حرفي", "شعبي", "جرئ", "+18")
-        var l = conf.lang; var st = conf.style; var sg = "متوسطة"; var scopeAll = false
-        val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
-        box.addView(ui.text("🌐 لهجة لايف — بيترجم النص الأصلي من جديد", 16f, th.primary, true))
-        box.addView(ui.text("اللهجة", 13f, th.muted)); box.addView(ui.chips(langs, { l }) { l = it })
-        box.addView(ui.text("الشدة", 13f, th.muted)); box.addView(ui.chips(strengths, { sg }) { sg = it })
-        box.addView(ui.text("الأسلوب", 13f, th.muted)); box.addView(ui.chips(styles, { st }) { st = it })
-        box.addView(ui.text("النطاق", 13f, th.muted)); box.addView(ui.chips(listOf("من هنا لآخر الفيديو", "الفيديو كله"), { if (scopeAll) "الفيديو كله" else "من هنا لآخر الفيديو" }) { scopeAll = it == "الفيديو كله" })
-        box.addView(ui.button("طبّق", true) {
-            d.dismiss()
-            runTool("لهجة لايف ($l · $sg · $st)", "أعد كتابة translated من الصفر بالاعتماد على original (النص الأصلي) بلهجة $l وبشدة $sg وبأسلوب $st (حرفي = أقرب للمعنى، شعبي = كلام شارع، جرئ = أجرأ وأكتر حرية، +18 = صريح بلا تلطيف). حافظ على جنس المتكلم والمخاطَب.", scopeAll)
-        })
-        d.setContentView(android.widget.ScrollView(this).apply { addView(box) })
-        d.window?.apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT) }
-        ui.fullPage(d)
-        d.show()
-    }
 
     /** يرجّع نسخة محفوظة ويظبط لهجة الترجمة الجاية على لهجتها */
     fun restoreVersion(i: Int) {
@@ -2077,6 +2152,6 @@ class PlayerActivity : Activity(), Host {
         Live.engine = null
         engine.stop()
         if (!handedOff) try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2593", e) }
-        player.release(); KeepAliveService.stop(this); super.onDestroy()
+        player.release(); if (PlayerRemote.act?.get() === this) PlayerRemote.act = null; KeepAliveService.stop(this); super.onDestroy()
     }
 }

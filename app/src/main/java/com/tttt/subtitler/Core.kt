@@ -558,7 +558,7 @@ object Parse {
         val tr = (s.optString("translated").ifEmpty { s.optString("translation") }.ifEmpty { orig }).trim()
         val ad = s.optString("addressee").lowercase().let { if (it in listOf("male", "female", "plural")) it else "unknown" }
         val tg = s.optString("topic_gender").lowercase().let { if (it in listOf("male", "female", "plural")) it else "none" }
-        return Sub(
+        return Subs.collapseSelfRepeat(Sub(
             off + sec(s, "start", 0.0), off + sec(s, "end", 1.0),
             orig, tr, if (s.optString("gender") == "female") "female" else "male", ad, tg,
             strs(s.optJSONArray("people")), strs(s.optJSONArray("places")), s.optBoolean("is_song", false), s.optBoolean("low_confidence", false), -1,
@@ -566,7 +566,7 @@ object Parse {
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
             s.optBoolean("faint", false), false,
             s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - "))
-        )
+        ))
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
@@ -644,7 +644,78 @@ object Subs {
             }
             if (!merged) res.add(cur)
         }
-        return dropLoops(dropContained(res))
+        return dropLoops(dropEchoes(dropContained(res)))
+    }
+
+    // ===== (v111) تكرار الجملة =====
+    private val SENT_SPLIT = Regex("(?<=[.!?؟。！？…])\\s*")
+    private fun collapseText(t: String): String {
+        val x = t.trim()
+        if (x.length < 14) return t
+        // 1) نفس النص مكتوب مرتين ورا بعض من غير ترقيم: «X X»
+        val w = x.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (w.size >= 4 && w.size % 2 == 0) {
+            val h = w.size / 2
+            if (norm(w.subList(0, h).joinToString(" ")) == norm(w.subList(h, w.size).joinToString(" ")) && norm(w.subList(0, h).joinToString(" ")).length >= 6)
+                return w.subList(0, h).joinToString(" ")
+        }
+        // 2) جملة طويلة اتكررت جوه نفس النص (الموديل بيكرر آخر جملة قالها)
+        val parts = x.split(SENT_SPLIT).filter { it.isNotBlank() }
+        if (parts.size < 2) return t
+        val seen = HashSet<String>(); val out = ArrayList<String>()
+        for (p in parts) {
+            val n = norm(p)
+            if (n.length >= 6 && !seen.add(n)) continue
+            out.add(p.trim())
+        }
+        return if (out.size == parts.size) t else out.joinToString(" ")
+    }
+    /** الجملة الواحدة اللي الأصل/الترجمة بتاعها فيه نفس الكلام مرتين (الموديل كرر نفسه) — بتتشال النسخة الزيادة */
+    fun collapseSelfRepeat(s: Sub): Sub {
+        val o = collapseText(s.original); val t = collapseText(s.translated)
+        return if (o == s.original && t == s.translated) s else s.copy(original = o, translated = t)
+    }
+
+    const val ECHO_WIN = 40.0
+    private fun echoMatch(a: Sub, b: Sub): Boolean {
+        if (a.isSound || b.isSound || a.isSong || b.isSong || a.faint != b.faint) return false
+        val dt = b.start - a.start
+        if (dt < 0 || dt > ECHO_WIN) return false
+        val ta = norm(a.translated); val tb = norm(b.translated)
+        val oa = norm(a.original); val ob = norm(b.original)
+        if (a.chunk >= 0 && a.chunk == b.chunk) return dt <= 8.0 && ta.length >= 10 && ta == tb   // نفس الرد كرر السطر
+        val origSim = oa.length >= 4 && ob.length >= 4 && dice(oa, ob) >= 0.8
+        val trSim = ta.length >= 6 && tb.length >= 6 && dice(ta, tb) >= 0.85
+        return origSim || trSim
+    }
+    private fun echoStrong(a: Sub, b: Sub): Boolean =
+        maxOf(norm(a.translated).length, norm(b.translated).length) >= 14 || minOf(norm(a.original).length, norm(b.original).length) >= 10 ||
+            // نسخة سدّ الفجوة («…») قريبة (<= 10ث) من نفس الجملة = صدى مؤكد حتى لو قصيرة
+            ((a.chunk == -2 || b.chunk == -2) && b.start - a.start <= 10.0 && minOf(norm(a.translated).length, norm(b.translated).length) >= 6)
+
+    /** نفس الجملة ظهرت مرتين بتوقيتين مختلفين (بتحصل لما الموديل يقدّم جملة عن مكانها الحقيقي فيتسد مكانها الصح بعدين):
+     *  النسخة المتأخرة هي اللي في مكانها الصح فبنشيل المبكرة. الجمل القصيرة ما بتتشالش إلا لو جارتها اتكررت معاها (تتابع). الأغاني مستثناة (الكورَس بيتكرر عادي). */
+    fun dropEchoes(l: List<Sub>): List<Sub> {
+        if (l.size < 2) return l
+        val sorted = l.sortedWith(compareBy({ it.start }, { it.end }))
+        val pairs = HashMap<Int, ArrayList<Int>>()
+        for (i in sorted.indices) {
+            var j = i + 1
+            while (j < sorted.size && sorted[j].start - sorted[i].start <= ECHO_WIN) {
+                if (echoMatch(sorted[i], sorted[j])) pairs.getOrPut(i) { ArrayList() }.add(j)
+                j++
+            }
+        }
+        if (pairs.isEmpty()) return l
+        val drop = BooleanArray(sorted.size)
+        for ((i, js) in pairs) {
+            for (j in js) {
+                val strong = echoStrong(sorted[i], sorted[j])
+                val run = (pairs[i - 1]?.contains(j - 1) == true) || (pairs[i + 1]?.contains(j + 1) == true)
+                if (strong || run) { drop[i] = true; break }
+            }
+        }
+        return sorted.filterIndexed { idx, _ -> !drop[idx] }
     }
 
     /** جملة نصها جزء من جملة تانية فوقها في نفس الوقت (نفس السطر اتكرر بتوقيت مختلف) — الأقصر بتتشال */

@@ -115,6 +115,21 @@ class Engine(
     private val reviews = AtomicInteger(0)
     /** لهجة التحويل التلقائي: الترجمة بتتعمل بالفصحى الحرفية وكل ~3 باتشات بتتحوّل للهجة دي. "" = من غير تحويل */
     @Volatile var convDialect: String = ""
+    /** أسلوب الترجمة الحي (حرفي/شعبي/جرئ/+18) وشدته (خفيفة/متوسطة/شديدة): بيتحط في أول برومبت كل باتش جديد وكل تحويل لهجة */
+    @Volatile var toneStyle: String = ""
+    @Volatile var toneStrength: String = "متوسطة"
+    fun toneBlock(): String {
+        val st = toneStyle
+        if (st.isBlank() || st == "حرفي") return ""
+        val what = when (st) {
+            "شعبي" -> "كلام الشارع الشعبي والتعبيرات اليومية بدل الرسمي والكتابي"
+            "جرئ" -> "أجرأ وأكتر حرية في الألفاظ والتعبيرات من غير تلطيف زيادة"
+            "+18" -> "صريح بلا تلطيف: الألفاظ الخارجة والإيحاءات تتترجم بصراحة تطابق النص الأصلي بالظبط، من غير حذف ولا تخفيف"
+            else -> return ""
+        }
+        val deg = when (toneStrength) { "خفيفة" -> "خفيفة: لمسة بسيطة بس في الجمل اللي تستاهل"; "شديدة" -> "شديدة: في كل جملة تقريبًا وبأقصى درجة"; else -> "متوسطة: في معظم الجمل بدرجة معتدلة" }
+        return "\n═══ أسلوب الترجمة (إلزامي) ═══\n- الأسلوب: $st — $what.\n- الشدة: $deg.\n- الأسلوب ده بيتطبّق على كل translated مع الحفاظ الكامل على المعنى وجنس المتكلم والمخاطَب.\n\n"
+    }
     private val convBusy = AtomicBoolean(false)
     @Volatile private var lastConvFail = 0L
     /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
@@ -320,7 +335,7 @@ class Engine(
             val prompt = "أنت محرر ترجمة محترف. الجمل دي مترجمة بالفصحى الحرفية. حوّل حقل translated في كل جملة للهجة $tgt الحقيقية (زي ما أهلها بيتكلموا فعلًا) مع الحفاظ الكامل على المعنى والأسماء والأرقام وجنس المتكلم speaker_gender والمخاطَب addressee_gender.\n" +
                 "- ماتدمجش ولا تقسّم جمل ولا تغيّر عددها أو ترتيبها. original للمرجع بس (لو الفصحى فيها غلط في المعنى صحّحه من original).\n" +
                 "- 🔴 لازم ترجّع كل الجمل (حتى لو الجملة أصلًا قريبة من اللهجة) بالصياغة النهائية باللهجة.\n" +
-                pb.dialectBlock(tgt) + "\nالجمل:\n$list\n\n" +
+                pb.dialectBlock(tgt) + toneBlock() + "\nالجمل:\n$list\n\n" +
                 "أرجع JSON فقط: {\"rewrites\":[{\"idx\":0,\"translated\":\"النص باللهجة\"}]}"
             try {
                 val r = bgCall(prompt, 8192, 0.3, true, bi)
@@ -368,6 +383,8 @@ class Engine(
     /** من الأول خالص */
     fun redoAll(keep: Boolean = true) { redo(0, -1, keep); onlyChunks = null; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
+    /** كمّل الترجمة من المكان ده (من غير مسح حاجة): بيقفز بالمؤشر لباتش الوقت ده ويلغي الإيقاف */
+    fun translateFrom(sec: Double) { onlyChunks = null; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
     fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     fun saveNow() = doPersist()
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
@@ -383,7 +400,7 @@ class Engine(
     fun load(): Double {
         val s = store?.load() ?: return 0.0
         synchronized(lock) {
-            subs = Subs.unifyOverlaps(if (s.chunkSec == conf.chunkSec) s.subs else s.subs.map { it.copy(chunk = -1) })
+            subs = Subs.unifyOverlaps(Subs.dedup((if (s.chunkSec == conf.chunkSec) s.subs else s.subs.map { it.copy(chunk = -1) }).map { Subs.collapseSelfRepeat(it) }))
             for (r in s.done) done.add(r[0], r[1])
             for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
             chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
@@ -731,7 +748,7 @@ class Engine(
         val c = if (dl.isEmpty() || dl == conf.lang) conf else dialConf.getOrPut(dl) { conf.withLang(dl) }
         val case = pb.caseOf(srcLang, detDone)
         val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(c, "other"))] } else null
-        return pb.build(c, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
+        return toneBlock() + pb.build(c, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
     }
 
     /** إصلاح الجمل اللي translated بتاعتها مش عربي: ترجمة نصية سريعة من original (وpivot) للهجة المختارة */
@@ -1261,7 +1278,9 @@ class Engine(
                     cur.removeAt(i + 1); removed++
                 } else i++
             }
-            if (removed > 0) subs = cur
+            val cleaned = Subs.dropEchoes(cur)
+            removed += cur.size - cleaned.size
+            if (removed > 0) subs = cleaned.map { Subs.collapseSelfRepeat(it) }
         }
         if (removed > 0) { saveVersion("بعد دمج المكرر"); host.changed(); persist() }
         return removed

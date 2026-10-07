@@ -29,7 +29,7 @@ class LibraryUi(
 ) {
     var onRefresh: () -> Unit = {}
     var onGrant: () -> Unit = {}
-    var onSettings: () -> Unit = {}
+    var onSettings: (View) -> Unit = {}
     var onLink: () -> Unit = {}
     var onPick: () -> Unit = {}
     var onPull: () -> Unit = {}
@@ -231,7 +231,8 @@ class LibraryUi(
         head.addView(queueBtn)
         val linkBtn = hbtn("🔗") { onLink() }; head.addView(linkBtn)
         val pickBtn = hbtn("📂") { onPick() }; head.addView(pickBtn)
-        val setBtn = hbtn("⚙️") { onSettings() }; head.addView(setBtn)
+        lateinit var setRef: View
+        val setBtn = hbtn("⚙️") { onSettings(setRef) }; setRef = setBtn; head.addView(setBtn)
         refreshBtn = hbtn("🔄") { refreshBtn.animate().rotationBy(360f).setDuration(600).start(); userRefresh = true; onRefresh() }
         head.addView(refreshBtn)
         normalBtns = listOf(queueBtn, linkBtn, pickBtn, setBtn, refreshBtn)
