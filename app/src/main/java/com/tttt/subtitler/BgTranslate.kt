@@ -316,6 +316,7 @@ class BgService : Service() {
         }
         runner.join(6000)
         engine.awaitStopped(3000)
+        try { engine.saveNow() } catch (e: Exception) { LogStore.err("BgTranslate:save", e) }   // (v139) الإنجن بيتقفل نهائيًا عند الإيقاف: احفظ آخر حالة بإيدك
         job.covered = engine.coveredSec(); job.dur = engine.durationSec().takeIf { it > 0 } ?: job.dur
         Recents.saveProgress(app, job.vid, job.title, job.url ?: "", job.uri ?: "", job.dur, engine.subs.size, job.covered)
         when {

@@ -44,10 +44,10 @@ object WebVideos {
     private fun write(ctx: Context, l: List<WebVid>) { try { file(ctx).writeText(toJson(l.sortedByDescending { it.ts }.take(MAX))) } catch (_: Exception) {} }
 
     /** تسجيل فيديو اتفتح: لو موجود قبل كده بيحتفظ باسمه ويحدّث الرابط والهيدرز (الكوكيز بتتجدد) */
-    fun register(ctx: Context, id: String, url: String, ref: String, ua: String, cookie: String, title0: String, kind: String, named0: Boolean = false): WebVid = synchronized(lock) {
+    fun register(ctx: Context, id: String, url: String, ref: String, ua: String, cookie: String, title0: String, kind: String, named0: Boolean = false, page: String = ""): WebVid = synchronized(lock) {
         val l = parse(try { file(ctx).readText() } catch (_: Exception) { "" })
         val old = l.firstOrNull { it.id == id }
-        val w = WebVid(id, url, ref, ua, cookie, if (old?.named == true) old.title else title0, old?.named == true || named0, old?.tries ?: 0, System.currentTimeMillis(), kind, old?.page ?: "")
+        val w = WebVid(id, url, ref, ua, cookie, if (old?.named == true) old.title else title0, old?.named == true || named0, old?.tries ?: 0, System.currentTimeMillis(), kind, old?.page?.ifEmpty { page } ?: page)
         write(ctx, listOf(w) + l.filter { it.id != id })
         w
     }

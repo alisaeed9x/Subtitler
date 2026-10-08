@@ -170,7 +170,8 @@ class MainActivity : Activity() {
         val model = ui.input("الموديل (اكتب يدوي أو اختار من فوق)", modelSel)
         val modelNames = Models.builtin.map { it.id }
         val modelDesc = ui.text("", 12f, th.muted)
-        fun descOf(id: String) = (Models.builtin.firstOrNull { it.id == id }?.desc ?: "موديل يدوي") + " — استهلاك النهارده: " + Quota.used(id) + " / " + Models.quotaOf(id) + " (تقريبي، بيتصفّر 00:00 PT)"
+        fun descOf(id: String) = (Models.builtin.firstOrNull { it.id == id }?.desc ?: "موديل يدوي") + " — استهلاك النهارده: " + Quota.used(id) + " / " + Models.quotaOf(id) + " (تقريبي، بيتصفّر 00:00 PT)" +
+            ModelWatch.pending().let { if (it.isEmpty()) "" else "\n🆕 موديل flash-lite أحدث اتلقى: " + it.joinToString("، ") + " — دوس «جلب كل الموديلات» واختاره" }
         modelDesc.text = descOf(modelSel)
         lateinit var applyModel: (String) -> Unit
         val modelChips = ui.chips(modelNames, { model.text.toString().trim() }) { applyModel(it) }
@@ -182,12 +183,13 @@ class MainActivity : Activity() {
                 try {
                     val rows = Api.listModels(k)
                     // الأحدث/الأهم فوق: gemini أولًا
-                    val sorted = rows.sortedWith(compareBy({ !it.id.startsWith("gemini") }, { it.id }))
+                    val fresh = ModelWatch.candidates(rows.map { it.id }).toSet()
+                    val sorted = rows.sortedWith(compareBy({ it.id !in fresh }, { !it.id.startsWith("gemini") }, { it.id }))
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         if (sorted.isEmpty()) { Notice.show(this, ("مفيش موديلات رجعت").toString(), 3600L); return@runOnUiThread }
                         val cur = model.text.toString().trim()
-                        val labels = sorted.map { (if (it.id == cur) "✓ " else "") + it.id + (if (it.display.isNotEmpty() && it.display != it.id) "\n" + it.display else "") }.toTypedArray()
+                        val labels = sorted.map { (if (it.id == cur) "✓ " else if (it.id in fresh) "🆕 " else "") + it.id + (if (it.display.isNotEmpty() && it.display != it.id) "\n" + it.display else "") }.toTypedArray()
                         GAlert(this).setTitle("اختار الموديل (${sorted.size})")
                             .setItems(labels) { _, which -> applyModel(sorted[which].id) }
                             .setNegativeButton("إلغاء", null).show()
@@ -213,8 +215,6 @@ class MainActivity : Activity() {
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
-        var parallel = Cfg.int("parallel", 2).coerceIn(1, 4)
-        val parallelRow = ui.slider("طلبات متوازية لكل مفتاح", parallel, 1, 4, "×") { parallel = it }
         val modes = KeyModes.parse(Cfg.str("keymodes")).toMutableList()
         val modesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun keyList(t: String) = t.lines().map { it.trim() }.filter { it.length > 10 }
@@ -242,7 +242,7 @@ class MainActivity : Activity() {
                 .putString("model", model.text.toString().trim()).putInt("chunk", chunkSec).putString("extra", extra.text.toString())
                 .putString("roster", roster.text.toString()).putString("gloss", gloss.text.toString())
                 .putString("lang", lang).putString("style", style).putString("theme", themeId)
-                .putInt("parallel", parallel).putString("keymodes", KeyModes.toJson(modes)).putString("viskeys", vkeys.text.toString())
+                .putString("keymodes", KeyModes.toJson(modes)).putString("viskeys", vkeys.text.toString())
             ahead.text.toString().trim().toIntOrNull()?.let { e.putInt("ahead", it) }
             atrack.text.toString().trim().toIntOrNull()?.let { e.putInt("atrack", it) }
             hlsAhead.text.toString().trim().toIntOrNull()?.let { e.putInt("hls_ahead", it.coerceIn(1, 8)) }
@@ -308,6 +308,7 @@ class MainActivity : Activity() {
         applyModel = { id ->
             model.setText(id); modelSel = id; modelDesc.text = descOf(id)
             Cfg.p.edit().putString("model", id).apply()   // يتحفظ فورًا
+            ModelWatch.refreshPending(); modelDesc.text = descOf(id)
             refreshChip()
         }
         val sp = styleParts(ui, th)
@@ -336,7 +337,7 @@ class MainActivity : Activity() {
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
-                ui.section("⏱ الأداء والتقطيع", false, chunk, parallelRow, ahead, hlsAhead, atrack),
+                ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
@@ -356,7 +357,7 @@ class MainActivity : Activity() {
                 ui.section("➕ الإضافية", false, extraUi),
                 ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn),
                 ui.section("👁 مفتاح الوضع البصري فقط", false,
-                    ui.text("لو حطيت مفتاح هنا، الوضع البصري (👁) بيستخدمه هو بس ومايستهلكش مفاتيح الترجمة، والترجمة العادية ماتستخدمهوش.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
+                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة (أساسي/احتياطي/إضافي). لو سبتها فاضية الوضع البصري مش هيشتغل. والترجمة العادية ماتستخدمهاش.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
             TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
                 ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
@@ -672,7 +673,24 @@ class MainActivity : Activity() {
     // ===== (v137) أدوات الفيديو من تبويب «المهام»: الأداة → اختيار الفيديو → نافذة الإعدادات → تبدأ =====
     fun pickTool(kind: String) {
         pendingTool = kind
+        // (v139) قايمة الفيديوهات اللي جوه التطبيق نفسه؛ مدير الملفات بقى زرار احتياطي جواها
+        VideoPicker.show(this, "اختار الفيديو", { v -> onToolVideo(kind, v) }, { pickToolFromFiles() })
+    }
+    private fun pickToolFromFiles() {
         try { startActivityForResult(filePicker("video/*", "اختار الفيديو", true), 52) } catch (e: Exception) { Notice.show(this, "مفيش تطبيق ملفات يفتح", 2400L) }
+    }
+    private fun onToolVideo(kind: String, v: VideoItem) {
+        Notice.show(this, "بقرا الفيديو…", 1500L)
+        Thread {
+            val subs = try { Store(File(filesDir, "progress"), Store.keyFor(v.videoId)).load()?.subs ?: emptyList() } catch (_: Throwable) { emptyList<Sub>() }
+            var dur = v.durMs; var w = v.w; var h = v.h
+            if (dur <= 0 || w <= 0 || h <= 0) {
+                val pr = Tools.probe(applicationContext, v.uri)
+                if (dur <= 0) dur = pr.durMs; if (w <= 0) w = pr.w; if (h <= 0) h = pr.h
+            }
+            val src = ToolSrc(v.uri, null, v.title, dur, w, h, 0L, subs)
+            runOnUiThread { if (!isDestroyed && !isFinishing) runTool(kind, src) }
+        }.apply { isDaemon = true }.start()
     }
     private fun onToolPicked(u: Uri) {
         try { contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
@@ -817,6 +835,7 @@ class MainActivity : Activity() {
         super.onResume()
         // الرجوع من المشغّل أو من إعدادات الإذن: حدّث العرض (تقدم الترجمة) أو أعد الفحص
         if (!fromPlayer) CrashLog.showIfAny(this)
+        if (!fromPlayer) ModelWatch.maybeCheck(this)   // (v141) فحص يومي لموديل flash-lite أحدث
         // المخفي بيتقفل تاني لو التطبيق قعد في الخلفية أكتر من دقيقة
         if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
         stoppedAt = 0L

@@ -36,7 +36,7 @@ class Engine(
         const val MAX_TRIES = 25
         const val MAX_FAILS = 3          // جولات فشل قبل ما المقطع يتحط كـ "فجوة"
         const val GAP_PASSES = 3         // كام مرة نعيد المحاولة في الفجوات تلقائيًا
-        const val CROSS_MIN_DUR = 600.0  // المراجعة بين المقاطع بس للفيديوهات الطويلة (زي الأصل)
+        const val CROSS_MIN_DUR = 90.0   // (v140) كانت 600: الفيديوهات القصيرة (3 دقايق = 4 مقاطع) ماكانتش بتتراجع خالص
         const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
         const val CHAR_MIN_LINES = 12
         const val PRON_MIN_LINES = 20
@@ -47,8 +47,10 @@ class Engine(
     private val lock = Any()
     /** المشغّل بيحمّل الترجمة المحفوظة في الخلفية: لحد ما يخلص ممنوع أي حفظ (عشان مانكتبش حالة فاضية فوق الترجمة المحفوظة) */
     @Volatile var persistBlocked = false
+    /** (v139) بعد stop() الإنجن بيتقفل نهائيًا: أي رد متأخر من Gemini (طلب كان لسه في الجو) ما يقدرش يغيّر الترجمة ولا يتحفظ */
+    @Volatile private var isClosed = false
     @Volatile var subs: List<Sub> = emptyList()
-        private set
+        private set(v) { if (!isClosed) field = v }
     private val chars = ArrayList<Chr>()
     private val gloss = ArrayList<Gloss>()
     private val tplCache = HashMap<String, String>()
@@ -387,10 +389,10 @@ class Engine(
     fun resumeAuto() { onlyChunks = null; paused = false }
     /** كمّل الترجمة من المكان ده (من غير مسح حاجة): بيقفز بالمؤشر لباتش الوقت ده ويلغي الإيقاف */
     fun translateFrom(sec: Double) { onlyChunks = null; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
-    fun stop() { running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    fun stop() { isClosed = true; running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     /** (v122) إعدادات اتغيّرت من شاشة الإعدادات (لهجة / أسلوب / موديل / شخصيات…): تتطبّق على الباتشات والتحويلات الجاية من غير إعادة تشغيل المحرك */
     fun applyConf(c: Conf) { conf = c; dialConf.clear() }
-    fun saveNow() = doPersist()
+    fun saveNow() = doPersist(true)
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
     fun retryFailed() {
@@ -476,6 +478,7 @@ class Engine(
                 if (inflight.isEmpty() && retryGaps()) continue
                 if (inflight.isEmpty() && repairForeignTick()) continue
                 if (gapTick(headless || keepGoing)) continue
+                if (inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && finalRefineTick()) { nap(300); continue }   // (v140) تنقيح نهائي قبل ما نقول «خلصت»
                 if (headless && inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
                     finished = true; host.status("✅ خلصت الترجمة"); break
                 }
@@ -684,6 +687,7 @@ class Engine(
                 val t0 = System.currentTimeMillis()
                 pool.begin(key)
                 val r = try { Api.generate(conf.model, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
+                if (isClosed) return   // الإنجن اتقفل أثناء الطلب (خرجت من الفيديو): ارمي الرد
                 if (r.finish == "MAX_TOKENS" && trunc >= 2) partial = true
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
                 if (r.finish.isNotEmpty() && r.finish != "STOP" && r.finish != "MAX_TOKENS") throw Exception("رد Gemini اتوقف: ${r.finish}")
@@ -787,6 +791,7 @@ class Engine(
     private fun effectiveGloss(): List<Gloss> = synchronized(lock) { gloss.toList() }
 
     private fun applyChunk(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, j: JSONObject?, fresh: List<Sub>, prior: List<Sub>) {
+        if (isClosed) return
         if (j != null && !detDone) {
             val d = j.optString("detected_source_language", "").trim()
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
@@ -842,6 +847,7 @@ class Engine(
 
     // ===== المهام الخلفية بعد كل مقطع =====
     private fun afterChunk(w: WavChunk, fresh: List<Sub>, prior: List<Sub>) {
+        if (isClosed) return
         if (conf.crossReview && currentDur() >= CROSS_MIN_DUR && prior.isNotEmpty() && fresh.isNotEmpty() && reviews.get() < 2) {
             reviews.incrementAndGet()
             val off = w.startSec
@@ -1101,41 +1107,80 @@ class Engine(
         if (n > 0) { host.log("🔎 مراجعة بين المقاطع: صححت $n جملة قديمة"); host.changed(); persist() }
     }
 
-    // ===== (v109) تنقيح الترجمة: كل 3 باتشات بنبعت للمفتاح الاحتياطي كل الجمل (الأصل + الترجمة الحالية) عشان يفهم السياق ويصلّح المعاني الغلط =====
-    private val refineEvery = 3
+    // ===== (v109) تنقيح الترجمة بالسياق — (v140) اتحسّن: بيشتغل كل مقطعين بعدّاد مش بباقي القسمة (كان بيفوّت لما مقطعين يخلصوا مع بعض)،
+    // وبيعمل تنقيح نهائي لما كل المقاطع تخلص (كان آخر مقاطع الفيديو عمرها ما بتتراجع)، وبيراجع الجمل الجديدة بس مع 25 جملة قبلها كسياق (كان بيبعت الفيديو كله كل مرة) =====
+    private val refineEvery = 2
     @Volatile private var refineBusy = false
     private var refineSaved = false
+    private var refinedAt = 0
+    private val refinedKeys = HashSet<String>()   // جمل اتراجعت وفي بعدها سياق كفاية (بتتحمي بـ lock)
+
     private fun maybeRefine() {
         synchronized(lock) {
-            if (refineBusy || chunksDone % refineEvery != 0 || subs.size < 20) return
-            refineBusy = true
+            if (refineBusy || chunksDone - refinedAt < refineEvery || subs.size < 12) return
+            refineBusy = true; refinedAt = chunksDone
         }
+        runRefine(false)
+    }
+
+    /** من حلقة run() وقت الهدوء (مفيش باتش في الجو): لو في مقاطع خلصت بعد آخر تنقيح، نقّح الباقي. بيرجّع true لو التنقيح شغال — الحلقة تستنى */
+    private fun finalRefineTick(): Boolean {
+        if (isClosed) return false
+        synchronized(lock) {
+            if (refineBusy) return true
+            if (chunksDone <= refinedAt || subs.size < 8) return false
+            refineBusy = true; refinedAt = chunksDone
+        }
+        runRefine(true)
+        return true
+    }
+
+    private fun runRefine(isFinal: Boolean) {
         try {
             bg.submit {
-                try { refinePass() } catch (e: Exception) { host.log("⚠ تنقيح الترجمة فشل: " + (e.message ?: "").take(100)) }
+                try { refinePass(isFinal) } catch (e: Exception) { host.log("⚠ تنقيح الترجمة فشل: " + (e.message ?: "").take(100)) }
                 finally { refineBusy = false }
             }
         } catch (_: Exception) { refineBusy = false }
     }
 
-    private fun refinePass() {
+    private fun refinePass(isFinal: Boolean) {
         val snap = subs.filter { !it.isSound && it.original.isNotBlank() && it.translated.isNotBlank() && !it.translated.startsWith("«") }.sortedBy { it.start }
-        if (snap.size < 20) return
+        if (snap.size < 8) return
+        val reviewed = synchronized(lock) { HashSet(refinedKeys) }
+        val firstNew = snap.indexOfFirst { pk(it) !in reviewed }
+        if (firstNew < 0) return
         val roster = pb.rosterText(effectiveChars(), effectiveGloss())
-        val WIN = 600; val STEP = 560
-        var fixedTotal = 0; var from = 0; var win = 0
+        val WIN = 400; val STEP = 360; val LEAD = 25
+        var fixedTotal = 0; var from = maxOf(0, firstNew - LEAD); var win = 0
+        var okAll = true
         while (from < snap.size && running) {
             val part = snap.subList(from, minOf(snap.size, from + WIN))
             val arr = JSONArray()
-            for ((k, q) in part.withIndex()) arr.put(JSONObject().put("i", k).put("original", q.original).put("translated", q.translated).put("gender", q.gender))
-            val prompt = "أنت مراجع ترجمة محترف. دي كل جمل فيلم/مسلسل بالترتيب، لكل جملة النص الأصلي (original) والترجمة الحالية (translated) — الترجمة الحالية ممكن تكون اتنقّحت قبل كده.\n" +
-                (if (roster.isNotBlank()) "معلومات الشخصيات والمصطلحات:\n$roster\n" else "") +
+            for ((k, q) in part.withIndex()) {
+                val prevEnd = if (k > 0) part[k - 1].end else if (from > 0) snap[from - 1].end else q.start
+                val o = JSONObject().put("i", k).put("original", q.original).put("translated", q.translated)
+                if (q.pivot.isNotBlank()) o.put("en", q.pivot)
+                o.put("speaker", q.gender)
+                if (q.addressee != "unknown") o.put("to", q.addressee)
+                o.put("gap", Math.round(maxOf(0.0, q.start - prevEnd) * 10) / 10.0)
+                arr.put(o)
+            }
+            val prompt = "أنت مراجع ترجمة محترف. دي جمل فيلم/مسلسل/فيديو بالترتيب. الترجمة الحالية (translated) اتعملت على مقاطع صوتية منفصلة، كل مقطع حوالي دقيقة اتترجم لوحده من غير ما يشوف اللي قبله واللي بعده كويس — يعني غالبًا فيها جمل اتترجمت حرفيًا أو بمعنى الكلمة لوحدها، ولما الجملة تتقرا وسط اللي حواليها معناها الحقيقي بيبقى مختلف.\n" +
+                "لكل جملة: i = رقمها، original = الأصل، en = نقل إنجليزي حرفي (لو موجود)، translated = الترجمة الحالية، speaker = جنس المتكلم، to = المخاطَب، gap = ثواني الصمت قبلها (فجوة كبيرة غالبًا = مشهد أو موضوع جديد).\n" +
+                (if (roster.isNotBlank()) "\nمعلومات الشخصيات والمصطلحات:\n$roster\n" else "") +
                 "\nالجمل:\n$arr\n\n" +
-                "مهمتك تنقيح الترجمة: افهم معنى كل كلمة في الأصل ومعناها في السياق اللي حواليها (الكلمة ممكن تتقال بمعنى لوحدها ومعنى تاني وسط الكلام، أو تكون مثل أو سخرية أو تلميح أو اسم)، وصحّح بس الجمل اللي فيها خطأ حقيقي: كلمة مترجمة بمعنى غلط، أو معنى متغيّر، أو اسم/مصطلح مش ثابت، أو ضمير/جنس غلط، أو جملة مش مفهومة.\n" +
-                "- حافظ على لهجة ${conf.lang} وأسلوب ${conf.style} زي الترجمة الحالية. ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس.\n" +
-                "- ممنوع تضيف أو تحذف جمل، والتوقيت مش بتاعك.\n" +
-                "رجّع JSON فقط: {\"corrections\":[{\"i\":12,\"translated\":\"النص المصحح الكامل للجملة\"}]} — الجمل السليمة ماتتحطش. لو كله سليم: {\"corrections\":[]}"
-            val r = bgCall(prompt, 8192, 0.1, true, win)
+                "طريقة الشغل: اقرا كل جملة مع 4-5 جمل قبلها وبعدها كأنك بتتفرج على المشهد، واسأل نفسك: هل الترجمة الحالية بتوصّل اللي المتكلم يقصده فعلًا هنا؟ صحّح الجملة لما تلاقي:\n" +
+                "1) ترجمة حرفية معناها بيتغيّر مع السياق: تعبير اصطلاحي، سخرية، تلميح، مجاز، سؤال بلاغي، شتيمة أو مجاملة بتتقال بمعنى غير معناها الحرفي، أو رد على جملة سابقة.\n" +
+                "2) فاعل أو مفعول أو ضمير محذوف في الأصل واتفهم غلط، أو مرجع الضمير (هو/هي/ده) مش هو اللي في المشهد.\n" +
+                "3) جملة مكمّلة لجملة قبلها أو بعدها (اتقطعت بين مقطعين) وترجمتها مش متصلة بيها.\n" +
+                "4) اسم أو مصطلح أو لقب متترجم بأشكال مختلفة، أو جنس/ضمير غلط، أو جملة مش مفهومة، أو بتتناقض مع اللي حواليها.\n" +
+                "القواعد:\n" +
+                "- حافظ على لهجة ${conf.lang} وأسلوب ${conf.style}، وخلّي الجملة قصيرة ومناسبة للعرض كترجمة (قد الأصلية تقريبًا).\n" +
+                "- ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس. التصحيح لازم يبقى لمعنى أدق أو أوضح من السياق.\n" +
+                "- ممنوع تضيف أو تحذف أو تدمج جمل، والتوقيت مش بتاعك.\n" +
+                "رجّع JSON فقط: {\"corrections\":[{\"i\":12,\"why\":\"السبب في كلمتين تلاتة\",\"translated\":\"النص المصحح الكامل للجملة\"}]} — الجمل السليمة ماتتحطش. لو كله سليم: {\"corrections\":[]}"
+            val r = try { bgCall(prompt, 8192, 0.1, true, win) } catch (e: Exception) { okAll = false; throw e }
             val ca = Parse.json(r.text)?.optJSONArray("corrections")
             if (ca != null && ca.length() > 0) {
                 var n = 0
@@ -1158,9 +1203,14 @@ class Engine(
             }
             win++
             if (from + WIN >= snap.size) break
-            from += STEP; nap(3000)
+            from += STEP; nap(2000)
         }
-        host.log("✍ تنقيح الترجمة: راجعت ${snap.size} جملة بالأصل والسياق وصحّحت $fixedTotal")
+        // علّم الجمل اللي اتراجعت — وآخر 8 جمل مش بتتعلّم إلا في التنقيح النهائي (لسه ماعندهاش سياق بعدها)
+        if (okAll && running) synchronized(lock) {
+            val upto = if (isFinal) snap.size else maxOf(0, snap.size - 8)
+            for (k in 0 until upto) refinedKeys.add(pk(snap[k]))
+        }
+        host.log("✍ تنقيح الترجمة بالسياق: راجعت ${snap.size - maxOf(0, firstNew - LEAD)} جملة وصحّحت $fixedTotal")
         if (fixedTotal > 0) { host.changed(); persist() }
     }
 
@@ -1486,14 +1536,15 @@ class Engine(
     private val persistPending = AtomicBoolean(false)
     private val persistEx = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r).also { it.isDaemon = true; it.name = "persist" } }
     private fun persist() {
-        if (store == null) return
+        if (store == null || isClosed) return
         if (!persistPending.compareAndSet(false, true)) return
         try { persistEx.schedule({ persistPending.set(false); try { doPersist() } catch (_: Exception) {} }, 3, java.util.concurrent.TimeUnit.SECONDS) }
         catch (_: RejectedExecutionException) { persistPending.set(false); doPersist() }
     }
-    private fun doPersist() {
+    private fun doPersist(force: Boolean = false) {
         val st = store ?: return
         if (persistBlocked) return
+        if (isClosed && !force) return   // خيط متأخر من إنجن اتقفل: ممنوع يكتب
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }
             Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list())

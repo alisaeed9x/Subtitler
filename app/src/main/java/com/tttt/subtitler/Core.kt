@@ -115,6 +115,12 @@ object Cfg {
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
         try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
+        // (v141) مرة واحدة: الاسم المتحرك gemini-flash-lite-latest بقى موديل ثابت (3.1)
+        if (!p.getBoolean("model_pin_v141", false)) {
+            val e = p.edit().putBoolean("model_pin_v141", true)
+            if ((p.getString("model", "") ?: "").trim() == Models.OLD_ALIAS) e.putString("model", Models.DEFAULT)
+            e.apply()
+        }
         // مرة واحدة: الثيم الأساسي بقى «MX أبيض وأزرق» (القديم لسه موجود في الإعدادات ← المظهر)
         if (!p.getBoolean("theme_mx_v1", false)) p.edit().putString("theme", "mx").putBoolean("theme_mx_v1", true).apply()
     }
@@ -155,7 +161,7 @@ object Cfg {
             int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
-            int("parallel", 2).coerceIn(1, 4), bool("hitiming", false), bool("strim", true), bool("gapfill", true),
+            1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("strim", true), bool("gapfill", true),
             bool("soundtags", true), keys("viskeys")
         )
     }
@@ -616,7 +622,10 @@ class Ranges {
 object Subs {
     fun prevContext(all: List<Sub>, before: Double): String {
         val last = all.filter { it.start < before }.takeLast(20)
-        return last.joinToString("\n") { s ->
+        // (v140) المقاطع بتتبعت بالتوازي: المقطع اللي قبل الحالي ممكن يكون لسه بيتترجم، فالسياق بيبقى من بعيد — لازم الموديل يعرف ده بدل ما يفترض إنه متصل
+        val gapSec = if (last.isEmpty()) 0.0 else before - last.maxOf { it.end }
+        val note = if (gapSec > 12.0) "⚠ السياق ده قديم: بينه وبين بداية المقطع الحالي حوالي ${Math.round(gapSec)} ثانية لسه ماترجمتش — ماتفترضش إن أول جملة في المقطع استكمال مباشر ليه إلا لو الكلام نفسه بيدل على كده.\n" else ""
+        return note + last.joinToString("\n") { s ->
             val g = if (s.gender == "female") "أنثى" else "ذكر"
             val a = if (s.addressee != "unknown") s.addressee else "-"
             val tg = if (s.topicGender != "none") s.topicGender else "-"

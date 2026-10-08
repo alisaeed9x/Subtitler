@@ -809,8 +809,9 @@ class PlayerActivity : Activity(), Host {
         try { player.pause() } catch (_: Throwable) {}
         try { saveRecent() } catch (_: Throwable) {}
         try { pipOv?.hide(); pipOv = null } catch (_: Throwable) {}
-        try { engine.stop() } catch (_: Throwable) {}
-        Thread { try { engine.saveNow() } catch (_: Throwable) {} }.start()
+        val eng0 = engine
+        retireEngine()
+        Thread { try { eng0.saveNow() } catch (_: Throwable) {} }.start()
         if (!isFinishing) finish()
     }
     override fun onCreate(b: Bundle?) {
@@ -1828,6 +1829,7 @@ class PlayerActivity : Activity(), Host {
             }
             override fun onPlaybackStateChanged(st: Int) {
                 setBuffering(st == Player.STATE_BUFFERING)
+                if (st == Player.STATE_READY) h.postDelayed({ checkIdentityDuration() }, 1500)
                 // (v97) الفيديو خلص: لو اللوب شغّال يعيد من الأول، وإلا يروح للحلقة اللي بعدها (لو في)
                 if (st == Player.STATE_ENDED && !isFinishing) {
                     if (Cfg.str("loop", "0") == "1") { player.seekTo(0); player.play() }
@@ -1860,14 +1862,39 @@ class PlayerActivity : Activity(), Host {
         player.prepare(); player.playWhenReady = true
     }
 
+    // ===== (v139) عزل كل فيديو عن اللي قبله =====
+    /** مصدر الصوت متربط بالفيديو اللي المحرك اتعمل له (مش بيقرا حقول المشغّل الحيّة): المحرك القديم ما يقدرش يفتح فيديو جديد بالغلط */
+    private class SrcSpec(val uri: Uri?, @Volatile var url: String?, val hdr: HashMap<String, String>)
+    private var spec: SrcSpec? = null
+    /** وسيط بين المحرك والمشغّل: لما المحرك يتقفل (خروج / تغيير فيديو) كل ندائاته للمشغّل بتتجاهل */
+    private class GuardedHost(val inner: Host) : Host {
+        @Volatile var dead = false
+        @Volatile var lastPos = 0.0
+        @Volatile var lastDur = 0.0
+        override fun log(s: String) { if (!dead) inner.log(s) }
+        override fun status(s: String) { if (!dead) inner.status(s) }
+        override fun changed() { if (!dead) inner.changed() }
+        override fun notice(s: String) { if (!dead) inner.notice(s) }
+        override fun position(): Double = if (dead) lastPos else inner.position().also { lastPos = it }
+        override fun playerDuration(): Double = if (dead) lastDur else inner.playerDuration().also { lastDur = it }
+        fun kill() { if (!dead) { try { lastPos = inner.position(); lastDur = inner.playerDuration() } catch (_: Throwable) {}; dead = true } }
+    }
+    private var guard: GuardedHost? = null
+    /** أي مكان بيقفل المحرك الحالي لازم يعدّي من هنا: يقطع ندائاته للمشغّل الأول، وبعدين يقفله ويختمه */
+    private fun retireEngine() {
+        try { guard?.kill() } catch (_: Throwable) {}
+        try { if (::engine.isInitialized) engine.stop() } catch (e: Throwable) { LogStore.err("Player:retire", e) }
+    }
+
     private var freshOnce = false
     /** يشغّل المحرك. لو الدخول كان «ابدأ من الأول وجديد»: المسح والحفظ على خيط الخلفية قبل ما الحلقة تبدأ (مش على الـ UI) */
     private fun startEngine() {
         val fresh = freshOnce; freshOnce = false
         if (fresh) { try { player.seekTo(0) } catch (e: Exception) { LogStore.err("Main:2041", e) }; cur = 0L }
+        val eng = engine   // (v139) المحرك اللي اتطلب له التشغيل بالذات — مش اللي يبقى في الحقل وقت ما الخيط يشتغل
         Thread {
-            if (fresh) try { engine.redoAll() } catch (e: Throwable) { log("⚠ " + (e.message ?: e.toString()).take(120)) }
-            engine.run()
+            if (fresh) try { eng.redoAll() } catch (e: Throwable) { log("⚠ " + (e.message ?: e.toString()).take(120)) }
+            eng.run()
         }.apply { isDaemon = true }.start()
     }
 
@@ -1884,7 +1911,11 @@ class PlayerActivity : Activity(), Host {
         val store = Store(File(filesDir, "progress"), Store.keyFor(vid))
         val pb = PromptBuilder { p -> assets.open(p).bufferedReader(Charsets.UTF_8).use { it.readText() } }
         engineReady = false; pendingBegin = false
-        val eng = Engine(conf, { makeSource() }, store, this, pb)
+        // (v139) أي محرك قديم لسه شغال يتقفل الأول ونقطع ندائاته، وبعدين الجديد بيتربط بمصدر صوت فيديوه هو بس
+        retireEngine()
+        val sp = SrcSpec(uri, aurl ?: url, HashMap(hdr)); spec = sp
+        val gh = GuardedHost(this); guard = gh
+        val eng = Engine(conf, { makeSource(sp) }, store, gh, pb)
         eng.persistBlocked = true
         engine = eng
         engine.convDialect = Cfg.str("conv_dialect", "")
@@ -1934,6 +1965,7 @@ class PlayerActivity : Activity(), Host {
 
     // ===== فشل لينك التحميل: تحديثه في الخلفية من صفحة الفيديو المحفوظة =====
     private var refreshAsked = false
+    private var refreshTries = 0
     private fun offerLinkRefresh() {
         if (uri != null || url == null || refreshAsked || isFinishing || isDestroyed) return
         refreshAsked = true
@@ -1944,24 +1976,31 @@ class PlayerActivity : Activity(), Host {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (!page.startsWith("http")) { Notice.show(this, "مفيش لينك صفحة محفوظ للفيديو — احفظه من ⋮ ← تحديث لينك الفيديو", 4000L); return@runOnUiThread }
-                GAlert(this).setTitle("⚠ فشل تحميل الفيديو").setMessage("لينك التحميل فشل أو انتهت صلاحيته.\nتحديث عنوان التحميل؟")
-                    .setPositiveButton("نعم، حدّث") { _, _ -> startLinkRefresh(page) }
-                    .setNegativeButton("لا", null).show()
+                if (++refreshTries > 2) { refreshAsked = false; return@runOnUiThread }   // (v142) محاولتين بس في الجلسة عشان مايدخلش في لف
+                startLinkRefresh(page)   // (v142) بيجيب اللينك لوحده من غير ما يسألك
             }
         }.apply { isDaemon = true }.start()
     }
     private fun startLinkRefresh(page: String) {
         val old = url ?: return
-        Notice.show(this, "⏳ بحدّث لينك الفيديو في الخلفية…", 4000L)
+        Notice.show(this, "⏳ بجيب لينك الفيديو من الصفحة…", 4000L)
         LinkRefresh.run(this, page, old, hdr["User-Agent"] ?: "") { r ->
             if (isFinishing || isDestroyed) return@run
+            refreshAsked = false
             if (r != null && r.same) {
                 applyNewLink(r)
-                refreshAsked = false
                 Notice.show(this, "✓ اتحدّث لينك الفيديو", 2500L)
+                return@run
+            }
+            // (v142) مالقيناش نفس الفيديو بالظبط: بنعرضلك اللينكات اللي اتلقت في قايمة تختار منها هنا، من غير ما تروح تدوّر بإيدك
+            val opts = r?.all?.distinct().orEmpty()
+            if (r != null && opts.isNotEmpty()) {
+                val labels = opts.mapIndexed { i, u -> val hh = Sniff.heightOf(u); (if (hh > 0) "${hh}p" else "لينك ${i + 1}") + " · " + Sniff.nameOf(u).take(40) }.toTypedArray()
+                GAlert(this).setTitle("اختار لينك الفيديو (" + opts.size + ")")
+                    .setItems(labels) { _, w -> applyNewLink(LinkRefresh.Res(opts[w], true, r.cookie, r.ua)); Notice.show(this, "✓ اتحدّث لينك الفيديو", 2500L) }
+                    .setNegativeButton("إلغاء", null).show()
             } else {
-                refreshAsked = false
-                GAlert(this).setTitle("⚠ فشل الاصطياد التلقائي").setMessage("مقدرتش ألقط نفس لينك الفيديو تلقائيًا.\nتروح لصفحة التحميل تصطاد بنفسك؟")
+                GAlert(this).setTitle("⚠ مالقيتش لينك الفيديو").setMessage("الصفحة ماطلّعتش أي لينك فيديو (غالبًا محمية أو محتاجة ضغطة على زرار التحميل).\nتفتح الصفحة تصطاد بنفسك؟")
                     .setPositiveButton("نعم") { _, _ -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", page)) }
                     .setNegativeButton("لا", null).show()
             }
@@ -1970,9 +2009,11 @@ class PlayerActivity : Activity(), Host {
     private fun applyNewLink(r: LinkRefresh.Res) {
         url = r.url
         if (r.cookie.isNotEmpty()) hdr["Cookie"] = r.cookie
+        spec?.let { sp -> if (aurl == null) sp.url = r.url; if (r.cookie.isNotEmpty()) sp.hdr["Cookie"] = r.cookie }
         httpDsf?.setDefaultRequestProperties(hdr)
         val appCtx = applicationContext; val id = vid; val nu = r.url; val ck = r.cookie
-        Thread { WebVideos.update(appCtx, id) { it.copy(url = nu, cookie = if (ck.isNotEmpty()) ck else it.cookie, ts = System.currentTimeMillis()) } }.apply { isDaemon = true }.start()
+        val refB = intent.getStringExtra("ref") ?: ""; val titleB = intent.getStringExtra("title") ?: ""
+        Thread { WebVideos.update(appCtx, id) { it.copy(url = nu, cookie = if (ck.isNotEmpty()) ck else it.cookie, ts = System.currentTimeMillis()) }; if (!incognito) WebIdent.bindLink(id, nu, refB, titleB) }.apply { isDaemon = true }.start()
         try { val pos = player.currentPosition; player.setMediaItem(MediaItem.fromUri(Uri.parse(r.url)), pos); player.prepare(); player.playWhenReady = true } catch (e: Exception) { LogStore.err("Main:2115", e) }
     }
 
@@ -1986,7 +2027,8 @@ class PlayerActivity : Activity(), Host {
         val siteTitle = intent.getStringExtra("title")?.takeIf { it.isNotBlank() }
         val t0 = siteTitle ?: Sniff.nameOf(u)
         val kind = if (u.contains("videoplayback")) "YT" else Sniff.kindOf(u)
-        Thread { WebVideos.register(appCtx, id, u, ref, ua, ck, t0, kind, siteTitle != null) }.apply { isDaemon = true }.start()
+        val page = if (WebIdent.specific(ref)) ref else ""   // (v142) صفحة الفيديو بتتحفظ لوحدها (من الصفحة اللي اتصاد منها) عشان تحديث اللينك يشتغل من غير ما تدخلها بإيدك
+        Thread { WebVideos.register(appCtx, id, u, ref, ua, ck, t0, kind, siteTitle != null, page) }.apply { isDaemon = true }.start()
         h.postDelayed({ webSnap() }, 9000)
     }
     private fun webSnap() {
@@ -2039,11 +2081,11 @@ class PlayerActivity : Activity(), Host {
     fun swapVideo(newUri: Uri) {
         saveRecent()
         try { visual.stop() } catch (e: Exception) { LogStore.err("Main:2164", e) }
-        try { engine.stop() } catch (e: Exception) { LogStore.err("Main:2165", e) }
+        retireEngine()
         try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2166", e) }
         try { loud?.release(); loud = null } catch (_: Throwable) {}
         try { player.release() } catch (e: Exception) { LogStore.err("Main:2167", e) }
-        uri = newUri; url = null; hdr.clear()
+        uri = newUri; url = null; aurl = null; hdr.clear()
         cur = 0L; durMs = 0L; vidW = 0; vidH = 0; curIdx = -2; curKey = ""; dirty = true
         synchronized(logBuf) { logBuf.setLength(0) }
         status = ""; conf = Cfg.snapshot()
@@ -2175,14 +2217,53 @@ class PlayerActivity : Activity(), Host {
             return "f:$u"
         }
         intent.getStringExtra("ytid")?.takeIf { it.length == 11 }?.let { return "yt:$it" }   // (v117) يوتيوب: التقدم والترجمة على معرّف الفيديو مش على لينك الستريم المتغيّر
-        return "u:" + (url ?: "").substringBefore('?')
+        val ref0 = intent.getStringExtra("ref") ?: ""; val title0 = intent.getStringExtra("title") ?: ""
+        val legacy = webId(url ?: "", ref0, title0)
+        if (incognito) return legacy
+        // (v142) نفس الفيديو بجودة تانية أو اتصاد تاني بلينك جديد = نفس الهوية القديمة (الترجمة والتقدم بيفضلوا)
+        val hit = WebIdent.resolve(legacy, url ?: "", ref0, title0)
+        idVia = if (hit.id != legacy) hit.via else null
+        return hit.id
+    }
+    private var idVia: String? = null
+    private var durChecked = false
+    /** حماية من دمج غلط: لو الهوية جت من تطابق صفحة/عنوان والمدة مختلفة كتير عن اللي اتسجّل، اسأل المستخدم */
+    private fun checkIdentityDuration() {
+        val via = idVia ?: return
+        if (durChecked || durMs <= 0) return
+        durChecked = true
+        val id = vid; val d = durMs / 1000.0
+        Thread {
+            val old = try { Recents.parse(File(filesDir, "recent.json").readText()).firstOrNull { it.id == id }?.durSec ?: 0.0 } catch (_: Exception) { 0.0 }
+            if (old > 30 && Math.abs(old - d) > 5.0) runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                Notice.ask(this, "⚠ مدة الفيديو (" + PlayerLogic.clock((d * 1000).toLong()) + ") مختلفة عن الفيديو المحفوظ بنفس الاسم (" + PlayerLogic.clock((old * 1000).toLong()) + ") — ممكن يكون فيديو تاني؟", "افصله", "هو نفسه", 12000L,
+                    { WebIdent.blockKey(via); startActivity(Intent(this, PlayerActivity::class.java).apply { putExtras(intent) }); finish() }, { })
+            }
+        }.apply { isDaemon = true }.start()
+    }
+    /** (v138) هوية فيديو النت: الاسم في اللينك لوحده ما بيكفيش — لينكات زي /videoplayback أو master.m3u8 أو video.mp4 بتتكرر لفيديوهات مختلفة،
+     *  فكانت ترجمة فيديو بتتحمّل على فيديو تاني. اللينك العادي (اسم ملف مميّز) بيفضل بنفس الهوية القديمة عشان التقدم المحفوظ ما يضيعش. */
+    private fun webId(u: String, ref: String, title: String): String {
+        val noFrag = u.substringBefore('#')
+        val base = noFrag.substringBefore('?')
+        val q = noFrag.substringAfter('?', "")
+        fun qp(k: String): String? = q.split('&').firstNotNullOfOrNull { kv -> if (kv.substringBefore('=').equals(k, true)) kv.substringAfter('=', "").takeIf { it.isNotBlank() } else null }
+        val file = base.substringAfterLast('/').lowercase()
+        val generic = u.contains("videoplayback") || file.isBlank() ||
+            Regex("(master|index|playlist|chunklist|manifest|stream|video|play|media|file|main|source|hls|dash)(\\.(m3u8|mpd|mp4|webm|ts|php|m4v))?").matches(file)
+        val stable = listOf("id", "docid", "vid", "video", "video_id", "videoid", "v", "fid", "file", "name", "mid").firstNotNullOfOrNull { k -> qp(k)?.let { "$k=$it" } }
+        if (!generic) return "u:$base"
+        if (stable != null) return "u:" + (if (u.contains("videoplayback")) "gv" else base) + "?" + stable
+        val page = ref.substringBefore('#').substringBefore('?').trim()
+        val extra = listOf(title.trim(), if (page.length > 12 && page.substringAfter("://").contains('/')) page else "").filter { it.isNotBlank() }.joinToString("|")
+        return if (extra.isNotBlank()) "u:$base|$extra" else "u:$base?" + Integer.toHexString(q.hashCode())
     }
 
-    private fun makeSource(): AudioSource {
-        val lg: (String) -> Unit = { log(it) }
-        val u = aurl ?: url   // يوتيوب بصوت منفصل: المحرك بياخد الصوت من رابطه
-        val src = AudioSources.make(applicationContext, uri, u, hdr, conf.audioTrack, lg)
-        lg("🎙 مصدر الصوت: " + (if (uri != null) "ملف محلي" else if (src is HlsSource) "رابط HLS" else "رابط مباشر"))
+    private fun makeSource(sp: SrcSpec): AudioSource {
+        val lg: (String) -> Unit = { if (spec === sp) log(it) }
+        val src = AudioSources.make(applicationContext, sp.uri, sp.url, sp.hdr, conf.audioTrack, lg)   // يوتيوب بصوت منفصل: sp.url فيه رابط الصوت
+        lg("🎙 مصدر الصوت: " + (if (sp.uri != null) "ملف محلي" else if (src is HlsSource) "رابط HLS" else "رابط مباشر"))
         return src
     }
 
@@ -2595,7 +2676,7 @@ class PlayerActivity : Activity(), Host {
         saveRecent()
         try { visual.stop() } catch (e: Exception) { LogStore.err("Main:2590", e) }
         if (Live.engine === engine) Live.engine = null
-        engine.stop()
+        retireEngine()
         if (!handedOff) try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2593", e) }
         if (incognito && isFinishing) try { File(File(filesDir, "progress"), Store.keyFor(vid) + ".json").delete() } catch (_: Throwable) {}   // (v124) المتخفي: الترجمة المحفوظة بتتمسح أول ما تقفل
         player.release()

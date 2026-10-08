@@ -77,7 +77,7 @@ class VisualMode(
     }
     private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
         val keys = keyList()
-        if (keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
+        if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
         val jpeg = toJpeg(bmp); bmp.recycle()
         val prompt = if (mode == "hardsub") PROMPT_HARDSUB.replace("§DIALECT§", "بلهجة ${conf.lang} وأسلوب ${conf.style}")
             .replace("§LANG§", if (hardLang.isBlank()) "لغة الهاردسب: اكتشفها تلقائيًا من السطر المحروق." else "لغة الهاردسب في هذا الفيديو هي: \"$hardLang\" — اقرأ فقط الأسطر المكتوبة بيها.") else PROMPT_SCENE
@@ -108,17 +108,12 @@ class VisualMode(
     }
     fun stop() { running = false; th?.interrupt(); th = null }
 
-    /** الوضع البصري: مفتاحه الخاص أولًا (إعداد «مفتاح الوضع البصري فقط»)، وبعده الاحتياطية، وبعده الأساسية — عشان ما يستهلكش كوتة الترجمة */
-    private fun keyList(): List<String> {
-        val v = conf.visKeys.filter { it.isNotBlank() }.distinct()
-        if (v.isNotEmpty()) return v
-        val b = conf.backup.filter { it.isNotBlank() }.distinct()
-        return if (b.isNotEmpty()) b else conf.keys.filter { it.isNotBlank() }.distinct()
-    }
+    /** (v141) الوضع البصري بياخد من «مفتاح الوضع البصري فقط» وبس — مفيش رجوع للاحتياطي ولا الأساسي أبدًا، عشان ما يستهلكش كوتة الترجمة */
+    private fun keyList(): List<String> = conf.visKeys.filter { it.length > 10 }.distinct()
 
     private fun loop() {
         val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
-        val keys = keyList(); if (keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
+        val keys = keyList(); if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
         var next = Math.floor(position())
         var ki = 0
         try {
