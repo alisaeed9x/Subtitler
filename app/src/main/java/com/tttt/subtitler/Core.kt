@@ -46,17 +46,19 @@ class Conf(
     /** مفاتيح خاصة بالوضع البصري بس (لو موجودة الوضع البصري مايستخدمش غيرها) */
     val visKeys: List<String> = emptyList(),
     /** (v146) اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح، كل مفتاح بموديل مختلف، والأسرع يتثبّت للباقي */
-    val speedTest: Boolean = true
+    val speedTest: Boolean = true,
+    /** (v154) تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع سياق قبلها) تتبعت للتنقيح على مفتاح مخصوص (احتياطي، أو مفاتيح الصور لو الوضع البصري مش شغال) */
+    val partialRefine: Boolean = true
 ) {
     /** نسخة من الإعدادات بلهجة تانية (الباتشات الجديدة بتتبعت باللهجة المختارة مباشرة بدل فصحى ثم تحويل) */
     fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, vad, crossReview, autoChars,
-        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest)
+        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine)
 }
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
-    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest",
+    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest", "prefine",
         "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_punct")
     val INTS = setOf("chunk", "ahead", "hls_ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
@@ -164,7 +166,7 @@ object Cfg {
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
             1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("strim", true), bool("gapfill", true),
-            bool("soundtags", true), keys("viskeys"), bool("speedtest", true)
+            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true)
         )
     }
 }

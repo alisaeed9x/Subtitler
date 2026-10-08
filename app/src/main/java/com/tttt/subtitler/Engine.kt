@@ -608,7 +608,7 @@ class Engine(
                 var next = -1
                 for (i in lo..hi) {
                     if (d > 0 && cStart(i) >= d) break
-                    if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || i in rehomeQ) continue
+                    if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || rehomeQ.containsKey(i)) continue
                     next = i; break
                 }
                 if (next < 0 && only == null && keepGoing && d > 0) next = nextUndone(c + window, d)
@@ -642,7 +642,7 @@ class Engine(
     private fun nextUndone(from: Int, d: Double): Int {
         var i = maxOf(0, from)
         while (cStart(i) < d) {
-            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || i in rehomeQ)) return i
+            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || rehomeQ.containsKey(i))) return i
             i++
         }
         return -1
@@ -1279,13 +1279,48 @@ class Engine(
 
     // ===== (v109) تنقيح الترجمة بالسياق — (v140) اتحسّن: بيشتغل كل مقطعين بعدّاد مش بباقي القسمة (كان بيفوّت لما مقطعين يخلصوا مع بعض)،
     // وبيعمل تنقيح نهائي لما كل المقاطع تخلص (كان آخر مقاطع الفيديو عمرها ما بتتراجع)، وبيراجع الجمل الجديدة بس مع 25 جملة قبلها كسياق (كان بيبعت الفيديو كله كل مرة) =====
-    private val refineEvery = 2
+    private val refineEvery = 1   // (v154) كل مقطع يخلص (التنقيح الجزئي على مفتاح مخصوص مش بيزاحم الترجمة)
+    @Volatile private var partialWarned = false
+    @Volatile private var partialKeyTail = ""
     @Volatile private var refineBusy = false
     private var refineSaved = false
     private var refinedAt = 0
     private val refinedKeys = HashSet<String>()   // جمل اتراجعت وفي بعدها سياق كفاية (بتتحمي بـ lock)
 
+    /** (v154) مفاتيح التنقيح الجزئي: الاحتياطي (وأي مفتاح إضافي اتحط على «احتياطي») الأول، وبعدين مفاتيح الصور — بس لو الوضع البصري مش شغّال دلوقتي. مفاتيح الترجمة الأساسية ماتتلمسش أبدًا. */
+    private fun partialKeys(): List<String> {
+        val l = ArrayList<String>()
+        l.addAll(conf.backup.filter { it.length > 10 && pool.ok(it) })
+        if (!VisualMode.anyActive()) l.addAll(conf.visKeys.filter { it.length > 10 && pool.ok(it) })
+        return l.distinct()
+    }
+
+    /** طلب تنقيح جزئي على المفاتيح المخصوصة بس (429 → يعطّل المفتاح ويجرّب اللي بعده، 5xx → يعيد) */
+    private fun partialCall(prompt: String, maxTokens: Int, temp: Double, i: Int): Api.Result {
+        var last: Exception? = null
+        for (tries in 0 until 3) {
+            val ks = partialKeys()
+            if (ks.isEmpty()) throw last ?: Exception("مفيش مفتاح احتياطي/صور فاضي للتنقيح الجزئي")
+            val key = ks[Math.floorMod(i + tries, ks.size)]
+            try { partialKeyTail = pool.tail(key); return Api.generate(curModel(), key, prompt, null, maxTokens, temp, true, false) }
+            catch (e: ApiErr) {
+                last = e
+                if (e.code >= 500) nap(2000L * (tries + 1))
+                else if (e.code == 429) pool.block(key, 60_000)
+                else if (e.code == 401 || e.code == 403) pool.block(key, 3_600_000)
+                else throw e
+            }
+        }
+        throw last ?: Exception("فشل التنقيح الجزئي")
+    }
+
     private fun maybeRefine() {
+        if (!conf.partialRefine) return
+        val keysOk = partialKeys().isNotEmpty()
+        if (!keysOk) {
+            if (!partialWarned && chunksDone >= 2) { partialWarned = true; host.log("✍ التنقيح الجزئي واقف: مفيش مفتاح احتياطي (أو مفتاح صور والوضع البصري مش شغّال) — هيتنقّح في الآخر بالمفاتيح العادية") }
+            return
+        }
         synchronized(lock) {
             if (refineBusy || chunksDone - refinedAt < refineEvery || subs.size < 12) return
             refineBusy = true; refinedAt = chunksDone
@@ -1293,13 +1328,17 @@ class Engine(
         runRefine(false)
     }
 
+    private var finalAt = -1   // (v154) آخر chunksDone اتعمل عنده تنقيح نهائي (مرة واحدة لكل قيمة — مايتعادش لو فشل)
     /** من حلقة run() وقت الهدوء (مفيش باتش في الجو): لو في مقاطع خلصت بعد آخر تنقيح، نقّح الباقي. بيرجّع true لو التنقيح شغال — الحلقة تستنى */
     private fun finalRefineTick(): Boolean {
         if (isClosed) return false
         synchronized(lock) {
             if (refineBusy) return true
-            if (chunksDone <= refinedAt || subs.size < 8) return false
-            refineBusy = true; refinedAt = chunksDone
+            if (subs.size < 8 || finalAt == chunksDone) return false
+            // (v154) التنقيح الجزئي بيعلّم refinedAt مع كل مقطع، فلازم نشوف كمان لو لسه فيه جمل (آخر 8) ماخدتش سياق بعدها
+            val pending = subs.any { !it.isSound && it.original.isNotBlank() && it.translated.isNotBlank() && !it.translated.startsWith("«") && pk(it) !in refinedKeys }
+            if (chunksDone <= refinedAt && !pending) return false
+            refineBusy = true; refinedAt = chunksDone; finalAt = chunksDone
         }
         runRefine(true)
         return true
@@ -1350,7 +1389,7 @@ class Engine(
                 "- ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس. التصحيح لازم يبقى لمعنى أدق أو أوضح من السياق.\n" +
                 "- ممنوع تضيف أو تحذف أو تدمج جمل، والتوقيت مش بتاعك.\n" +
                 "رجّع JSON فقط: {\"corrections\":[{\"i\":12,\"why\":\"السبب في كلمتين تلاتة\",\"translated\":\"النص المصحح الكامل للجملة\"}]} — الجمل السليمة ماتتحطش. لو كله سليم: {\"corrections\":[]}"
-            val r = try { bgCall(prompt, 8192, 0.1, true, win) } catch (e: Exception) { okAll = false; throw e }
+            val r = try { if (isFinal) bgCall(prompt, 8192, 0.1, true, win) else partialCall(prompt, 8192, 0.1, win) } catch (e: Exception) { okAll = false; throw e }
             val ca = Parse.json(r.text)?.optJSONArray("corrections")
             if (ca != null && ca.length() > 0) {
                 var n = 0
@@ -1380,7 +1419,7 @@ class Engine(
             val upto = if (isFinal) snap.size else maxOf(0, snap.size - 8)
             for (k in 0 until upto) refinedKeys.add(pk(snap[k]))
         }
-        host.log("✍ تنقيح الترجمة بالسياق: راجعت ${snap.size - maxOf(0, firstNew - LEAD)} جملة وصحّحت $fixedTotal")
+        host.log((if (isFinal) "✍ تنقيح الترجمة بالسياق" else "✍ تنقيح جزئي (مفتاح $partialKeyTail)") + ": راجعت ${snap.size - maxOf(0, firstNew - LEAD)} جملة وصحّحت $fixedTotal")
         if (fixedTotal > 0) { host.changed(); persist() }
     }
 

@@ -376,6 +376,7 @@ class PlayerActivity : Activity(), Host {
     private val probAuto = Runnable { if (probOn) toggleProb() }  // كبسولة الباتش الفاشل بتتلم لوحدها
     fun updateTr() { trUpdaters.forEach { try { it() } catch (e: Exception) { LogStore.err("Main:866", e) } } }
     fun beginTranslate() {
+        try { val st = Throwable().stackTrace; LogStore.add("▶ طلب بدء الترجمة ← " + (st.getOrNull(1)?.let { it.methodName + ":" + it.lineNumber } ?: "?") + (if (autoTr) " (autotr)" else "")) } catch (_: Throwable) {}
         if (::engine.isInitialized && !engineReady) { pendingBegin = true; return }   // البيانات المحفوظة لسه بتتحمّل: هتبدأ لوحدها أول ما تخلص
         dismissStrip()
         if (noSub) { noSub = false; if (!ccOn) ccToggleFn() }   // بدأت ترجمة: رجّع إظهار الترجمة
@@ -595,13 +596,13 @@ class PlayerActivity : Activity(), Host {
     }
 
     /** يوقف المشغّل خالص، يسلّم الترجمة لخدمة الخلفية (إشعار بالتقدم والوقت المتبقي) ويطلع بره التطبيق من غير ما يقفله */
-    fun translateInBackground(goHome: Boolean = true) {
+    fun translateInBackground(goHome: Boolean = true, src: String = "المشغّل (زرار 🌙)") {
         if (Cfg.allMainKeys().isEmpty() && conf.keys.isEmpty() && conf.backup.isEmpty()) { say("ضيف مفتاح API الأول"); return }
         if (incognito) { say("🕶 الترجمة بالخلفية مش متاحة في التخفي"); return }
         if (handedOff) return
         handedOff = true
         closeSide(); resumePending = false
-        say("🌙 هكمّل الترجمة في الخلفية — التقدم في الإشعارات")
+        say(if (src.contains("تلقائي")) "🌙 كمّلت الترجمة في الخلفية لأن ✔ «كمّل في الخلفية لما أخرج» مفعّل (من فوق في المشغّل) — تقفله من نفس الزرار" else "🌙 هكمّل الترجمة في الخلفية — التقدم في الإشعارات")
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:1017", e) }
         saveRecentForce()
         val vidNow = vid; val uriS = uri?.toString(); val urlS = aurl ?: url; val hdrC = HashMap(hdr)
@@ -609,7 +610,7 @@ class PlayerActivity : Activity(), Host {
         val eng = engine
         Thread {
             try { eng.stop(); eng.awaitStopped(4000); eng.saveNow() } catch (e: Exception) { LogStore.err("Main:1023", e) }
-            BgJobs.enqueue(app, BgJob(vidNow, Recents.titleOf(vidNow), uriS, urlS, hdrC))
+            BgJobs.enqueue(app, BgJob(vidNow, Recents.titleOf(vidNow), uriS, urlS, hdrC), src)
         }.start()
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 12) } catch (e: Exception) { LogStore.err("Main:1027", e) }
@@ -2292,7 +2293,7 @@ class PlayerActivity : Activity(), Host {
             sub.suppressed = true; applyCard()
             applyFit(svRef, videoBoxRef)
             // الترجمة في شريط صغير فوق الشاشة (تحت الستاتس بار) بدل جوه الفيديو
-            if (canOverlay()) { pipOv = PipSubBar(this, { pipRect() }, listOf<Pair<String, () -> Unit>>("🌙 ترجم في الخلفية" to { translateInBackground(false) }, "🔊 صوت بس" to { audioOnly() }, "⏹ إيقاف نهائي" to { fullStop() })).also { it.show() } }
+            if (canOverlay()) { pipOv = PipSubBar(this, { pipRect() }, listOf<Pair<String, () -> Unit>>("🌙 ترجم في الخلفية" to { translateInBackground(false, "شريط الـ PiP (زرار 🌙)") }, "🔊 صوت بس" to { audioOnly() }, "⏹ إيقاف نهائي" to { fullStop() })).also { it.show() } }
             curIdx = -2
         } catch (e: Exception) { LogStore.err("Main:2266", e) } }
         else {
@@ -2435,7 +2436,7 @@ class PlayerActivity : Activity(), Host {
         if (sideOpen) { closeSide(); return }
         // (v110) علامة ✔ فوق: لو الترجمة لسه ما خلصتش، كمّلها في الخلفية أول ما أخرج
         if (!incognito && !handedOff && Cfg.bool("bg_on_exit", false) && durMs > 0 && PlayerLogic.percent(engine.coveredSec(), durMs / 1000.0) < 99 &&
-            (Cfg.allMainKeys().isNotEmpty() || conf.keys.isNotEmpty() || conf.backup.isNotEmpty())) { translateInBackground(false); return }
+            (Cfg.allMainKeys().isNotEmpty() || conf.keys.isNotEmpty() || conf.backup.isNotEmpty())) { translateInBackground(false, "خروج تلقائي (إعداد «كمّل في الخلفية لما أخرج»)"); return }
         try { player.pause() } catch (e: Exception) { LogStore.err("Main:2347", e) }
         saveRecent(); Thread { engine.saveNow() }.start()
         super.onBackPressed()

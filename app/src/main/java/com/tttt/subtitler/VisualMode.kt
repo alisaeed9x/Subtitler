@@ -26,6 +26,9 @@ class VisualMode(
     private val changed: () -> Unit
 ) {
     companion object {
+        private val active = java.util.concurrent.atomic.AtomicInteger(0)
+        /** (v154) true لو الوضع البصري شغّال دلوقتي — التنقيح الجزئي مابيستعملش مفاتيح الصور وقتها */
+        fun anyActive(): Boolean = active.get() > 0
         const val STEP = 2.0            // ثانية بين كل فريم والتاني
         const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
         const val WAIT_429 = 30_000L
@@ -104,7 +107,7 @@ class VisualMode(
 
     fun start() {
         stop(); running = true
-        th = Thread { try { loop() } catch (e: Exception) { status = "⚠ " + (e.message ?: "").take(80); say(status) } finally { running = false } }.also { it.isDaemon = true; it.start() }
+        th = Thread { active.incrementAndGet(); try { loop() } catch (e: Exception) { status = "⚠ " + (e.message ?: "").take(80); say(status) } finally { running = false; active.decrementAndGet() } }.also { it.isDaemon = true; it.start() }
     }
     fun stop() { running = false; th?.interrupt(); th = null }
 

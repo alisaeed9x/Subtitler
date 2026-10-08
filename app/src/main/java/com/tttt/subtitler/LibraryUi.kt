@@ -223,7 +223,7 @@ class LibraryUi(
         head.addView(tcol, LinearLayout.LayoutParams(0, -2, 1f))
         // ▣ تحديد الكل (ضغطة مطولة: تحديد / إلغاء) · ⋮ و ✕ بيظهروا بس وفيه تحديد
         selAllBtn = hbtn("▣") { toggleAll() }
-        selAllBtn.setOnLongClickListener { a -> a.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); popup(a, listOf("☑ تحديد الكل" to { selectAll() }, "☐ إلغاء التحديد" to { clearSel() })); true }
+        selAllBtn.setOnLongClickListener { a -> a.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); popup(a, listOf("☑ تحديد الكل" to { selectAll() }, "☐ إلغاء التحديد" to { clearSel() }) + (if (inWebNow()) listOf("🗑 مسح كل الفيديوهات المصطادة" to { webClearAll() }) else emptyList())); true }
         selMenuBtn = hbtn("⋮") { }.apply { visibility = View.GONE; setOnClickListener { selMenu(it) } }
         selCloseBtn = hbtn("✕") { clearSel() }.apply { visibility = View.GONE }
         head.addView(selAllBtn); head.addView(selMenuBtn); head.addView(selCloseBtn)
@@ -595,7 +595,9 @@ class LibraryUi(
     }
     private fun bindWeb(v: View, w: WebVid) {
         val h = v.tag as VH
-        h.cb.visibility = View.GONE
+        h.cb.visibility = View.VISIBLE
+        val onSel = w.id in sel
+        bindCheck(h.cb, onSel) { toggleSel(w.id) }
         h.title.text = if (w.named) w.title else "🔎 " + w.title
         h.badge.visibility = View.GONE
         val r = recMap[w.id]
@@ -612,14 +614,16 @@ class LibraryUi(
         bar.visibility = if (frac > 0.01) View.VISIBLE else View.GONE
         (h.fill.layoutParams as LinearLayout.LayoutParams).weight = frac.toFloat(); (h.rest.layoutParams as LinearLayout.LayoutParams).weight = (1.0 - frac).toFloat(); bar.requestLayout()
         h.tick.visibility = if (r != null && r.percent >= 97) View.VISIBLE else View.GONE
-        h.card.background = GradientDrawable().apply { cornerRadius = ui.dp(12).toFloat(); setColor(th.card); setStroke(ui.dp(2), WEBC) }
+        h.card.background = GradientDrawable().apply { cornerRadius = ui.dp(12).toFloat(); setColor(th.card); setStroke(ui.dp(2), if (onSel) th.primary else WEBC) }
         h.iv.tag = w.id; h.iv.setImageBitmap(webThumb(w))
         h.dots.setOnClickListener { x -> webMenu(x, w) }
-        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); webMenu(h.dots, w); true }
-        h.card.setOnClickListener { onPlayWeb(w) }
+        h.card.setOnLongClickListener { c -> c.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); if (sel.isNotEmpty()) toggleSel(w.id) else webMenu(h.dots, w, true); true }
+        h.card.setOnClickListener { if (sel.isNotEmpty()) toggleSel(w.id) else onPlayWeb(w) }
     }
-    private fun webMenu(anchor: View, w: WebVid) {
+    private fun webMenu(anchor: View, w: WebVid, withSel: Boolean = false) {
         val items = ArrayList<Pair<String, () -> Unit>>()
+        items += "☑ تحديد" to { toggleSel(w.id) }
+        items += "☑ تحديد الكل" to { selectAll() }
         items += "▶ تشغيل (من آخر مكان وقفت عنده)" to { onPlayWeb(w) }
         items += "✏ إعادة تسمية" to { webRename(w) }
         items += "📋 نسخ الرابط" to {
@@ -631,7 +635,20 @@ class LibraryUi(
                 .setPositiveButton("امسح") { _, _ -> WebVideos.remove(act, w.id); render() }.setNegativeButton("إلغاء", null).show()
             Unit
         }
+        items += "🗑 مسح كل الفيديوهات المصطادة (${webList.size})" to { webClearAll() }
         popup(anchor, items)
+    }
+    /** (v157) مسح كل المصطادة (من السجل بس — الترجمة المحفوظة مش بتتمسح) بعد تأكيد */
+    private fun webClearAll() {
+        val all = webList.map { it.id }.toSet()
+        if (all.isEmpty()) return
+        GAlert(act).setTitle("🗑 مسح كل المصطادة").setMessage("هيتمسح ${all.size} فيديو من سجل المصطادة (الترجمة المحفوظة مش هتتمسح). تمام؟")
+            .setPositiveButton("امسح الكل") { _, _ -> WebVideos.removeMany(act, all); sel.clear(); render() }.setNegativeButton("إلغاء", null).show()
+    }
+    private fun webClearSelected(ws: List<WebVid>) {
+        val ids = ws.map { it.id }.toSet()
+        GAlert(act).setTitle("🗑 مسح المحدد").setMessage("هيتمسح ${ids.size} فيديو من سجل المصطادة (الترجمة المحفوظة مش هتتمسح). تمام؟")
+            .setPositiveButton("امسح") { _, _ -> WebVideos.removeMany(act, ids); sel.clear(); render() }.setNegativeButton("إلغاء", null).show()
     }
     /** يحفظ لينك صفحة الفيديو (من الكليبورد أو بالكتابة) — ده اللي بيتفتح في الخلفية لما لينك التحميل يفشل */
     private fun webPageLink(w: WebVid) {
@@ -665,7 +682,9 @@ class LibraryUi(
         w.setOnClickListener { f() }
     }
     private fun selectableKeys(): List<String> =
-        rows.filterIsInstance<FolderItem>().filter { it !== bgFolder && it !== webFolder }.map { it.key } + rows.filterIsInstance<VideoItem>().map { it.videoId }
+        rows.filterIsInstance<FolderItem>().filter { it !== bgFolder && it !== webFolder }.map { it.key } + rows.filterIsInstance<VideoItem>().map { it.videoId } + rows.filterIsInstance<WebVid>().map { it.id }
+    private fun inWebNow() = rows.isNotEmpty() && rows.all { it is WebVid }
+    private fun selWebs(): List<WebVid> = rows.filterIsInstance<WebVid>().filter { it.id in sel }
     private fun selFolders(): List<FolderItem> = rows.filterIsInstance<FolderItem>().filter { it.key in sel && it !== bgFolder && it !== webFolder }
     private fun selVideos(): List<VideoItem> = rows.filterIsInstance<VideoItem>().filter { it.videoId in sel }
     private fun toggleSel(key: String) { if (!sel.remove(key)) sel.add(key); render() }
@@ -698,6 +717,11 @@ class LibraryUi(
     }
     /** ⋮ العلوي وقت التحديد: نفس قايمة الفولدر/الفيديو بس على كل المحدد */
     private fun selMenu(anchor: View) {
+        val ws = selWebs()
+        if (ws.isNotEmpty()) {
+            popup(anchor, listOf("🗑 مسح المحدد من السجل (${ws.size})" to { webClearSelected(ws) }, "☑ تحديد الكل" to { selectAll() }, "🗑 مسح كل الفيديوهات المصطادة" to { webClearAll() }))
+            return
+        }
         val fs = selFolders(); val vs = selVideos()
         val vids = if (fs.isNotEmpty()) fs.flatMap { it.videos } else vs
         if (vids.isEmpty()) return

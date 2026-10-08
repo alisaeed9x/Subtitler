@@ -206,13 +206,14 @@ class MainActivity : Activity() {
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true)
+        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true)
         val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
             "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
+            "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفتاح مخصوص (الاحتياطي، أو مفاتيح الصور لو الوضع البصري مش شغّال) من غير ما ياخد من مفاتيح الترجمة",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
@@ -415,7 +416,7 @@ class MainActivity : Activity() {
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
-                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "speedtest")),
+                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
                 ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
@@ -482,7 +483,7 @@ class MainActivity : Activity() {
                     try { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 12) } catch (e: Exception) { LogStore.err("Main:395", e) }
                 }
                 var n = 0
-                vs.forEach { v -> if (BgJobs.enqueue(this, BgJob(v.videoId, v.title, v.uri, null, emptyMap()))) n++ }
+                vs.forEach { v -> if (BgJobs.enqueue(this, BgJob(v.videoId, v.title, v.uri, null, emptyMap()), "المكتبة (ترجمة بالخلفية يدوي)")) n++ }
                 Notice.show(this, (if (n > 0) "🌙 بدأت الترجمة في الخلفية ($n) — التقدم في الإشعارات" else "الفيديو ده بيترجم في الخلفية بالفعل").toString(), 3600L)
                 libUi?.refreshRows()
             }
@@ -856,16 +857,16 @@ class MainActivity : Activity() {
     /** «نعم» من بوب-أب الكليبورد: فيديو مباشر يشتغل على طول، يوتيوب بنجيب له أحسن رابط فيه صوت وصورة، وغير كده شاشة الصيد */
     /** فيديو من سجل «المصطادة»: يفتح بنفس الرابط والهيدرز ويكمّل من آخر مكان وقفت عنده. روابط يوتيوب بتنتهي — فبنفتح صفحة الفيديو */
     fun playWeb(w: WebVid) {
-        if (w.kind == "YT") { if (w.id.startsWith("yt:")) playYt(w.id.removePrefix("yt:"), w.title, true) else if (w.ref.isNotEmpty()) openLink(w.ref) else Notice.show(this, ("رابط يوتيوب انتهت صلاحيته — افتحه من المتصفح تاني").toString(), 3600L); return }
+        if (w.kind == "YT") { if (w.id.startsWith("yt:")) playYt(w.id.removePrefix("yt:"), w.title, true, false) else if (w.ref.isNotEmpty()) openLink(w.ref) else Notice.show(this, ("رابط يوتيوب انتهت صلاحيته — افتحه من المتصفح تاني").toString(), 3600L); return }
         ensureKeys {
             startActivity(Intent(this, PlayerActivity::class.java).apply {
                 putExtra("url", w.url); putExtra("ref", w.ref); putExtra("ua", w.ua); putExtra("cookie", w.cookie)
-                putExtra("title", w.title); putExtra("autotr", true)
+                putExtra("title", w.title); putExtra("autotr", false)   // (v157) الترجمة بإيدك بس: زرار «ترجمة» في المشغّل
             })
         }
     }
     /** (v117) دخول مباشر لفيديو يوتيوب من معرّفه: بيجيب أحسن لينك فيه صوت وصورة ويفتح المشغّل (لو فشل بيفتح صفحته في المتصفح) */
-    fun playYt(id: String, title: String, translate: Boolean = true) {
+    fun playYt(id: String, title: String, translate: Boolean = true, auto: Boolean = translate) {
         Notice.show(this, ("⏳ بجيب الفيديو…").toString(), 2300L)
         Thread {
             val best = try { YtExtract.fetchPick(id, Cfg.int("yt_maxh", 0)) } catch (_: Throwable) { null }
@@ -876,7 +877,7 @@ class MainActivity : Activity() {
                     val why = YtExtract.lastWhy.ifBlank { "السبب مش معروف (راجع اللوج)" }
                     GAlert(this).setTitle("⚠ ما قدرتش أجيب الفيديو")
                         .setMessage("يوتيوب ما رضيش يدّي لينك للفيديو ده من التطبيق.\n\n" + why)
-                        .setPositiveButton("🔁 جرّب تاني") { _, _ -> playYt(id, title, translate) }
+                        .setPositiveButton("🔁 جرّب تاني") { _, _ -> playYt(id, title, translate, auto) }
                         .setNeutralButton("🌐 افتحه في المتصفح") { _, _ -> startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", YtHistory.watchUrl(id)).putExtra("noauto", true)) }
                         .setNegativeButton("إغلاق", null).show()
                     return@runOnUiThread
@@ -886,7 +887,7 @@ class MainActivity : Activity() {
                     startActivity(Intent(this, PlayerActivity::class.java).apply {
                         putExtra("url", best.url); putExtra("aurl", best.audio ?: ""); putExtra("qlist", best.optsJson()); putExtra("ref", "https://www.youtube.com/"); putExtra("ua", best.ua)
                         putExtra("title", ttl); putExtra("ytid", id)
-                        putExtra("nosub", !translate); putExtra("autotr", translate)
+                        putExtra("nosub", !translate); putExtra("autotr", auto)
                     })
                 }
                 if (translate) ensureKeys { go() } else go()
@@ -904,7 +905,7 @@ class MainActivity : Activity() {
         Notice.show(this, ("بجيب الفيديو…").toString(), 2300L)
         Thread {
             val best = try { YtExtract.fetch(id).filter { it.kind != "HLS" }.maxByOrNull { Regex("(\\d+)p").find(it.kind)?.groupValues?.get(1)?.toIntOrNull() ?: 0 } } catch (_: Throwable) { null }
-            runOnUiThread { if (best != null) go(best.url, best.ref, best.ua) else playYt(id, "", true) }
+            runOnUiThread { if (best != null) go(best.url, best.ref, best.ua) else playYt(id, "", true, false) }
         }.apply { isDaemon = true }.start()
     }
     override fun onResume() {

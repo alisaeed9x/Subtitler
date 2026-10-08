@@ -65,6 +65,14 @@ object WebVideos {
         try { thumbFile(ctx, id).delete() } catch (_: Exception) {}
     }
 
+    /** (v157) مسح مجموعة من السجل مرة واحدة (الترجمة المحفوظة مش بتتمسح) */
+    fun removeMany(ctx: Context, ids: Set<String>) = synchronized(lock) {
+        if (ids.isEmpty()) return@synchronized
+        val l = parse(try { file(ctx).readText() } catch (_: Exception) { "" })
+        write(ctx, l.filter { it.id !in ids })
+        ids.forEach { try { thumbFile(ctx, it).delete() } catch (_: Exception) {} }
+    }
+
     /** لقطة مصغّرة (عرض 320) بتتحفظ JPEG وبترجّع البايتات (اللي هتتبعت لـ Gemini) */
     fun saveThumb(ctx: Context, id: String, bmp: Bitmap): ByteArray? = try {
         val w = 480; val h = (bmp.height * (w.toFloat() / bmp.width)).toInt().coerceAtLeast(1)

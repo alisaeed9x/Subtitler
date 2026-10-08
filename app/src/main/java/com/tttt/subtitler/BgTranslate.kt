@@ -47,9 +47,11 @@ object BgJobs {
     private var restored = false
     private fun qFile(c: Context) = File(c.filesDir, "bg_queue.json")
     private fun sigOf(l: List<BgJob>) = l.joinToString("|") { it.vid + ":" + it.paused }
+    /** (v156) مهمة اتطلب إيقافها/إلغاؤها (إلا لو بتتأجّل requeue) مابتتحفظش في الطابور فورًا — قبل كده كانت بتفضل «شغّالة» في الملف لحد ما المحرك يقفل فعلًا (ممكن 10 ثواني)، ولو العملية اتقتلت في الفترة دي (إيقاف نهائي / النظام) كانت بترجع تترجم تاني بعد الفتح أو الريستارت أو تحديث الـ APK */
+    private fun persistable(j: BgJob) = j.active && !(j.stopReq && !j.requeue)
     @Synchronized fun persist() {
         val c = app ?: return
-        val act = jobs.filter { it.active }
+        val act = jobs.filter { persistable(it) }
         val sig = sigOf(act)
         if (sig == lastSig) return
         lastSig = sig
@@ -81,10 +83,11 @@ object BgJobs {
                         val j = BgJob(vid, o.optString("title", vid), if (o.isNull("uri")) null else o.optString("uri"), if (o.isNull("url")) null else o.optString("url"), hdr)
                         j.paused = o.optBoolean("paused", false)
                         jobs.add(j)
+                        LogStore.add("🔁 رجّعت من الطابور المحفوظ: " + j.title + (if (j.paused) " (متوقفة مؤقتًا)" else ""))
                     }
                 }
             } catch (e: Exception) { LogStore.err("BgTranslate:86", e) }
-            lastSig = sigOf(jobs.filter { it.active })
+            lastSig = sigOf(jobs.filter { persistable(it) })
             notifyChange()
         }
         return jobs.count { it.active }
@@ -109,9 +112,10 @@ object BgJobs {
     }
 
     /** بيضيف الفيديو لطابور الترجمة في الخلفية. بيرجّع false لو هو أصلًا في الطابور/شغّال */
-    fun enqueue(ctx: Context, job: BgJob): Boolean {
+    fun enqueue(ctx: Context, job: BgJob, src: String = ""): Boolean {
         restore(ctx)
         if (isActive(job.vid)) return false
+        LogStore.add("🌙 دخلت طابور الخلفية: " + job.title + " — المصدر: " + src.ifBlank { "غير معروف" })
         jobs.removeAll { it.vid == job.vid && !it.active }
         while (jobs.count { !it.active } > 20) jobs.firstOrNull { !it.active }?.let { jobs.remove(it) }
         jobs.add(job)
@@ -123,14 +127,14 @@ object BgJobs {
     fun stop(vid: String) {
         val j = find(vid) ?: return
         if (!j.active) return
-        j.stopReq = true
+        j.requeue = false; j.stopReq = true   // (v156) إيقاف المستخدم بيغلب أي «ارجع للطابور» معلّق (كان بيرجّع المهمة تترجم تاني)
         if (j.state == "queued") j.state = "stopped"
         notifyChange()
     }
     fun pause(vid: String) { find(vid)?.let { if (it.active) { it.paused = true; it.engine?.paused = true; notifyChange() } } }
     fun resume(ctx: Context, vid: String) { find(vid)?.let { if (it.active) { it.paused = false; it.engine?.paused = false; BgService.start(ctx.applicationContext); notifyChange() } } }
     /** شيل الفيديو من الطابور (لو شغّال بيتوقف والتقدم بيتحفظ) */
-    fun remove(j: BgJob) { if (j.active) { j.stopReq = true; if (j.state == "queued") j.state = "stopped" }; jobs.remove(j); notifyChange() }
+    fun remove(j: BgJob) { if (j.active) { j.requeue = false; j.stopReq = true; if (j.state == "queued") j.state = "stopped" }; jobs.remove(j); notifyChange() }
     // ترتيب الطابور: الأول في القايمة هو اللي بيترجم الأول (الشغّال حاليًا بيكمّل). الحركة بين المستنيين بس.
     @Synchronized fun moveUp(j: BgJob) {
         val i = jobs.indexOf(j); if (i < 0 || j.state != "queued") return
@@ -168,11 +172,11 @@ object BgJobs {
         jobs.remove(j)
         val n = BgJob(j.vid, j.title, j.uri, j.url, j.hdr)
         n.pct = j.pct; n.covered = j.covered; n.dur = j.dur
-        return enqueue(ctx, n)
+        return enqueue(ctx, n, "استئناف يدوي من المهام")
     }
-    fun retry(ctx: Context, j: BgJob): Boolean { jobs.remove(j); return enqueue(ctx, BgJob(j.vid, j.title, j.uri, j.url, j.hdr)) }
+    fun retry(ctx: Context, j: BgJob): Boolean { jobs.remove(j); return enqueue(ctx, BgJob(j.vid, j.title, j.uri, j.url, j.hdr), "إعادة محاولة يدوية") }
     fun clearFinished() { jobs.removeAll { !it.active }; notifyChange() }
-    fun stopAll() { jobs.filter { it.active }.forEach { it.stopReq = true; if (it.state == "queued") it.state = "stopped" }; notifyChange() }
+    fun stopAll() { jobs.filter { it.active }.forEach { it.requeue = false; it.stopReq = true; if (it.state == "queued") it.state = "stopped" }; notifyChange() }
 
     /** وقف ترجمة فيديو في الخلفية وانتظار حفظ التقدم (لما المستخدم يفتحه في المشغّل) */
     fun stopAndWait(vid: String, ms: Long) {
