@@ -34,7 +34,7 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
         col.removeAllViews()
         val jobs = BgJobs.jobs.toList()
         val top = LinearLayout(act).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        top.addView(chip("⏹ إيقاف الكل") { BgJobs.stopAll() }); top.addView(chip("🧹 مسح المنتهي") { BgJobs.clearFinished() })
+        top.addView(chip(if (BgJobs.allPaused()) "▶ استئناف الكل" else "⏸ إيقاف الكل مؤقتًا") { if (BgJobs.allPaused()) BgJobs.resumeAll(act) else BgJobs.pauseAll() }); top.addView(chip("✕ إلغاء الكل") { BgJobs.stopAll() }); top.addView(chip("🧹 مسح المنتهي") { BgJobs.clearFinished() })
         top.addView(chip("📊 الاستهلاك") { StatsUi(act, ui, th).show() })
         col.addView(top, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
         if (jobs.isEmpty()) { col.addView(ui.text("مجلد الترجمة في الخلفية فاضي.\nدوس ⋮ أو اضغط ضغطة مطولة على أي فيديو واختار «نقل لمجلد الترجمة في الخلفية».", 13f, th.muted).apply { setPadding(0, ui.dp(16), 0, ui.dp(16)) }); return }
@@ -53,7 +53,11 @@ class QueueUi(private val act: Activity, private val ui: Ui, private val th: The
                     btns.addView(chip("⬆") { BgJobs.moveUp(j) }); btns.addView(chip("⬇") { BgJobs.moveDown(j) })
                     btns.addView(chip("⏫ أول واحد") { BgJobs.moveTop(j) }); btns.addView(chip("▶ ابدأ دلوقتي") { BgJobs.startNow(act, j) })
                 }
-            } else if (j.state != "done" || j.err.isNotEmpty()) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) Notice.show(act, ("بيترجم بالفعل").toString(), 2300L) })
+            } else {
+                // (v144) المتوقّفة ⏹ ليها «▶ استئناف» بيكمّل من اللي اتحفظ؛ الفاشلة ليها «🔁 إعادة المحاولة»
+                if (j.state == "stopped") btns.addView(chip("▶ استئناف") { if (!BgJobs.resumeStopped(act, j)) Notice.show(act, ("بيترجم بالفعل").toString(), 2300L) })
+                if (j.state == "failed" || (j.state == "done" && j.err.isNotEmpty())) btns.addView(chip("🔁 إعادة المحاولة") { if (!BgJobs.retry(act, j)) Notice.show(act, ("بيترجم بالفعل").toString(), 2300L) })
+            }
             btns.addView(chip("✕ إزالة") { BgJobs.remove(j) })
             val card = LinearLayout(act).apply {
                 orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.box(th.card, th.border, 12)

@@ -158,6 +158,18 @@ object BgJobs {
         BgService.start(ctx.applicationContext)
     }
     fun position(j: BgJob): Int = jobs.filter { it.state == "queued" }.indexOf(j) + 1
+    /** (v144) إيقاف مؤقت/استئناف للكل (من الإشعار): الشغّال بيقف مكانه والتقدم محفوظ، والاستئناف بيكمّل من نفس النقطة */
+    fun pauseAll() { jobs.filter { it.active }.forEach { it.paused = true; it.engine?.paused = true }; notifyChange() }
+    fun resumeAll(ctx: Context) { jobs.filter { it.active }.forEach { it.paused = false; it.engine?.paused = false }; BgService.start(ctx.applicationContext); notifyChange() }
+    fun allPaused(): Boolean = jobs.filter { it.active }.let { l -> l.isNotEmpty() && l.all { it.paused } }
+    /** (v144) استئناف مهمة اتوقفت (⏹): بترجع للطابور وبتكمّل من اللي اتحفظ — النسبة والمدة بتفضل ظاهرة مش بتبدأ من صفر */
+    fun resumeStopped(ctx: Context, j: BgJob): Boolean {
+        if (j.state != "stopped") return false
+        jobs.remove(j)
+        val n = BgJob(j.vid, j.title, j.uri, j.url, j.hdr)
+        n.pct = j.pct; n.covered = j.covered; n.dur = j.dur
+        return enqueue(ctx, n)
+    }
     fun retry(ctx: Context, j: BgJob): Boolean { jobs.remove(j); return enqueue(ctx, BgJob(j.vid, j.title, j.uri, j.url, j.hdr)) }
     fun clearFinished() { jobs.removeAll { !it.active }; notifyChange() }
     fun stopAll() { jobs.filter { it.active }.forEach { it.stopReq = true; if (it.state == "queued") it.state = "stopped" }; notifyChange() }
@@ -195,7 +207,12 @@ class BgService : Service() {
         // لو النظام رجّع الخدمة بعد ما قتل العملية (intent = null) أو بعد ريستارت: ارجع الطابور المحفوظ
         Cfg.init(applicationContext)
         BgJobs.restore(this)
-        if (i?.action == ACTION_STOP) BgJobs.stopAll()
+        when (i?.action) {
+            ACTION_STOP -> BgJobs.stopAll()
+            ACTION_PAUSE -> BgJobs.pauseAll()
+            ACTION_RESUME -> BgJobs.resumeAll(applicationContext)
+        }
+        BgJobs.jobs.firstOrNull { it.state == "running" }?.let { updateNotif(it, true) }
         synchronized(lock) {
             lastStartId = startId
             if (!workerAlive) { workerAlive = true; Thread { work() }.apply { isDaemon = true }.start() }
@@ -217,10 +234,14 @@ class BgService : Service() {
         Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
 
     private fun build(job: BgJob?): Notification {
-        val stop = PendingIntent.getService(this, 1, Intent(this, BgService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
+        fun act(code: Int, a: String) = PendingIntent.getService(this, code, Intent(this, BgService::class.java).setAction(a), PendingIntent.FLAG_IMMUTABLE)
         val b = Notification.Builder(this, CH).setSmallIcon(android.R.drawable.stat_sys_download).setContentIntent(openApp()).setOngoing(true).setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), Icons.plain("⏹ إيقاف"), stop).build())
-        if (job != null && job.paused) return b.setContentTitle(Icons.plain("⏸ ترجمة الخلفية متوقفة مؤقتًا — ${job.pct}%")).setContentText(job.title).setProgress(100, job.pct, false).build()
+        // (v144) زرارين: ⏸ إيقاف مؤقت (يتحوّل ▶ استئناف لما يقف) + ✕ إلغاء الكل — الإيقاف بيحفظ التقدم والاستئناف بيكمّل من نفس المكان
+        val paused = job != null && job.paused
+        if (job != null) b.addAction(Notification.Action.Builder(Icon.createWithResource(this, if (paused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause),
+            Icons.plain(if (paused) "▶ استئناف" else "⏸ إيقاف"), act(3, if (paused) ACTION_RESUME else ACTION_PAUSE)).build())
+        b.addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), Icons.plain("✕ إلغاء"), act(1, ACTION_STOP)).build())
+        if (job != null && job.paused) return b.setContentTitle(Icons.plain("⏸ ترجمة الخلفية متوقفة مؤقتًا — ${job.pct}%")).setContentText(job.title + " · دوس ▶ استئناف تكمّل من نفس المكان").setProgress(100, job.pct, false).build()
         if (job == null) return b.setContentTitle(Icons.plain("🌙 ترجمة في الخلفية")).setContentText("بجهّز…").setProgress(0, 0, true).build()
         val q = BgJobs.queuedCount()
         val rem = BgJobs.fmtRemain(job.remainSec)
@@ -300,10 +321,14 @@ class BgService : Service() {
         engine.onFinished = { r -> ok = r }
         savedPos = engine.load()
         val startCover = engine.coveredSec(); val t0 = System.currentTimeMillis(); var lastRec = 0L
+        var lastPausedSeen = job.paused
         val runner = Thread { engine.run() }.apply { isDaemon = true; start() }
         while (runner.isAlive) {
             if (job.stopReq) { engine.stop(); break }
             engine.paused = job.paused
+            // (v144) وهو واقف مؤقتًا منمسكش الـ WakeLock (توفير بطارية)، ولما يكمّل بنمسكه تاني
+            try { if (job.paused) { if (wake?.isHeld == true) wake?.release() } else if (wake?.isHeld != true) wake?.acquire(6 * 3600 * 1000L) } catch (e: Exception) { LogStore.err("BgTranslate:wake", e) }
+            if (job.paused != lastPausedSeen) { lastPausedSeen = job.paused; updateNotif(job, true) }
             try { Thread.sleep(1000) } catch (_: InterruptedException) {}
             val d = engine.durationSec(); if (d > 0) job.dur = d
             job.covered = engine.coveredSec()
@@ -345,6 +370,8 @@ class BgService : Service() {
         private const val CH_DONE = "bg_translate_done"
         private const val ID = 78
         const val ACTION_STOP = "com.tttt.subtitler.BG_STOP"
+        const val ACTION_PAUSE = "com.tttt.subtitler.BG_PAUSE"
+        const val ACTION_RESUME = "com.tttt.subtitler.BG_RESUME"
         fun start(c: Context) { try { c.startForegroundService(Intent(c, BgService::class.java)) } catch (e: Exception) { LogStore.err("BgTranslate:342", e) } }
     }
 }

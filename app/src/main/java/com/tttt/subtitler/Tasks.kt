@@ -56,7 +56,7 @@ import java.util.concurrent.LinkedBlockingQueue
 
 /** (v135) مهمة واحدة في توبيب «المهام»: قص · صوت · GIF · ضغط · هارد ساب */
 class TaskItem(val id: Int, val kind: String, val title: String) {
-    /** 0 مستني · 1 شغّال · 2 خلص · 3 فشل · 4 اتلغى */
+    /** 0 مستني · 1 شغّال · 2 خلص · 3 فشل · 4 اتلغى · 5 اتوقف (⏹) · 6 واقف مؤقتًا من غير ما يكون شغّال (هيبدأ من الأول لما يكمّل) */
     @Volatile var state = 0
     @Volatile var pct = 0
     @Volatile var msg = ""
@@ -71,6 +71,11 @@ class TaskItem(val id: Int, val kind: String, val title: String) {
     @Volatile var workKeep: ((TaskItem) -> Unit)? = null
     @Volatile var paused = false
     @Volatile var onPause: ((Boolean) -> Unit)? = null
+    /** (v147) إيقاف ⏹ (بيفضل في القايمة ويتعاد بعدين) · إيقاف مؤقت للي مالوش استكمال حقيقي · إلغاء بيشيله · إعادة وهو شغّال */
+    @Volatile var stopReq = false
+    @Volatile var pauseRestart = false
+    @Volatile var removeOnEnd = false
+    @Volatile var retryAfter = false
 }
 
 class TaskCancelled : RuntimeException("اتلغت")
@@ -103,41 +108,82 @@ object TaskCenter {
         else { if (worker?.isAlive == true) return; worker = Thread { loop(app, q) }.apply { isDaemon = true; start() } }
     }
 
+    private fun aborted(t: TaskItem) {
+        t.state = when { t.pauseRestart -> 6; t.stopReq -> 5; else -> 4 }
+        t.msg = when (t.state) { 6 -> "واقفة مؤقتًا — لما تكمّل هتبدأ من الأول"; 5 -> "اتوقفت — دوس 🔁 إعادة محاولة تبدأها تاني"; else -> "اتلغت" }
+    }
+
+    /** (v147) بعد ما المهمة تقف فعلاً: لو كانت «إلغاء» تتشال، ولو «إعادة محاولة» وهي شغّالة تتضاف من جديد */
+    private fun afterEnd(t: TaskItem) {
+        if (t.removeOnEnd) { items.remove(t); return }
+        if (t.retryAfter) {
+            t.retryAfter = false
+            val w = t.workKeep; val a = appCtx
+            if (w != null && a != null) { items.remove(t); add(a, t.kind, t.title, w) }
+        }
+    }
+
     private fun loop(app: Context, q: LinkedBlockingQueue<TaskItem>) {
         while (true) {
             val t = try { q.take() } catch (_: InterruptedException) { return }
-            if (t.cancelled) { t.state = 4; t.msg = "اتلغت"; changed(); continue }
+            if (t.cancelled) { aborted(t); afterEnd(t); changed(); continue }
             t.state = 1; changed()
             try {
                 t.work?.invoke(t)
-                if (t.cancelled) { t.state = 4; t.msg = "اتلغت" }
+                if (t.cancelled) aborted(t)
                 else {
                     t.state = 2; t.pct = 100
                     main.post { try { Toast.makeText(app, "✅ خلصت: " + t.title, Toast.LENGTH_LONG).show() } catch (_: Throwable) {} }
                 }
-            } catch (_: TaskCancelled) { t.state = 4; t.msg = "اتلغت"
+            } catch (_: TaskCancelled) { aborted(t)
             } catch (e: Throwable) {
-                t.state = if (t.cancelled) 4 else 3
-                t.msg = if (t.cancelled) "اتلغت" else (e.message ?: e.javaClass.simpleName).take(160)
-                LogStore.err("Tasks:" + t.kind, e)
+                if (t.cancelled) aborted(t) else {
+                    t.state = 3
+                    t.msg = (e.message ?: e.javaClass.simpleName).take(160)
+                    LogStore.err("Tasks:" + t.kind, e)
+                }
             }
-            t.work = null; t.onCancel = null; t.onPause = null; t.paused = false; changed()
+            t.work = null; t.onCancel = null; t.onPause = null; t.paused = false; afterEnd(t); changed()
         }
     }
 
+    /** (v147) ✕ إلغاء: بيوقف المهمة وبيشيلها من القايمة */
     fun cancel(t: TaskItem) {
-        t.cancelled = true
-        if (t.state == 0) { t.state = 4; t.msg = "اتلغت"; changed() } else t.onCancel?.invoke()
+        when (t.state) {
+            1 -> { t.stopReq = false; t.pauseRestart = false; t.removeOnEnd = true; t.cancelled = true; t.onPause?.invoke(false); t.onCancel?.invoke() }
+            0 -> { t.cancelled = true; items.remove(t); changed() }
+            else -> { items.remove(t); changed() }
+        }
     }
-    /** (v137) إيقاف مؤقت / استكمال (للتحميلات) */
-    fun pause(t: TaskItem, p: Boolean) { t.paused = p; t.onPause?.invoke(p); changed() }
-    /** (v137) إعادة مهمة فشلت أو اتلغت من الأول */
-    fun retry(t: TaskItem) {
+    /** (v147) ⏹ إيقاف: بيوقف المهمة وبتفضل في القايمة «اتوقفت» وتقدر تعيدها بـ 🔁 */
+    fun stop(t: TaskItem) {
+        when (t.state) {
+            1 -> { t.stopReq = true; t.pauseRestart = false; t.cancelled = true; t.onPause?.invoke(false); t.onCancel?.invoke() }
+            0, 6 -> { t.cancelled = true; t.stopReq = true; t.pauseRestart = false; t.state = 5; t.msg = "اتوقفت — دوس 🔁 إعادة محاولة تبدأها تاني"; changed() }
+        }
+    }
+    /** (v147) ⏸ إيقاف مؤقت / ▶ استكمال: التحميل بيستكمل من نفس المكان؛ باقي المهام (ترميز) مفيهاش استكمال فبتتوقف وتبدأ من الأول لما تكمّل */
+    fun pause(t: TaskItem, p: Boolean) {
+        if (t.state == 6) { if (!p) resumeSoft(t); return }
+        if (t.state == 1 && t.onPause != null) { t.paused = p; t.onPause?.invoke(p); changed(); return }
+        if (!p) return
+        if (t.state == 1) { t.pauseRestart = true; t.stopReq = false; t.cancelled = true; t.onCancel?.invoke() }
+        else if (t.state == 0) { t.cancelled = true; t.pauseRestart = true; t.state = 6; t.msg = "واقفة مؤقتًا — لما تكمّل هتبدأ من الأول"; changed() }
+    }
+    private fun resumeSoft(t: TaskItem) {
         val w = t.workKeep ?: return; val app = appCtx ?: return
-        if (t.state < 2) return
         items.remove(t); add(app, t.kind, t.title, w)
     }
-    fun remove(t: TaskItem) { if (t.state == 0 || t.state == 1) cancel(t); items.remove(t); changed() }
+    /** (v147) 🔁 إعادة محاولة: في أي حالة — لو شغّالة بتتوقف وتتبدي من الأول، ولو واقفة/فاشلة/خالصة بتتضاف من جديد */
+    fun retry(t: TaskItem) {
+        val w = t.workKeep ?: return; val app = appCtx ?: return
+        when (t.state) {
+            1 -> { t.retryAfter = true; t.stopReq = false; t.pauseRestart = false; t.cancelled = true; t.onPause?.invoke(false); t.onCancel?.invoke() }
+            0 -> { t.cancelled = true; items.remove(t); add(app, t.kind, t.title, w) }
+            else -> { items.remove(t); add(app, t.kind, t.title, w) }
+        }
+    }
+    fun remove(t: TaskItem) { if (t.state == 0 || t.state == 1) cancel(t) else items.remove(t); changed() }
     fun clearFinished() { items.removeIf { it.state >= 2 }; changed() }
 }
 

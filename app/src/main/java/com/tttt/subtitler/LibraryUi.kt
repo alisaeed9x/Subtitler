@@ -537,7 +537,7 @@ class LibraryUi(
         val bj = bgJob(vi); val running = bj != null && bj.active
         val items = ArrayList<Pair<String, () -> Unit>>()
         if (withSel) { items += "☑ تحديد" to { toggleSel(vi.videoId) }; items += "☑ تحديد الكل" to { selectAll() } }
-        items += (if (running) "⏹ إيقاف الترجمة في الخلفية" else "🌙 نقل لمجلد الترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) }
+        items += (if (running) "⏹ إيقاف الترجمة في الخلفية" else if (bj?.state == "stopped") "▶ استئناف الترجمة في الخلفية (من مكان ما وقفت)" else "🌙 نقل لمجلد الترجمة في الخلفية") to { if (running) onBgStop(vi) else onBg(vi) }
         items += "▶ تشغيل" to { markPlayed(vi); onPlay(vi) }
         if (inHidden) items += "👁 إظهار الفيديو (يرجع للقايمة)" to { unhideVideo(vi) }
         else {

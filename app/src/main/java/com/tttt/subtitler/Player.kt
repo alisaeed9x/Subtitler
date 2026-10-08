@@ -392,8 +392,10 @@ class PlayerActivity : Activity(), Host {
     private fun updateTrChip() { trChipV?.visibility = if (engineStarted || trChipDismissed || pipNow()) View.GONE else View.VISIBLE }
     fun pauseTranslate() { if (engineStarted) { engine.userPaused = true; updateTr() } }
     /** صف الأزرار: [▶ ترجمة] (أحمر) قبل البداية — وبعد الضغط يختفي ويظهر مكانه [⏸ إيقاف مؤقت] [▶ إلغاء الإيقاف] */
-    private fun makeTrRow(compact: Boolean): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
+    private fun makeTrRow(compact: Boolean): ViewGroup {
+        // (v144) الشريط السفلي: صف بيلفّ لوحده (FlowRow) والعلامة جواه — مفيش عمود رأسي ولا عرض ثابت يخلي الأزرار تتقص أو الشريحة تعلق
+        val row: ViewGroup = if (compact) FlowRow(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
+            else LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
         fun b(t: String, fill: Int, f: () -> Unit) = IconTextView(this).apply {
             text = t; textSize = if (compact) 12f else 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(ui.dp(if (compact) 10 else 8), 0, ui.dp(if (compact) 10 else 8), 0)
@@ -469,6 +471,12 @@ class PlayerActivity : Activity(), Host {
             setOnClickListener { refreshSize(true) }
         }
         qBadges.add(badge)
+        if (compact) {
+            // (v144) في الشريط السفلي العلامة بقت آخر عنصر في نفس الصف (مش فوق الشريحة) — فضغطة الشريحة بتفرد إعادة/اللغة عادي
+            row.addView(badge, LinearLayout.LayoutParams(-2, ui.dp(28)).apply { setMargins(m, m, m, m) })
+            paintQual()
+            return row
+        }
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_HORIZONTAL }
         wrap.addView(badge, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, ui.dp(2), 0, 0) })
         wrap.addView(row, LinearLayout.LayoutParams(-1, -2))
@@ -681,6 +689,16 @@ class PlayerActivity : Activity(), Host {
     private var lastRecentSave = 0L
     private var lastLogLen = -1
     private var lastBatchTxt = ""
+    /** (v146) نص الباتشات (مفتاح · موديل · زمن الرد) والأسرع في كل دفعة أخضر */
+    private fun batchStyled(): CharSequence {
+        val sb = android.text.SpannableStringBuilder()
+        for ((t, fast) in engine.batchRows()) {
+            if (sb.isNotEmpty()) sb.append('\n')
+            val a = sb.length; sb.append(t)
+            if (fast) sb.setSpan(android.text.style.ForegroundColorSpan(0xFF2ECC71.toInt()), a, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        return sb
+    }
     private var miniLog: View? = null
     private var miniLogTv: TextView? = null
     fun closeMiniLog() {
@@ -693,7 +711,7 @@ class PlayerActivity : Activity(), Host {
         val tv = IconTextView(this).apply {
             setTextColor(Color.WHITE); textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE
             setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(8)); layoutDirection = View.LAYOUT_DIRECTION_RTL
-            text = engine.batchLines().ifBlank { "مفيش باتشات لسه — دوس ▶ ترجمة" }
+            text = batchStyled().ifBlank { "مفيش باتشات لسه — دوس ▶ ترجمة" }
         }
         miniLogTv = tv
         val col = LinearLayout(this).apply {
@@ -1741,8 +1759,8 @@ class PlayerActivity : Activity(), Host {
                 st.text = status
                 if (now - lastBatch > 700) {
                     lastBatch = now
-                    val bl = engine.batchLines()
-                    if (bl != lastBatchTxt) { lastBatchTxt = bl; batchTv.text = bl; miniLogTv?.text = bl.ifBlank { "مفيش باتشات لسه" } }
+                    val bs = batchStyled(); val bl = bs.toString()
+                    if (bl != lastBatchTxt) { lastBatchTxt = bl; batchTv.text = bs; miniLogTv?.text = if (bl.isBlank()) "مفيش باتشات لسه" else bs }
                     updateProblems()
                 }
                 if (now - lastBeat > 20000) { lastBeat = now; LogStore.add("💓 ${LogStore.heapLine()} · ${if (player.isPlaying) "بيشتغل" else "واقف"} @${fmtMs(cur)} · مترجم ${(engine.coveredSec() / 60).toInt()}د · ${engine.subs.size} جملة") }

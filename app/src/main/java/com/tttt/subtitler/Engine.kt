@@ -97,6 +97,79 @@ class Engine(
     private val claimed = ConcurrentHashMap.newKeySet<Int>()        // باتشات نتيجتها اتطبّقت (أول نسخة تخلص تكسب)
     private val hedgeBusy = AtomicInteger(0)
     private val recentMs = java.util.concurrent.ConcurrentLinkedDeque<Long>()   // أزمنة آخر باتشات خلصت
+    // ===== (v146) مفتاح/موديل/زمن رد كل باتش + اختبار سرعة الموديلات =====
+    class KeyRun(val keyNo: Int, val model: String, val ms: Long)
+    private val runs = ConcurrentHashMap<Int, KeyRun>()                // آخر تنفيذ ناجح لكل باتش (مفتاح · موديل · زمن)
+    /** الموديل اللي كسب اختبار السرعة: بيتستخدم بدل موديل الإعدادات لحد ما تغيّر الموديل يدوي */
+    @Volatile private var modelOv: String? = null
+    private val speedDone = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val speedLines = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private fun curModel(): String = modelOv ?: conf.model
+    private fun keyNo(k: String): Int = pool.all().indexOf(k) + 1
+    private fun shortModel(m: String) = m.removePrefix("gemini-")
+    private class RaceWin(val key: String, val model: String, val res: Api.Result, val ms: Long)
+    private fun fmtSec(ms: Long) = String.format(java.util.Locale.US, "%.1f", ms / 1000.0) + "ث"
+
+    /** مرشحين الاختبار: الموديل الحالي + أحدث flash-lite اتبلّغ بيه + الاسم المتحرك + 2.5 lite */
+    private fun raceModels(): List<String> {
+        val l = ArrayList<String>(); l.add(conf.model)
+        try { l.addAll(ModelWatch.pending().reversed()) } catch (_: Throwable) {}
+        l.add("gemini-flash-lite-latest"); l.add("gemini-2.5-flash-lite")
+        return l.distinct()
+    }
+
+    /**
+     * أول باتش: بيتبعت على كل مفتاح صالح في نفس اللحظة، كل مفتاح بموديل مختلف. أول رد سليم هو اللي بيتطبّق،
+     * وموديله بيتثبّت لكل الباتشات الجاية. باقي النتايج بتتسجّل في اللوج بأزمنتها. null = مفيش فايز (الإرسال العادي يكمّل).
+     */
+    private fun speedRace(i: Int, w: WavChunk): RaceWin? {
+        val keys = pool.all().filter { pool.ok(it) }
+        if (keys.size < 2) return null
+        try {
+            val cm = Cfg.p.getString("speed_model", "") ?: ""
+            if (cm.isNotEmpty() && (Cfg.p.getString("speed_from", "") ?: "") == conf.model && System.currentTimeMillis() - Cfg.p.getLong("speed_at", 0L) < 3L * 3600_000L) {
+                modelOv = cm; host.log("🏁 الموديل الأسرع (من اختبار قريب): ${shortModel(cm)}"); speedLines.add("🏁 الموديل المثبّت: ${shortModel(cm)} (من اختبار قريب)"); return null
+            }
+        } catch (_: Throwable) {}
+        val cands = raceModels()
+        val n = minOf(keys.size, cands.size)
+        if (n < 2) return null
+        val prompt = buildPrompt(w.durSec, w.startSec, false, i)
+        host.log("🏎 اختبار سرعة: باتش ${i + 1} على $n مفاتيح، كل مفتاح بموديل مختلف…")
+        val winner = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val left = java.util.concurrent.atomic.AtomicInteger(n)
+        for (x in 0 until n) {
+            val key = keys[x]; val model = cands[x]
+            Thread {
+                val t0 = System.currentTimeMillis()
+                var line: String
+                try {
+                    pool.begin(key)
+                    val r = try { Api.generate(model, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
+                    val ms = System.currentTimeMillis() - t0
+                    val j = if (r.text.isBlank()) null else Parse.json(r.text)
+                    val cnt = if (j == null) 0 else Parse.subs(j, w.startSec, w.durSec).size
+                    val valid = (r.finish.isEmpty() || r.finish == "STOP") && (cnt > 0 || (r.text.isBlank() && w.silent))
+                    line = "🔑${keyNo(key)} · ${shortModel(model)}: ${fmtSec(ms)} · $cnt جملة" + if (valid) "" else " ⚠ رد مش سليم"
+                    if (valid && winner.compareAndSet(null, RaceWin(key, model, r, ms))) { line += " 🏆"; latch.countDown() }
+                } catch (e: Throwable) {
+                    line = "🔑${keyNo(key)} · ${shortModel(model)}: ❌ " + (e.message ?: e.toString()).take(70)
+                }
+                host.log("🏎 $line"); speedLines.add(line)
+                if (left.decrementAndGet() == 0) latch.countDown()
+            }.apply { isDaemon = true }.start()
+        }
+        try { latch.await(150, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) { return null }
+        val win = winner.get()
+        if (win == null) { host.log("🏎 اختبار السرعة: مفيش رد سليم من أي مفتاح — كمّلت بالموديل العادي"); return null }
+        modelOv = win.model
+        try { Cfg.p.edit().putString("speed_model", win.model).putString("speed_from", conf.model).putLong("speed_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
+        host.log("🏁 الموديل الأسرع: ${shortModel(win.model)} (${fmtSec(win.ms)} على مفتاح ${keyNo(win.key)}) — كل المفاتيح اتحوّلت له")
+        host.notice("🏁 الموديل الأسرع: ${shortModel(win.model)} — كل المفاتيح اتحوّلت له")
+        return win
+    }
+
     @Volatile private var maxApplied = -1                           // أعلى باتش اتطبّق (لو في باتش قبله لسه شغال يبقى متأخر)
     private val hedgeEx = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     @Volatile private var anyApplied = false
@@ -148,10 +221,17 @@ class Engine(
     // ===== واجهة للـ UI =====
     fun failedCount() = failed.count { it.value >= MAX_FAILS }
     /** حالة الباتشات حوالين مكان التشغيل للوج العايم: سطر لكل باتش (✅ خلص · ⏳ بيترجم · ❌ فشل · ▫ مستني) */
-    fun batchLines(): String {
+    fun batchLines(): String = batchRows().joinToString("\n") { it.first }
+    /** (v146) سطر لكل باتش + هل هو الأسرع في دفعته (بيتلوّن أخضر). الدفعة = الباتشات اللي بتتبعت مع بعض (عددها = عدد الطلبات المتوازية) */
+    fun batchRows(): List<Pair<String, Boolean>> {
         val d = host.playerDuration()
         val c = (host.position() / ch).toInt().coerceAtLeast(0)
-        val sb = StringBuilder()
+        val cap = pool.capacity(conf.parallelPerKey).coerceAtLeast(1)
+        val out = ArrayList<Pair<String, Boolean>>()
+        val fastest = HashMap<Int, Int>()   // الدفعة → رقم الباتش الأسرع
+        val byWave = runs.entries.groupBy { it.key / cap }
+        for ((wv, es) in byWave) if (es.size >= 2) fastest[wv] = es.minByOrNull { it.value.ms }!!.key
+        if (speedLines.isNotEmpty()) out.add(Pair("🏎 اختبار الموديلات:\n  " + speedLines.joinToString("\n  "), false))
         for (i in maxOf(0, c - 1)..c + window + 1) {
             if (d > 0 && cStart(i) >= d) break
             val mark = when {
@@ -163,10 +243,23 @@ class Engine(
                 else -> "▫"
             }
             val a = cStart(i).toInt(); val b = cEnd(i, d).toInt()
+            val sb = StringBuilder()
             sb.append(if (i == c) "▶ " else "  ").append("باتش ").append(i + 1).append(" ")
-                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark).let { if (mark == "✅" || mark == "🔁" || mark == "🔇") it.append(" ").append(subCount(i, d)).append(" جملة") else it }.append('\n')
+                .append("%d:%02d–%d:%02d".format(a / 60, a % 60, b / 60, b % 60)).append(" ").append(mark)
+            if (mark == "✅" || mark == "🔁" || mark == "🔇") sb.append(" ").append(subCount(i, d)).append(" جملة")
+            val k = keyOf[i]
+            val r = runs[i]
+            var fast = false
+            if (mark == "⏳" && k != null) {
+                sb.append(" · 🔑").append(keyNo(k)).append(" ").append(shortModel(modelOv ?: conf.model))
+                startedAt[i]?.let { sb.append(" · ").append(fmtSec(System.currentTimeMillis() - it)) }
+            } else if (r != null && (mark == "✅" || mark == "🔇" || mark == "🔁")) {
+                fast = fastest[i / cap] == i
+                sb.append(" · 🔑").append(r.keyNo).append(" · ").append(fmtSec(r.ms)).append(" · ").append(shortModel(r.model)).append(if (fast) " ⚡" else "")
+            }
+            out.add(Pair(sb.toString(), fast))
         }
-        return sb.toString().trimEnd()
+        return out
     }
     // ===== أشرطة التقدم (v56) =====
     /** جمل مستنية تتغيّر (تحويل لهجة / إعادة صياغة / تصحيح ضمائر) — مفتاحها start|original */
@@ -391,7 +484,7 @@ class Engine(
     fun translateFrom(sec: Double) { onlyChunks = null; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
     fun stop() { isClosed = true; running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     /** (v122) إعدادات اتغيّرت من شاشة الإعدادات (لهجة / أسلوب / موديل / شخصيات…): تتطبّق على الباتشات والتحويلات الجاية من غير إعادة تشغيل المحرك */
-    fun applyConf(c: Conf) { conf = c; dialConf.clear() }
+    fun applyConf(c: Conf) { if (c.model != conf.model) { modelOv = null; speedDone.set(true) }; conf = c; dialConf.clear() }
     fun saveNow() = doPersist(true)
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
@@ -676,7 +769,9 @@ class Engine(
         val prior = subs
         // المفتاح الأقل شغلًا ثم الأسرع (مش تبادل بالدور): الباتشات بتمشي ورا بعض بدل ما الزوجية تتحبس على مفتاح بطيء
         fun nextKey(avoid: String?): String? = if (backupFirst) (pool.pickBackup(avoid) ?: pool.pickFree(avoid, rr.getAndIncrement())) else pool.pickFree(avoid, rr.getAndIncrement())
-        var key = nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        var raced: RaceWin? = null
+        if (!hedge && !backupFirst && conf.speedTest && speedDone.compareAndSet(false, true)) raced = try { speedRace(i, w) } catch (e: Exception) { host.log("⚠ اختبار السرعة فشل: " + (e.message ?: e.toString()).take(80)); null }
+        var key = raced?.key ?: nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
         var partial = false
         var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
@@ -685,8 +780,13 @@ class Engine(
             val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0, i)
             try {
                 val t0 = System.currentTimeMillis()
-                pool.begin(key)
-                val r = try { Api.generate(conf.model, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
+                val rw = raced; raced = null
+                val mdl = rw?.model ?: curModel()
+                val r = if (rw != null) rw.res else {
+                    pool.begin(key)
+                    try { Api.generate(mdl, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
+                }
+                val took = rw?.ms ?: (System.currentTimeMillis() - t0)
                 if (isClosed) return   // الإنجن اتقفل أثناء الطلب (خرجت من الفيديو): ارمي الرد
                 if (r.finish == "MAX_TOKENS" && trunc >= 2) partial = true
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
@@ -711,6 +811,7 @@ class Engine(
                 pool.good(key)
                 if (!claimed.add(i)) { host.log("↩ باتش ${i + 1}: نسخة تانية خلصته قبلها — اتجاهلت دي"); return }
                 if (i > maxApplied) maxApplied = i
+                runs[i] = KeyRun(keyNo(key), mdl, took)
                 applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
                 startedAt[i]?.let { recentMs.addLast(System.currentTimeMillis() - it); while (recentMs.size > 8) recentMs.pollFirst() }
                 if (hedge) { inflight.remove(i); host.log("⚡ باتش ${i + 1}: النسخة الاحتياطية خلصت الأول") }
@@ -898,7 +999,7 @@ class Engine(
         var key = helperKey(i) ?: throw Exception("مفيش مفتاح")
         var tries = 0
         while (true) {
-            try { return Api.generate(conf.model, key, prompt, null, maxTokens, temp, json, search) }
+            try { return Api.generate(curModel(), key, prompt, null, maxTokens, temp, json, search) }
             catch (e: ApiErr) {
                 if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else throw e
                 val alt = helperKey(i + 1)
@@ -1484,7 +1585,7 @@ class Engine(
                 var tries = 0; var got = false
                 while (running && !got && tries++ < 3) {
                     try {
-                        val r = Api.generate(conf.model, key, buildPrompt(w2.durSec, w2.startSec, hole = true), w2.bytes)
+                        val r = Api.generate(curModel(), key, buildPrompt(w2.durSec, w2.startSec, hole = true), w2.bytes)
                         val j = if (r.text.isBlank()) null else Parse.json(r.text)
                         // (v143) الثغرة غالبًا موسيقى/مؤثرات: الرد الفاضي إجابة صحيحة، وماينفعش نعيد الطلب لحد ما الموديل "يلاقي" كلام
                         var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w2.startSec, w2.durSec)).filter { !it.faint && !it.lowConf && !it.isSound }.map { Subs.capPace(it) }
@@ -1512,7 +1613,7 @@ class Engine(
         var key = key0; var tries = 0
         while (running && tries++ < 3) {
             try {
-                val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec, hole = true), w.bytes)
+                val r = Api.generate(curModel(), key, buildPrompt(w.durSec, w.startSec, hole = true), w.bytes)
                 val j = if (r.text.isBlank()) null else Parse.json(r.text)
                 var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).filter { !it.faint && !it.lowConf && !it.isSound }.map { Subs.capPace(it) }
                 if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
