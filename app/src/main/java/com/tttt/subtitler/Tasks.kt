@@ -34,6 +34,7 @@ import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.common.OverlaySettings
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.StaticOverlaySettings
 import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Composition
@@ -211,7 +212,7 @@ class SubOverlay(subs: List<Sub>, private val vw: Int, private val vh: Int, priv
     private var curIdx = -2
     private var curBmp: Bitmap = blank
     private var hint = 0
-    private val settings: OverlaySettings = OverlaySettings.Builder()
+    private val settings: OverlaySettings = StaticOverlaySettings.Builder()
         .setOverlayFrameAnchor(0f, -1f)
         .setBackgroundFrameAnchor(0f, -0.86f)
         .build()
