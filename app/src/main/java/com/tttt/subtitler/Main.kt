@@ -464,13 +464,27 @@ class MainActivity : Activity() {
         lib.onRefresh = { VideoScan.cache = null; Thumbs.clear(); lib.showScanning(); doScan() }
 
         // (v124) الشريط السفلي: بوابتين — الفيديوهات (المكتبة) · المتصفح (تبويب يوتيوب اتشال)
+        // (v135) بوابة تالتة: «المهام» (قص · صوت · GIF · ضغط · ترجمة ثابتة)
+        val tasksUi = TasksUi(this, ui, th); tasksUi.root.visibility = View.GONE
         showTabFn = { i ->
-            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; navUi?.set(0) }
+            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; tasksUi.root.visibility = View.GONE; navUi?.set(0) }
+            else if (i == 2) { curTab = 2; lib.root.visibility = View.GONE; tasksUi.root.visibility = View.VISIBLE; tasksUi.refresh(); navUi?.set(2) }
         }
         val nav = BottomNav(this, ui, th, 0) { i -> if (i == 1) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
         navUi = nav
+        if (!fromPlayer) {
+            TaskCenter.listener = {
+                if (!isDestroyed && !isFinishing) {
+                    val n = TaskCenter.active()
+                    nav.label(2, if (n > 0) "المهام ($n)" else "المهام")
+                    if (curTab == 2) tasksUi.refresh()
+                }
+            }
+            TaskCenter.listener?.invoke()
+        }
         val pane = FrameLayout(this)
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
+        pane.addView(tasksUi.root, FrameLayout.LayoutParams(-1, -1))
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
         shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
@@ -764,10 +778,11 @@ class MainActivity : Activity() {
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
         if (!fromPlayer && curTab == 1) ytUi?.refresh()
     }
+    override fun onDestroy() { if (!fromPlayer) TaskCenter.listener = null; super.onDestroy() }
     /** (v117) الرجوع من المتصفح بشريط البوابات: بيفتح البوابة اللي اخترتها */
     override fun onNewIntent(i: Intent?) {
         super.onNewIntent(i)
-        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1) }
+        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1); "tasks" -> showTabFn(2) }
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {

@@ -283,7 +283,7 @@ class BrowserActivity : Activity() {
         root.addView(bar); root.addView(progTrack, LinearLayout.LayoutParams(-1, ui.dp(3))); root.addView(findBar); root.addView(hint)
         root.addView(webHolder, LinearLayout.LayoutParams(-1, 0, 1f)); root.addView(badge)
         // (v117) شريط البوابات: الفيديوهات · يوتيوب · المتصفح (إحنا فيه دلوقتي)
-        val gates = BottomNav(this, ui, th, 1) { i -> if (i == 0) goMain("videos") }
+        val gates = BottomNav(this, ui, th, 1) { i -> if (i == 0) goMain("videos") else if (i == 2) goMain("tasks") }
         root.addView(gates.view, LinearLayout.LayoutParams(-1, -2))
         content = root
         frame = FrameLayout(this); frame.setBackgroundColor(th.bg)

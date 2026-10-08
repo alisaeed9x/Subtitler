@@ -5,7 +5,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 
-/** (v117) شريط البوابات السفلي: 🎞 الفيديوهات · ▶ يوتيوب · 🌐 المتصفح — بيظهر في الشاشة الرئيسية وفي المتصفح */
+/** (v117) شريط البوابات السفلي: 🎞 الفيديوهات · 🌐 المتصفح · ⏳ المهام (v135) — بيظهر في الشاشة الرئيسية وفي المتصفح */
 class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, private var active: Int, private val onPick: (Int) -> Unit) {
     private val icons = ArrayList<IconTextView>()
     private val labels = ArrayList<IconTextView>()
@@ -17,7 +17,7 @@ class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, privat
             orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(th.card)
         }
-        val defs = listOf("🎞" to "الفيديوهات", "🌐" to "المتصفح")
+        val defs = listOf("🎞" to "الفيديوهات", "🌐" to "المتصفح", "⏳" to "المهام")
         defs.forEachIndexed { idx, d ->
             val icon = IconTextView(act).apply { text = d.first; textSize = 20f; gravity = Gravity.CENTER; includeFontPadding = false }
             val lab = ui.text(d.second, 11f, th.muted, true).apply { gravity = Gravity.CENTER; setSingleLine() }
@@ -37,6 +37,8 @@ class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, privat
     }
 
     fun set(i: Int) { active = i; paint() }
+    /** (v135) نص تحت أيقونة البوابة (بيتغيّر لـ «المهام (2)» لما فيه مهام شغّالة) */
+    fun label(i: Int, t: String) { if (i in labels.indices) labels[i].text = t }
     private fun paint() {
         for (i in icons.indices) {
             val on = i == active

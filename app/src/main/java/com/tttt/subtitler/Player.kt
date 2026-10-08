@@ -124,6 +124,12 @@ class PlayerActivity : Activity(), Host {
     private var dlPop: android.widget.PopupWindow? = null
     private fun isHlsUrl(): Boolean = (url ?: "").contains(".m3u8", true)
     private fun dlName(): String = (intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)).substringBeforeLast('.', "").ifBlank { intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid) }
+
+    /** (v135) مصدر 🧰 أدوات الفيديو: الفيديو الشغّال دلوقتي (محلي = Uri، نت = لينك مباشر؛ aurl = صوت منفصل لو موجود) */
+    private fun toolSrc(): ToolSrc? {
+        val u = uri?.toString() ?: url ?: return null
+        return ToolSrc(u, if (uri == null) aurl else null, dlName(), durMs, vidW, vidH, player.currentPosition, engine.subs)
+    }
     /** (v134) حجم الفيديو الحالي: HEAD للينك المباشر/اليوتيوب (صورة+صوت)، وتقدير bitrate×المدة لـ HLS */
     fun refreshSize(show: Boolean = false) {
         if (uri != null || url == null || sizeBusy) return
@@ -1195,6 +1201,18 @@ class PlayerActivity : Activity(), Host {
         }, LinearLayout.LayoutParams(ui.dp(240), -2))
         gTool.addView(pk("🔊 تضخيم الصوت ›") { dismissPop(); togglePop(menuB, gBoost, false) })
         gTool.addView(pk("⚙️ الإعدادات ›") { dismissPop(); togglePop(menuB, gSet, false) })
+        // (v135) 🧰 أدوات الفيديو (زرار في الشريط العلوي): قص · صوت · GIF · ضغط · ترجمة ثابتة — كل واحدة بتتحط في توبيب «المهام» وبتتحفظ لوحدها لما تخلص
+        val gTools = gCol()
+        val toolsUi = ToolsUi(this, ui, th)
+        fun withSrc(f: (ToolSrc) -> Unit) { val ts = toolSrc(); if (ts == null) Notice.show(this, "مفيش فيديو شغّال", 2300L) else f(ts) }
+        gTools.addView(ui.text("🧰 أدوات الفيديو", 12f, th.primary, true).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(4)) })
+        gTools.addView(pd("✂ قص جزء من الفيديو") { withSrc { toolsUi.trim(it) } })
+        gTools.addView(pd("🎧 تحويل لصوت") { withSrc { toolsUi.audio(it) } })
+        gTools.addView(pd("🎞 عمل GIF") { withSrc { toolsUi.gif(it) } })
+        gTools.addView(pd("📦 ضغط / تغيير الدقة") { withSrc { toolsUi.compress(it) } })
+        gTools.addView(pd("🎬 ترجمة ثابتة (هارد ساب)") { withSrc { toolsUi.hardsub(it) } })
+        gTools.addView(ui.text("النتيجة بتظهر في توبيب «المهام» في الشاشة الرئيسية", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(2)) })
+        val toolsB = IconGlyphButton(this, "toolbox").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { togglePop(this, gTools, false) } }
         gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
         gAi.addView(pd("🧹 عائلي") { runTool("عائلي", "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام.", true) })
         gAi.addView(pd("🔞 صريح") { runTool("صريح", "رجّع الترجمة لمطابقة صراحة النص الأصلي بالظبط (الألفاظ والإيحاءات زي ما هي في الأصل من غير تلطيف ولا حذف).", true) })
@@ -1207,6 +1225,7 @@ class PlayerActivity : Activity(), Host {
         fun exAdd(v: View) { tbExtra.addView(v, 0) }
         tbCollapseFn = { }
         menuB.setOnLongClickListener { giShow("القائمة", Gravity.CENTER); true }
+        toolsB.setOnLongClickListener { giShow("أدوات الفيديو", Gravity.CENTER); true }
         tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) }); tbAdd(tbExtra)
 
         val textB = tip(grp("🔤", gText), "النص")
@@ -1294,6 +1313,8 @@ class PlayerActivity : Activity(), Host {
             tbRow.addView(textB, LinearLayout.LayoutParams(-2, ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(toolBtns[0], lp(0)); tbRow.addView(toolBtns[5], lp(5)); tbRow.addView(toolBtns[3], lp(3))
             tbRow.addView(bgOnB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
+            (toolsB.parent as? ViewGroup)?.removeView(toolsB)
+            tbRow.addView(toolsB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             textB.minimumWidth = ui.dp(38); textB.setPadding(ui.dp(8), 0, ui.dp(8), 0)
             textAtBottom = false
