@@ -17,12 +17,14 @@ object Speech {
     private fun rateOf(b: ByteArray) = (b[24].toInt() and 255) or ((b[25].toInt() and 255) shl 8) or ((b[26].toInt() and 255) shl 16) or ((b[27].toInt() and 255) shl 24)
 
     /** مجالات الصوت العالي (ثواني نسبية لبداية الـ WAV). null لو مش WAV صالح. */
-    fun activeSpans(wav: ByteArray): List<DoubleArray>? {
+    fun activeSpans(wav: ByteArray, gain: Double = 1.0): List<DoubleArray>? {
         try {
             if (!isWav(wav)) return null
             val rate = rateOf(wav); if (rate <= 0) return null
             val n = (wav.size - 44) / 2
             val win = maxOf(1, (WIN_SEC * rate).toInt())
+            // (v143) الصوت بيتضخّم لحد 6x قبل الإرسال؛ لازم الحد يتقاس على المستوى الأصلي وإلا ضوضاء الغرفة تتحسب كلام
+            val thr = THRESH * maxOf(1.0, gain)
             val out = ArrayList<DoubleArray>()
             var w = 0; var i = 0
             var curS = -1.0; var lastEnd = -1.0
@@ -36,7 +38,7 @@ object Speech {
                 }
                 val rms = Math.sqrt(sq / (e - i))
                 val t0 = i.toDouble() / rate; val t1 = e.toDouble() / rate
-                if (rms > THRESH) {
+                if (rms > thr) {
                     if (curS < 0) curS = t0 else if (t0 - lastEnd > JOIN_SEC) { out.add(doubleArrayOf(curS, lastEnd)); curS = t0 }
                     lastEnd = t1
                 }
@@ -72,7 +74,11 @@ object Speech {
     fun fit(s: Sub, spansAbs: List<DoubleArray>): Sub? {
         val ov = spansAbs.filter { it.size == 2 && it[1] > s.start && it[0] < s.end }
         val dur = s.end - s.start
-        if (ov.isEmpty()) return if (dur >= 1.5 && !s.faint) null else s
+        if (ov.isEmpty()) {
+            // (v143) توقيت الموديل بيغلط ~1ث، فالجملة القصيرة/الخافتة القريبة من صوت فعلي تفضل. لكن لو أقرب صوت أبعد من كده تتشال حتى لو خافتة أو قصيرة
+            val near = spansAbs.filter { it.size == 2 }.minOfOrNull { if (it[0] >= s.end) it[0] - s.end else s.start - it[1] } ?: Double.MAX_VALUE
+            return if (near > 1.0 || (dur >= 1.5 && !s.faint)) null else s
+        }
         var a = s.start; var b = s.end
         val fs = ov.first()[0] - 0.15; val le = ov.last()[1] + 0.35
         if (fs - a >= 1.0) a = fs

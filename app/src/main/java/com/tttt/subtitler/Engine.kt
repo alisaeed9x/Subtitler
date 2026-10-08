@@ -661,7 +661,7 @@ class Engine(
                     val took = synchronized(trimLock) { if (!bounds.containsKey(i + 1) && !prepared.contains(i + 1)) { bounds[i + 1] = adj; true } else false }
                     if (took) {
                         host.log("🌊 المقطع ${i + 1}: اتقصّر ${"%.1f".format(java.util.Locale.US, rawEnd - adj)}ث لأقرب لحظة صمت")
-                        w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent)
+                        w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent, w.gain)
                         rawEnd = adj
                         persist()
                     }
@@ -750,13 +750,13 @@ class Engine(
     /** لهجة الباتش اللي بيتبعت: لو اتختارت لهجة، الباتش بيتترجم بيها مباشرة (من غير فصحى ثم تحويل — توفير على المفاتيح) */
     private val dialOf = ConcurrentHashMap<Int, String>()
     private val dialConf = ConcurrentHashMap<String, Conf>()
-    private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false, chunk: Int = -1): String {
+    private fun buildPrompt(durSec: Double, start: Double, strict: Boolean = false, chunk: Int = -1, hole: Boolean = false): String {
         val dl = convDialect.let { if (it.isBlank() || it == "فصحى") "" else it }
         if (chunk >= 0) { if (dl.isEmpty()) dialOf.remove(chunk) else dialOf[chunk] = dl }
         val c = if (dl.isEmpty() || dl == conf.lang) conf else dialConf.getOrPut(dl) { conf.withLang(dl) }
         val case = pb.caseOf(srcLang, detDone)
         val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(c, "other"))] } else null
-        return toneBlock() + pb.build(c, srcLang, detDone, durSec, Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict)
+        return toneBlock() + pb.build(c, srcLang, detDone, durSec, if (hole) "" else Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict, hole)
     }
 
     /** إصلاح الجمل اللي translated بتاعتها مش عربي: ترجمة نصية سريعة من original (وpivot) للهجة المختارة */
@@ -797,7 +797,7 @@ class Engine(
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
         }
         if (j != null) applyPrevCorrections(j)
-        val spansAbs = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) }
+        val spansAbs = Speech.activeSpans(w.bytes, w.gain)?.let { Speech.absolute(it, w.startSec) }
         val direct = dialOf[i]?.let { it == convDialect } ?: false
         var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i, conv = direct) }
         if (spansAbs != null) {
@@ -1470,7 +1470,7 @@ class Engine(
      * على أجزاء صغيرة (<= 20ث) وبسياق الجمل اللي قبله. مرة واحدة لكل مقطع.
      */
     private fun holeFill(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, key0: String) {
-        val spans = Speech.activeSpans(w.bytes)?.let { Speech.absolute(it, w.startSec) } ?: return
+        val spans = Speech.activeSpans(w.bytes, w.gain)?.let { Speech.absolute(it, w.startSec) } ?: return
         if (!holeTried.add(i)) return
         val holes = Speech.holes(spans, subs, maxOf(rawStart, w.startSec), minOf(rawEnd, w.startSec + w.durSec), HOLE_MIN).take(HOLE_MAX)
         if (holes.isEmpty()) return
@@ -1484,14 +1484,15 @@ class Engine(
                 var tries = 0; var got = false
                 while (running && !got && tries++ < 3) {
                     try {
-                        val r = Api.generate(conf.model, key, buildPrompt(w2.durSec, w2.startSec), w2.bytes)
+                        val r = Api.generate(conf.model, key, buildPrompt(w2.durSec, w2.startSec, hole = true), w2.bytes)
                         val j = if (r.text.isBlank()) null else Parse.json(r.text)
-                        var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w2.startSec, w2.durSec)).map { Subs.capPace(it) }
+                        // (v143) الثغرة غالبًا موسيقى/مؤثرات: الرد الفاضي إجابة صحيحة، وماينفعش نعيد الطلب لحد ما الموديل "يلاقي" كلام
+                        var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w2.startSec, w2.durSec)).filter { !it.faint && !it.lowConf && !it.isSound }.map { Subs.capPace(it) }
                         if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
-                        val sp2 = Speech.activeSpans(w2.bytes)?.let { Speech.absolute(it, w2.startSec) }
+                        val sp2 = Speech.activeSpans(w2.bytes, w2.gain)?.let { Speech.absolute(it, w2.startSec) }
                         if (sp2 != null) base = base.mapNotNull { Speech.fit(it, sp2) }
                         base = base.filter { val m = (it.start + it.end) / 2; m >= h[0] - 0.5 && m <= h[1] + 0.5 }.map { it.copy(chunk = i) }
-                        if (base.isEmpty()) { key = pool.pick(key, rr.getAndIncrement()) ?: key; continue }
+                        if (base.isEmpty()) { got = true; host.log("… ثغرة ${"%.0f".format(java.util.Locale.US, pt[0])}ث: مفيهاش كلام — اتساب زي ما هي"); continue }
                         synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + base)).sortedBy { it.start } }
                         pool.good(key); got = true
                         host.changed(); persist()
@@ -1511,15 +1512,14 @@ class Engine(
         var key = key0; var tries = 0
         while (running && tries++ < 3) {
             try {
-                val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec), w.bytes)
+                val r = Api.generate(conf.model, key, buildPrompt(w.durSec, w.startSec, hole = true), w.bytes)
                 val j = if (r.text.isBlank()) null else Parse.json(r.text)
-                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).map { Subs.capPace(it) }
+                var base = if (j == null) emptyList() else Subs.splitAll(Parse.subs(j, w.startSec, w.durSec)).filter { !it.faint && !it.lowConf && !it.isSound }.map { Subs.capPace(it) }
                 if (base.any { LangGuard.foreign(it) }) base = fixForeign(base)
+                val sp = Speech.activeSpans(w.bytes, w.gain)?.let { Speech.absolute(it, w.startSec) }
+                if (sp != null) base = base.mapNotNull { Speech.fit(it, sp) }
                 val marked = base.map { it.copy(translated = "«" + it.translated + "»", chunk = -2) }
-                if (marked.isEmpty()) {
-                    if (tries < 3) { gapKeys.remove(key); key = pool.gapKey(gapKeys, rr.getAndIncrement()) ?: key; gapKeys.add(key); continue }
-                    host.log("… فجوة ${a.toInt()}ث: الموديل مرجّعش جمل (3 محاولات)"); return
-                }
+                if (marked.isEmpty()) { host.log("… فجوة ${a.toInt()}ث: مفيهاش كلام — اتساب زي ما هي"); return }
                 synchronized(lock) { subs = Subs.merge(Subs.dedup(subs + marked)).sortedBy { it.start } }
                 pool.good(key); host.changed(); persist()
                 host.log("✅ فجوة ${a.toInt()}ث: اتسدّ ${marked.size} جملة")

@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** مقطع صوت جاهز للإرسال: WAV 16kHz mono PCM16. startSec = وقت أول عينة فعلاً في الفيديو. */
-class WavChunk(val bytes: ByteArray, val startSec: Double, val durSec: Double, val silent: Boolean)
+class WavChunk(val bytes: ByteArray, val startSec: Double, val durSec: Double, val silent: Boolean, val gain: Double = 1.0)
 
 interface AudioSource {
     /** مدة الفيديو بالثواني لو معروفة، وإلا 0 */
@@ -116,17 +116,17 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
         closeWindow()
         val pcm = len
         // تضخيم تلقائي للصوت الخافت (عشان جيميناي يسمع الهمس وكلام الخلفية الضعيف) — بحد أقصى 6 أضعاف
-        var pk = 0; var q = 0
+        var pk = 0; var q = 0; var appliedGain = 1.0
         while (q + 1 < pcm) { val v = ((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF)).toShort().toInt(); val a = if (v < 0) -v else v; if (a > pk) pk = a; q += 2 }
         if (pk in 300..22000) {
             val g = minOf(6.0, 0.85 * 32767.0 / pk)
-            if (g > 1.15) { q = 0; while (q + 1 < pcm) { val v = ((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF)).toShort().toInt(); val n = (v * g).toInt().coerceIn(-32768, 32767); buf[q] = (n and 0xFF).toByte(); buf[q + 1] = ((n shr 8) and 0xFF).toByte(); q += 2 } }
+            if (g > 1.15) { appliedGain = g; q = 0; while (q + 1 < pcm) { val v = ((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF)).toShort().toInt(); val n = (v * g).toInt().coerceIn(-32768, 32767); buf[q] = (n and 0xFF).toByte(); buf[q + 1] = ((n shr 8) and 0xFF).toByte(); q += 2 } }
         }
         val out = ByteArray(44 + pcm)
         System.arraycopy(Wav.header(pcm, outRate), 0, out, 0, 44)
         System.arraycopy(buf, 0, out, 44, pcm)
         val silent = winTotal > 0 && winActive.toDouble() / winTotal < 0.06
-        return WavChunk(out, startSec, (pcm / 2).toDouble() / outRate, silent)
+        return WavChunk(out, startSec, (pcm / 2).toDouble() / outRate, silent, appliedGain)
     }
 }
 
