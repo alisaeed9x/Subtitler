@@ -122,17 +122,19 @@ object ClipWatch {
         val hh = Handler(Looper.getMainLooper())
         act.runOnUiThread {
             try {
-                val wv = WebView(act); ref.set(wv)
+                val wv = WebView(act); ref.set(wv); WebMute.register(wv); WebMute.mute(wv)
                 wv.settings.apply { javaScriptEnabled = true; domStorageEnabled = true; mediaPlaybackRequiresUserGesture = false; mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW }
                 ua.set(wv.settings.userAgentString ?: UA)
                 wv.webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? {
                         val x = r.url.toString()
+                        WebMute.mute(v)
                         Sniff.accept(x)?.let { a -> if (found.compareAndSet(null, a)) hh.post { grab(wv, info); } ; hh.postDelayed({ latch.countDown() }, 700) }
                         if (AdBlock.blocked(x)) return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
                         return null
                     }
-                    override fun onPageFinished(v: WebView, url: String?) { grab(v, info) }
+                    override fun onPageStarted(v: WebView, url: String?, f: android.graphics.Bitmap?) { WebMute.mute(v) }
+                    override fun onPageFinished(v: WebView, url: String?) { WebMute.mute(v); grab(v, info) }
                 }
                 hh.postDelayed({ latch.countDown() }, 9000)
                 wv.loadUrl(u)

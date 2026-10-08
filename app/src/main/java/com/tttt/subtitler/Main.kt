@@ -234,6 +234,82 @@ class MainActivity : Activity() {
         }
         rebuildModes()
         val modesBtn = ui.button("↻ حدّث قايمة أوضاع المفاتيح") { rebuildModes() }
+        // ===== (v148) اختبار سرعة رد الـ AI من الإعدادات — زي لوج الباتشات في المشغّل: كل مفتاح × كل موديل + زمن الرد والأسرع =====
+        class SpRes(val keyNo: Int, val model: String, val ms: Long, val ok: Boolean, val note: String)
+        val speedOut = ui.text("", 12f, th.text).apply {
+            typeface = android.graphics.Typeface.MONOSPACE; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.box(th.surface, th.border, 8); visibility = View.GONE
+        }
+        var speedWinner: String? = null
+        var speedRunning = false
+        val speedUseBtn = ui.button("🏁 استخدم الموديل الأسرع") {
+            val w = speedWinner
+            if (w != null) { applyModel(w); Notice.show(this, ("🏁 الموديل اتغيّر لـ " + w.removePrefix("gemini-")).toString(), 2600L) }
+        }.apply { visibility = View.GONE }
+        val speedBtn = ui.button("🏎 اختبر سرعة رد الـ AI (كل مفتاح × كل موديل)") {
+            if (speedRunning) { Notice.show(this, ("الاختبار شغّال لسه…").toString(), 1800L); return@button }
+            val ks = (keyList(keys.text.toString()) + keyList(extra.text.toString()) + keyList(backup.text.toString())).distinct().take(6)
+            if (ks.isEmpty()) { Notice.show(this, ("ضيف مفتاح API الأول").toString(), 2300L); return@button }
+            val cands = ArrayList<String>()
+            cands.add(model.text.toString().trim().ifEmpty { Models.DEFAULT })
+            try { cands.addAll(ModelWatch.pending().reversed()) } catch (_: Throwable) {}
+            cands.add("gemini-flash-lite-latest"); cands.add("gemini-2.5-flash-lite")
+            val ms = cands.distinct()
+            val total = ks.size * ms.size
+            val res = java.util.ArrayList<SpRes>()
+            val left = java.util.concurrent.atomic.AtomicInteger(total)
+            speedRunning = true; speedWinner = null
+            speedUseBtn.visibility = View.GONE; speedOut.visibility = View.VISIBLE
+            fun sec(t: Long) = String.format(java.util.Locale.US, "%.1f", t / 1000.0) + "ث"
+            fun render(done: Boolean) {
+                val rs = synchronized(res) { res.toList() }
+                val okRs = rs.filter { it.ok }.sortedBy { it.ms }
+                val sb = android.text.SpannableStringBuilder()
+                if (!done) sb.append("⏳ شغّال… ").append(rs.size.toString()).append(" / ").append(total.toString())
+                okRs.forEachIndexed { i, r ->
+                    if (sb.isNotEmpty()) sb.append('\n')
+                    val a = sb.length
+                    sb.append("🔑").append(r.keyNo.toString()).append(" · ").append(r.model.removePrefix("gemini-")).append(": ").append(sec(r.ms))
+                    if (i == 0) { sb.append(" 🏆⚡"); sb.setSpan(android.text.style.ForegroundColorSpan(0xFFF5B041.toInt()), a, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+                }
+                for (r in rs.filter { !it.ok }.sortedWith(compareBy({ it.model }, { it.keyNo }))) {
+                    if (sb.isNotEmpty()) sb.append('\n')
+                    sb.append("🔑").append(r.keyNo.toString()).append(" · ").append(r.model.removePrefix("gemini-")).append(": ❌ ").append(r.note)
+                }
+                if (done && okRs.isNotEmpty()) {
+                    sb.append("\n\n📊 متوسط كل موديل:")
+                    okRs.groupBy { it.model }.entries.sortedBy { e -> e.value.map { it.ms }.average() }.forEach { e ->
+                        sb.append("\n  ").append(e.key.removePrefix("gemini-")).append(": ").append(sec(e.value.map { it.ms }.average().toLong())).append(" (").append(e.value.size.toString()).append(" مفتاح)")
+                    }
+                }
+                if (done && okRs.isEmpty()) sb.append("\n\nمفيش رد سليم من أي مفتاح — راجع المفاتيح أو النت")
+                speedOut.text = sb
+            }
+            render(false)
+            for (mi in ms.indices) for (ki in ks.indices) {
+                val md = ms[mi]; val key = ks[ki]
+                Thread {
+                    val t0 = System.currentTimeMillis()
+                    val r = try {
+                        val o = Api.generate(md, key, "رد بكلمة واحدة بس: تمام", null, 200, 0.0, false)
+                        val took = System.currentTimeMillis() - t0
+                        if (o.text.isBlank()) SpRes(ki + 1, md, took, false, "رد فاضي " + o.finish) else SpRes(ki + 1, md, took, true, "")
+                    } catch (e: Throwable) { SpRes(ki + 1, md, 0L, false, (e.message ?: e.toString()).take(60)) }
+                    synchronized(res) { res.add(r) }
+                    val fin = left.decrementAndGet() == 0
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (fin) {
+                            speedRunning = false
+                            val w = synchronized(res) { res.filter { it.ok }.minByOrNull { it.ms } }
+                            speedWinner = w?.model
+                            if (w != null) speedUseBtn.visibility = View.VISIBLE
+                        }
+                        render(fin)
+                    }
+                }.apply { isDaemon = true }.start()
+            }
+        }
         val langs = listOf("مصري", "شامي", "لبناني", "خليجي", "مغربي", "عراقي", "سوداني", "فصحى")
         val styles = listOf("حرفي", "شعبي", "جرئ", "+18")
         var lang = Cfg.str("lang", "فصحى"); var style = Cfg.str("style", "حرفي"); var themeId = th.id
@@ -338,6 +414,8 @@ class MainActivity : Activity() {
             TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
+                ui.section("🏎 اختبار سرعة رد الـ AI", false,
+                    ui.text("بيبعت طلب صغير على كل مفتاح بكل موديل ويوريك زمن الرد والأسرع (🏆) — زي لوج الباتشات في المشغّل. بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "speedtest")),
@@ -772,7 +850,7 @@ class MainActivity : Activity() {
             try { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (e: Exception) { LogStore.err("Main:675", e) }
         }
     }
-    override fun onStop() { super.onStop(); stoppedAt = System.currentTimeMillis() }
+    override fun onStop() { super.onStop(); stoppedAt = System.currentTimeMillis(); WebMute.pauseAll() }
     /** أندرويد 10+ مابيسمحش بقراءة الكليبورد غير والتطبيق عليه الفوكس — فالفحص بيتعمل هنا */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)

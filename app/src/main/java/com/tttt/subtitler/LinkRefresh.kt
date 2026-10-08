@@ -43,6 +43,7 @@ return JSON.stringify(o)})()"""
         var soft = false
         var done = false
         val wv = try { WebView(act) } catch (_: Throwable) { onDone(null); return }
+        WebMute.register(wv); WebMute.mute(wv)
         val host = try { act.findViewById<ViewGroup>(android.R.id.content) } catch (_: Throwable) { null }
 
         fun finish() {
@@ -94,12 +95,12 @@ return JSON.stringify(o)})()"""
             override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? {
                 val u = r.url.toString()
                 if (AdBlock.blocked(u)) return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
-                h.post { add(u) }
+                WebMute.mute(v); h.post { add(u) }
                 return null
             }
             override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean = !r.url.toString().startsWith("http") || AdBlock.blocked(r.url.toString())
-            override fun onPageStarted(v: WebView, url: String?, f: android.graphics.Bitmap?) { v.evaluateJavascript(AdBlock.JS, null) }
-            override fun onPageFinished(v: WebView, url: String?) { v.evaluateJavascript(AdBlock.JS, null) }
+            override fun onPageStarted(v: WebView, url: String?, f: android.graphics.Bitmap?) { v.evaluateJavascript(AdBlock.JS, null); WebMute.mute(v) }
+            override fun onPageFinished(v: WebView, url: String?) { v.evaluateJavascript(AdBlock.JS, null); WebMute.mute(v) }
         }
         // WebView لازم يكون متركّب في الشاشة عشان الفيديو يبدأ — بنحطه 1×1 شفاف
         try { wv.alpha = 0.01f; host?.addView(wv, FrameLayout.LayoutParams(2, 2)) } catch (_: Throwable) {}

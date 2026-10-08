@@ -470,15 +470,43 @@ object Api {
         return out.distinctBy { it.id }.sortedBy { it.id }
     }
 
+    /**
+     * (v148) أكبر سبب لبطء رد Gemini: «التفكير» (thinking) شغّال تلقائي في موديلات 2.5 و3.x، فكل باتش بيستنى ثواني تفكير قبل أول حرف.
+     * الترجمة مش محتاجاه، فبنقفله (أو بنخليه في الحد الأدنى). لو الموديل رفض الصيغة (400 فيها thinking) بنجرّب الصيغة التانية وبعدين من غيرها،
+     * وبنفتكر اللي نفع لكل موديل.
+     */
+    private val thinkVar = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private fun thinkCfg(model: String, v: Int): String {
+        val m = model.lowercase()
+        val three = m.contains("gemini-3") || m.contains("latest")
+        val pro = m.contains("pro")
+        val level = ",\"thinkingConfig\":{\"thinkingLevel\":\"" + (if (pro) "low" else "minimal") + "\"}"
+        val budget = ",\"thinkingConfig\":{\"thinkingBudget\":" + (if (pro) 128 else 0) + "}"
+        return when (v) { 0 -> if (three) level else budget; 1 -> if (three) budget else level; else -> "" }
+    }
+
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
                  maxTokens: Int = 8192, temp: Double = 0.1, json: Boolean = true, search: Boolean = false): Result {
         Quota.hit(model); Stats.req(model, key)
+        if (search) return generateOnce(model, key, prompt, wav, maxTokens, temp, json, search, "")
+        var v = thinkVar[model] ?: 0
+        while (true) {
+            try { return generateOnce(model, key, prompt, wav, maxTokens, temp, json, search, thinkCfg(model, v)) }
+            catch (e: ApiErr) {
+                if (e.code != 400 || v >= 2 || !e.raw.contains("think", ignoreCase = true)) throw e
+                v++; thinkVar[model] = v
+            }
+        }
+    }
+
+    private fun generateOnce(model: String, key: String, prompt: String, wav: ByteArray?,
+                 maxTokens: Int, temp: Double, json: Boolean, search: Boolean, think: String): Result {
         val enc = java.util.Base64.getEncoder()
         val head = "{\"contents\":[{\"parts\":[" + (if (wav != null) "{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"" else "")
         val mid = if (wav != null) "\"}}," else ""
         val textPart = "{\"text\":" + JSONObject.quote(prompt) + "}"
         val tail = "]}],\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp" +
-            (if (json && !search) ",\"responseMimeType\":\"application/json\"" else "") + "},\"safetySettings\":[$SAFETY]" + (if (search) ",\"tools\":[{\"google_search\":{}}]" else "") + "}"
+            (if (json && !search) ",\"responseMimeType\":\"application/json\"" else "") + think + "},\"safetySettings\":[$SAFETY]" + (if (search) ",\"tools\":[{\"google_search\":{}}]" else "") + "}"
         val hb = head.toByteArray(Charsets.UTF_8)
         val mb = (mid + textPart + tail).toByteArray(Charsets.UTF_8)
         val b64Len = if (wav != null) ((wav.size + 2) / 3).toLong() * 4 else 0L
@@ -519,7 +547,7 @@ object Api {
             val sb = StringBuilder()
             if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
             return Result(sb.toString(), cand.optString("finishReason", ""))
-        } finally { c.disconnect() }
+        } catch (e: Throwable) { try { c.disconnect() } catch (_: Throwable) {}; throw e }
     }
 }
 

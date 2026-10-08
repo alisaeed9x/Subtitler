@@ -29,7 +29,7 @@ const val KEY_PAGE_URL = "https://aistudio.google.com/apikey"
 fun Activity.showKeyBrowser(onKey: (String) -> Unit) {
     val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
     val d = GDialog(this, android.R.style.Theme_Black_NoTitleBar).apply { plain = true }
-    val wv = WebView(this)
+    val wv = WebView(this); WebMute.register(wv)
     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     var captured = false
     var inChrome = false

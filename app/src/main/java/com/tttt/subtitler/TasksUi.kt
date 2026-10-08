@@ -153,8 +153,7 @@ class TasksUi(private val act: Activity, private val ui: Ui, private val th: The
         val vids = jobs.map { it.vid }.toSet()
         for (k in bgRows.keys.filter { it !in vids || bgRows[it]?.job !== jobs.lastOrNull { j -> j.vid == it } }) bgRows.remove(k)?.let { bgList.removeView(it.card) }
         jobs.forEachIndexed { idx, j ->
-            var r = bgRows[j.vid]
-            if (r == null) { r = makeBgRow(j); bgRows[j.vid] = r; bgList.addView(r.card, minOf(idx, bgList.childCount)) }
+            val r: BgRow = bgRows[j.vid] ?: makeBgRow(j).also { nr -> bgRows[j.vid] = nr; bgList.addView(nr.card, minOf(idx, bgList.childCount)) }
             val sig = j.state + (if (j.paused) "1" else "0")
             if (r.sig != sig) { r.sig = sig; paintBg(j, r) }
             r.status.text = bgStatus(j); r.bar.progress = j.pct
@@ -170,8 +169,7 @@ class TasksUi(private val act: Activity, private val ui: Ui, private val th: The
         taskHead.visibility = if (items.isEmpty() || jobs.isEmpty()) View.GONE else View.VISIBLE
         if (items.isEmpty() && jobs.isEmpty()) { if (empty.parent == null) list.addView(empty) } else if (empty.parent != null) list.removeView(empty)
         items.forEachIndexed { idx, t ->
-            var r = rows[t.id]
-            if (r == null) { r = makeRow(t); rows[t.id] = r; taskList.addView(r.card, minOf(idx, taskList.childCount)); r.card.tag = -1 }
+            val r: Row = rows[t.id] ?: makeRow(t).also { nr -> rows[t.id] = nr; taskList.addView(nr.card, minOf(idx, taskList.childCount)); nr.card.tag = -1 }
             // الأزرار بتتبني من جديد بس لما حالة المهمة تتغيّر (عشان الدوسة ما تضيعش وسط تحديث التقدم)
             val sig = t.state * 2 + (if (t.paused) 1 else 0)
             if (r.card.tag != sig) { r.card.tag = sig; paint(t, r) } else { r.status.text = statusOf(t); r.bar.progress = t.pct }

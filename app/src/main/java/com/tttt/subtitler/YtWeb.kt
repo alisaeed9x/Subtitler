@@ -69,7 +69,7 @@ class YtWebPane(private val act: Activity, private val onPlay: (String) -> Unit)
     }
 
     private fun build(): WebView {
-        val w = WebView(act)
+        val w = WebView(act); WebMute.register(w)
         w.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = true

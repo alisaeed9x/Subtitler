@@ -319,7 +319,7 @@ class BrowserActivity : Activity() {
 
     // ===== إنشاء WebView لتبويب =====
     private fun makeWebView(t: BTab): WebView {
-        val w = WebView(this)
+        val w = WebView(this); WebMute.register(w)
         w.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true; mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             setSupportZoom(true); builtInZoomControls = true; displayZoomControls = false
@@ -987,7 +987,8 @@ class BrowserActivity : Activity() {
         persistTabs()
         super.onBackPressed()
     }
-    override fun onPause() { persistTabs(); try { wvOrNull?.onPause() } catch (_: Throwable) {}; super.onPause() }
+    // (v148) أول ما تخرج من المتصفح: كل الفيديو/الصوت في كل التبويبات يقف (من غير ما يكمّل في الخلفية)، وكل التبويبات تتجمّد
+    override fun onPause() { persistTabs(); WebMute.pauseAll(); for (t in tabs) try { t.wv?.onPause() } catch (_: Throwable) {}; super.onPause() }
     override fun onResume() { super.onResume(); try { wvOrNull?.onResume() } catch (_: Throwable) {} }
     override fun onDestroy() {
         dead = true; h.removeCallbacksAndMessages(null)
