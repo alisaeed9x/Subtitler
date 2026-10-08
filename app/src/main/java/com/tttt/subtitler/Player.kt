@@ -91,6 +91,142 @@ class PlayerActivity : Activity(), Host {
     private fun setQualLabel(h: Int) {
         qualBRef?.text = if (h > 0) h.toString() else "HD"
         for (v in qualRowRefs) v.text = if (h > 0) "${h}p ▾" else if (vidW > 0 && vidH > 0) "${minOf(vidW, vidH)}p ▾" else "الجودة ▾"
+        paintQual()
+    }
+    /** (v134) عدد الجودات المتاحة للفيديو: يوتيوب (قايمة الجودات) أو مسارات HLS/DASH بارتفاعات مختلفة */
+    private fun qualCount(): Int {
+        if (qOpts.size > 1) return qOpts.size
+        return try {
+            val hs = HashSet<Int>()
+            for (g in player.currentTracks.groups) if (g.type == androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                for (ti in 0 until g.length) if (g.isTrackSupported(ti)) { val ht = g.getTrackFormat(ti).height; if (ht > 0) hs.add(ht) }
+            hs.size
+        } catch (_: Throwable) { 0 }
+    }
+    /** (v134) رقم الجودة: أخضر هادي لو الفيديو له أكتر من جودة تختار منها، أحمر لو جودة واحدة بس */
+    private fun paintQual() {
+        val multi = qualCount() > 1
+        val col = if (multi) 0xFF6FCF8A.toInt() else 0xFFFF6B6B.toInt()
+        qualBRef?.setTextColor(col)
+        // (v134) أكتر من جودة → زرار الجودة بيظهر؛ جودة واحدة → علامة صغيرة (الجودة + الحجم) فوق زرار الترجمة بدل الزرار
+        qualBRef?.visibility = if (uri == null && multi) View.VISIBLE else View.GONE
+        for (v in qualRowRefs) { v.setTextColor(col); v.visibility = if (multi) View.VISIBLE else View.GONE }
+        val ht = qOpts.getOrNull(qCur)?.h?.takeIf { it > 0 } ?: if (vidW > 0 && vidH > 0) minOf(vidW, vidH) else 0
+        for (b in qBadges) {
+            b.text = "🎞 " + (if (ht > 0) "${ht}p" else "—") + (if (sizeTxt.isNotEmpty()) "  ·  $sizeTxt" else "")
+            b.visibility = if (!multi && uri == null && url != null) View.VISIBLE else View.GONE
+        }
+    }
+    private val qBadges = ArrayList<TextView>()
+    private var sizeTxt = ""
+    private var sizeBusy = false
+    private var dlRunning = false
+    private var dlPop: android.widget.PopupWindow? = null
+    private fun isHlsUrl(): Boolean = (url ?: "").contains(".m3u8", true)
+    private fun dlName(): String = (intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)).substringBeforeLast('.', "").ifBlank { intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid) }
+    /** (v134) حجم الفيديو الحالي: HEAD للينك المباشر/اليوتيوب (صورة+صوت)، وتقدير bitrate×المدة لـ HLS */
+    fun refreshSize(show: Boolean = false) {
+        if (uri != null || url == null || sizeBusy) return
+        sizeBusy = true
+        val o = qOpts.getOrNull(qCur); val u = o?.url ?: url!!; val au = o?.audio ?: aurl; val hs = HashMap(hdr)
+        val hlsNow = o == null && isHlsUrl()
+        val brEst = try { player.videoFormat?.bitrate ?: -1 } catch (_: Throwable) { -1 }; val dur = durMs
+        Thread {
+            var n = -1L; var approx = false
+            try {
+                if (hlsNow) { if (brEst > 0 && dur > 0) { n = brEst / 8L * (dur / 1000L); approx = true } }
+                else {
+                    val a = Downloader.sizeOf(u, hs)
+                    if (a > 0) { n = a; if (au != null) { val b = Downloader.sizeOf(au, hs); if (b > 0) n += b } }
+                }
+            } catch (_: Throwable) {}
+            val txt = if (n > 0) (if (approx) "≈" else "") + Sniff.fmtSize(n) else ""
+            runOnUiThread {
+                sizeBusy = false; sizeTxt = txt; paintQual()
+                if (show) Notice.show(this, if (txt.isNotEmpty()) "📦 حجم الفيديو: $txt" else "حجم الفيديو مش معروف من السيرفر", 2600L)
+            }
+        }.start()
+    }
+    private fun startDownload(job: Downloader.Job) {
+        if (dlRunning) return
+        dlRunning = true
+        try { Notice.show(this, "⬇ بدأ التحميل: ${job.name}", 2500L) } catch (_: Throwable) {}
+        val app = applicationContext
+        Thread {
+            var lastShown = -10
+            val res = Downloader.run(app, job) { what, pct ->
+                if (pct < lastShown) lastShown = pct - 10
+                if (pct >= lastShown + 10 || pct == 99) { lastShown = pct; runOnUiThread { try { Notice.show(this, "$what $pct%", 1200L) } catch (_: Throwable) {} } }
+            }
+            runOnUiThread {
+                dlRunning = false
+                try { Notice.show(this, (if (res.first) "✅ اتحمّل: " else "⚠ ") + res.second, 5000L); log((if (res.first) "✅ تحميل: " else "⚠ تحميل: ") + res.second) } catch (_: Throwable) {}
+            }
+        }.start()
+    }
+    /** (v134) زرار ⬇: قايمة الجودات (بحجم كل واحدة) — الاختيار بيبدأ التحميل */
+    fun downloadPopup(anchor: View) {
+        dlPop?.let { if (it.isShowing) { it.dismiss(); dlPop = null; return } }
+        if (dlRunning) { Notice.show(this, "فيه تحميل شغّال دلوقتي — استنى يخلص", 2300L); return }
+        val u0 = url ?: return
+        val hs = HashMap(hdr); val nm = dlName()
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12)
+        }
+        col.addView(ui.text("⬇ تحميل — 🎬 فيديو (اختار الجودة)", 12f, th.primary, true).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(4)) })
+        fun addItem(label: String, job: Downloader.Job, sizeFn: (() -> Long)?) {
+            val b = ui.fsBtn(label) { _ -> dlPop?.dismiss(); startDownload(job) }.apply { minimumWidth = ui.dp(220) }
+            col.addView(b)
+            if (sizeFn != null) Thread {
+                val n = try { sizeFn() } catch (_: Throwable) { -1L }
+                if (n > 0) runOnUiThread { b.text = label + "  ·  " + Sniff.fmtSize(n) }
+            }.start()
+        }
+        if (qOpts.isNotEmpty()) {
+            for (o in qOpts) addItem(o.label, Downloader.Job(nm, o.url, o.audio, false, o.h, hs)) {
+                val a = Downloader.sizeOf(o.url, hs); if (a > 0 && o.audio != null) a + maxOf(0L, Downloader.sizeOf(o.audio, hs)) else a
+            }
+        } else if (isHlsUrl()) {
+            val seen = HashSet<Int>(); val tl = ArrayList<Pair<Int, Int>>()   // (الارتفاع، bitrate)
+            for (g in player.currentTracks.groups) if (g.type == androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                for (ti in 0 until g.length) if (g.isTrackSupported(ti)) { val f = g.getTrackFormat(ti); if (f.height > 0 && seen.add(f.height)) tl.add(Pair(f.height, f.bitrate)) }
+            if (tl.isEmpty()) addItem("أعلى جودة متاحة", Downloader.Job(nm, u0, null, true, 0, hs), null)
+            else for ((hh, br) in tl.sortedByDescending { it.first })
+                addItem("${hh}p", Downloader.Job(nm, u0, null, true, hh, hs), if (br > 0 && durMs > 0) ({ br / 8L * (durMs / 1000L) }) else null)
+            col.addView(ui.text("HLS: بيتحمّل ملف .ts (مقاطع من غير تشفير بس)", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(2)) })
+        } else {
+            val ht = if (vidW > 0 && vidH > 0) minOf(vidW, vidH) else 0
+            addItem("الفيديو بالجودة الحالية" + (if (ht > 0) " (${ht}p)" else ""), Downloader.Job(nm, u0, aurl, false, ht, hs)) {
+                val a = Downloader.sizeOf(u0, hs); if (a > 0 && aurl != null) a + maxOf(0L, Downloader.sizeOf(aurl!!, hs)) else a
+            }
+        }
+        // (v134) صوت فقط: M4A (AAC) — لو الصوت لينك لوحده (يوتيوب) بيتحمّل هو بس، وإلا بيتحمّل الفيديو ويتستخرج منه الصوت (أقل جودة عشان الحجم)
+        col.addView(ui.text("🎧 صوت فقط", 11f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(2)) })
+        val aOpt = qOpts.firstOrNull { it.audio != null }
+        val loOpt = qOpts.filter { it.h > 0 }.minByOrNull { it.h } ?: qOpts.lastOrNull()
+        val aJob: Downloader.Job = when {
+            aOpt != null -> Downloader.Job(nm, aOpt.url, aOpt.audio, false, 1, hs, true)
+            loOpt != null -> Downloader.Job(nm, loOpt.url, null, false, 1, hs, true)
+            isHlsUrl() -> Downloader.Job(nm, u0, null, true, 1, hs, true)
+            else -> Downloader.Job(nm, u0, aurl, false, 0, hs, true)
+        }
+        val aSrc = aJob.audio
+        addItem("🎧 تحميل كصوت (M4A)", aJob, if (aSrc != null) ({ Downloader.sizeOf(aSrc, hs) }) else null)
+        val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
+        val popW = minOf(resources.displayMetrics.widthPixels - ui.dp(24), ui.dp(300))
+        col.measure(View.MeasureSpec.makeMeasureSpec(popW, View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        val screenH = resources.displayMetrics.heightPixels
+        val up = loc[1] > screenH / 2
+        val avail = (if (up) loc[1] - ui.dp(12) else screenH - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
+        val popH = minOf(col.measuredHeight, avail)
+        val pw = android.widget.PopupWindow(scroll, maxOf(col.measuredWidth, ui.dp(220)), popH, true)
+        pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0)); pw.isOutsideTouchable = true
+        pw.setOnDismissListener { if (dlPop === pw) dlPop = null; showChrome() }
+        if (up) pw.showAsDropDown(anchor, 0, -(anchor.height + popH + ui.dp(2))) else pw.showAsDropDown(anchor, 0, ui.dp(2))
+        dlPop = pw
+        h.removeCallbacks(hideChrome); showChrome(); h.removeCallbacks(hideChrome)
     }
     var uri: Uri? = null
     private var httpDsf: DefaultHttpDataSource.Factory? = null
@@ -107,6 +243,20 @@ class PlayerActivity : Activity(), Host {
     var spMap = IntArray(0); var spStarts = LongArray(0); var spEnds = LongArray(0)
     var sdMap = IntArray(0); var sdStarts = LongArray(0); var sdEnds = LongArray(0)
     lateinit var soundTv: TextView; var soundKey = ""
+    var termFull = ""   // (v134) شرح المصطلح الظاهر فوق دلوقتي (بصيغة «المصطلح»: الشرح)
+    private fun termName(t: String): String { val a = t.indexOf('«'); val b = t.indexOf('»'); return if (a >= 0 && b > a) t.substring(a + 1, b).trim() else t.trim().take(24) }
+    /** (v134) دوس على ⓘ: الفيديو يقف ويظهر معنى المصطلح / المقصود منه في المشهد، وبيكمّل لما تقفل */
+    fun showTermCard() {
+        val full = termFull; if (full.isEmpty()) return
+        val was = try { player.isPlaying } catch (_: Throwable) { false }
+        try { player.pause() } catch (_: Throwable) {}
+        val body = full.substringAfter('»', full).trimStart(':', '：', ' ', '\n').trim().ifBlank { full }
+        fun resume() { if (was) { try { player.play() } catch (_: Throwable) {} } }
+        GAlert(this).setTitle("ⓘ " + termName(full)).setMessage(body)
+            .setPositiveButton("تمام") { _, _ -> resume() }
+            .setOnCancelListener { resume() }
+            .show()
+    }
     var curIdx = -1; var curKey = ""; var lastRefresh = 0L
     var offsetMs = 0L; var speed = 1f; var fit = 0; var fsFit = 2; var ccOn = true; var fitFsB: TextView? = null
     fun isLandNow() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -239,7 +389,12 @@ class PlayerActivity : Activity(), Host {
         if (::engine.isInitialized && !engineReady) { pendingBegin = true; return }   // البيانات المحفوظة لسه بتتحمّل: هتبدأ لوحدها أول ما تخلص
         dismissStrip()
         if (noSub) { noSub = false; if (!ccOn) ccToggleFn() }   // بدأت ترجمة: رجّع إظهار الترجمة
+        // (v134) الترجمة تبدأ من المكان اللي واقف فيه في الفيديو (مش من الأول): المؤشر بيتحط على باتش الوقت الحالي، واللي اتترجم قبل كده بيتخطّى
+        val wasFresh = freshOnce
+        val posNow = try { player.currentPosition } catch (_: Throwable) { cur }
+        if (posNow > 0) cur = posNow
         if (!engineStarted) { engineStarted = true; engine.userPaused = false; startEngine() } else engine.userPaused = false
+        if (!wasFresh && posNow > 2000L) { try { engine.translateFrom(posNow / 1000.0); log("▶ الترجمة من " + fmtMs(posNow)) } catch (_: Throwable) {} }
         updateTr()
     }
     private var trChipV: View? = null
@@ -256,6 +411,10 @@ class PlayerActivity : Activity(), Host {
         }
         val hh = ui.dp(if (compact) 40 else 44); val m = ui.dp(if (compact) 3 else 4)
         fun lp(w: Int) = LinearLayout.LayoutParams(w, hh).apply { setMargins(m, m, m, m) }
+        val webVid = uri == null && url != null
+        var dlRef: TextView? = null
+        val dlB = b("⬇", 0xFF37474F.toInt()) { dlRef?.let { downloadPopup(it) } }
+        dlRef = dlB
         val tr = b("▶ ترجمة", 0xFFE53935.toInt()) { beginTranslate() }
         var lgRef: TextView? = null
         val lgB = b(if (compact) "🌐 اللغة ▾" else "🌐 لغة الترجمة ▾", 0xFF37474F.toInt()) { lgRef?.let { langPopup(it) } }
@@ -277,7 +436,7 @@ class PlayerActivity : Activity(), Host {
             val tg = b("⏸ إيقاف", 0xFF424B57.toInt()) { if (::engine.isInitialized && engine.userPaused) beginTranslate() else pauseTranslate(); h.removeCallbacks(closeR); h.postDelayed(closeR, 5000) }
             val rd = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { h.removeCallbacks(closeR); h.postDelayed(closeR, 8000); redoDialog() }
             row.addView(chipB, lp(-2)); row.addView(tg, lp(-2)); row.addView(rd, lp(-2)); row.addView(lgB, lp(-2))
-            if (uri == null && url != null) row.addView(qBtn(), lp(-2))
+            if (webVid) { row.addView(qBtn(), lp(-2)); row.addView(dlB, lp(-2)) }
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
                 val started = engineStarted
@@ -301,7 +460,7 @@ class PlayerActivity : Activity(), Host {
             row.addView(rs, lp(0).apply { width = 0; weight = 1f })
             row.addView(rd2, lp(0).apply { width = 0; weight = 1f })
             row.addView(lgB, lp(0).apply { width = 0; weight = 1.3f })
-            if (uri == null && url != null) row.addView(qBtn(), lp(0).apply { width = 0; weight = 1.1f })
+            if (webVid) { row.addView(qBtn(), lp(0).apply { width = 0; weight = 1.1f }); row.addView(dlB, lp(0).apply { width = 0; weight = 0.6f }) }
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
                 rd2.visibility = if (engineStarted) View.VISIBLE else View.GONE
@@ -312,7 +471,19 @@ class PlayerActivity : Activity(), Host {
             }
         }
         updateTr()
-        return row
+        if (!webVid) return row
+        // (v134) علامة صغيرة فوق زرار الترجمة: الجودة + الحجم (بتظهر لما الفيديو له جودة واحدة بس) — دوس عليها تعرف الحجم
+        val badge = IconTextView(this).apply {
+            textSize = 10.5f; setTextColor(0xFFFF6B6B.toInt()); gravity = Gravity.CENTER; visibility = View.GONE
+            setPadding(ui.dp(10), ui.dp(2), ui.dp(10), ui.dp(2)); background = ui.box(0xCC141418.toInt(), 0x33FFFFFF, 10)
+            setOnClickListener { refreshSize(true) }
+        }
+        qBadges.add(badge)
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_HORIZONTAL }
+        wrap.addView(badge, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, ui.dp(2), 0, 0) })
+        wrap.addView(row, LinearLayout.LayoutParams(-1, -2))
+        paintQual()
+        return wrap
     }
     private val hideCard = Runnable { resumePending = false; applyCard() }
     private fun fmtMS(sec: Double): String { val s = sec.toInt(); return "%d:%02d".format(s / 60, s % 60) }
@@ -467,37 +638,19 @@ class PlayerActivity : Activity(), Host {
         Thread { SrtWriter.save(app, u, subsNow, off)?.let { p -> runOnUiThread { log("💾 اتحفظ SRT: $p"); if (!srtToastShown) { srtToastShown = true; say("💾 اتحفظ SRT جنب الفيديو") } } } }.start()
     }
 
-    // ===== (v108) فلتر ألوان الشاشة: تلقائي حسب نوع العمل / أصلي / متشبع / بارد / دافئ / أبيض وأسود =====
-    private val filterLabels = linkedMapOf("auto" to "تلقائي (حسب نوع العمل)", "orig" to "أصلي", "vivid" to "ألوان متشبعة", "cool" to "بارد (كول)", "warm" to "دافئ", "bw" to "أبيض وأسود")
-    private fun fxSat(v: Float) = androidx.media3.effect.HslAdjustment.Builder().adjustSaturation(v).build()
-    private fun fxRgb(r: Float, g: Float, b: Float) = androidx.media3.effect.RgbAdjustment.Builder().setRedScale(r).setGreenScale(g).setBlueScale(b).build()
-    private fun presetEffects(id: String): List<androidx.media3.common.Effect> = when (id) {
-        "vivid" -> listOf(fxSat(35f), androidx.media3.effect.Contrast(0.08f))
-        "cool" -> listOf(fxRgb(0.92f, 0.98f, 1.1f))
-        "warm" -> listOf(fxRgb(1.1f, 1.0f, 0.9f))
-        "bw" -> listOf(fxSat(-100f))
-        "action" -> listOf(fxSat(20f), androidx.media3.effect.Contrast(0.18f), fxRgb(0.97f, 1.0f, 1.05f))
-        "comedy" -> listOf(fxSat(30f), androidx.media3.effect.Brightness(0.04f), fxRgb(1.05f, 1.02f, 0.96f))
-        "horror" -> listOf(fxSat(-30f), androidx.media3.effect.Contrast(0.2f), androidx.media3.effect.Brightness(-0.04f), fxRgb(0.95f, 1.0f, 1.06f))
-        "romance" -> listOf(fxSat(10f), androidx.media3.effect.Brightness(0.02f), fxRgb(1.07f, 1.0f, 0.95f))
-        "scifi" -> listOf(fxSat(15f), androidx.media3.effect.Contrast(0.12f), fxRgb(0.94f, 1.0f, 1.1f))
-        else -> emptyList()
+    // ===== (v134) تضخيم الصوت (LoudnessEnhancer على جلسة صوت المشغّل) — 0..100% = لحد +15dB =====
+    private var loud: android.media.audiofx.LoudnessEnhancer? = null
+    fun applyBoost() {
+        val pct = (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100)
+        try {
+            if (!::player.isInitialized) return
+            val sid = player.audioSessionId
+            if (sid == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET || sid == 0) return
+            if (loud == null) loud = android.media.audiofx.LoudnessEnhancer(sid)
+            loud?.setTargetGain(pct * 15)
+            loud?.enabled = pct > 0
+        } catch (e: Throwable) { LogStore.err("boost", e) }
     }
-    private var fxApplied = false
-    fun applyFilter() {
-        if (!::player.isInitialized) return
-        val mode = Cfg.str("vfilter", "orig")
-        val id = if (mode == "auto") Cfg.str("vgenre:$vid", "") else mode
-        val fx = presetEffects(id)
-        if (fx.isEmpty() && !fxApplied) return   // من غير فلتر: ماندخلش خط الإيفكتس خالص (هو اللي كان بيمنع التمديد/الملء)
-        try { player.setVideoEffects(fx); fxApplied = fx.isNotEmpty() || fxApplied } catch (e: Throwable) { LogStore.err("filter", e) }
-    }
-    fun setFilterMode(id: String) {
-        Cfg.put("vfilter", id); applyFilter()
-        if (id == "auto" && Cfg.str("vgenre:$vid", "").isEmpty() && ::engine.isInitialized) { engine.onGenre = genreCb; engine.detectGenre() }
-        giShowFn(filterLabels[id] ?: "")
-    }
-    private val genreCb: (String) -> Unit = { g -> runOnUiThread { Cfg.put("vgenre:$vid", g); applyFilter() } }
 
     // ===== PiP =====
     private var inPip = false
@@ -714,10 +867,12 @@ class PlayerActivity : Activity(), Host {
             gravity = Gravity.CENTER; maxLines = 2; layoutDirection = View.LAYOUT_DIRECTION_RTL
             setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(4)); background = ui.box(0x99000000.toInt(), 0x00000000, 14); visibility = View.GONE
         }
-        videoBox.addView(soundTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(28) })
         // طبقة إيماءات شفافة فوق الفيديو والترجمة وتحت كل الأزرار (لازم تتضاف قبل درج اللوج وزرار 👁 وإلا بتبلع لمسهم)
         val gestureLayer = View(this)
         videoBox.addView(gestureLayer, FrameLayout.LayoutParams(-1, -1))
+        // (v134) فوق طبقة الإيماءات عشان علامة ⓘ تستقبل اللمس
+        videoBox.addView(soundTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(28) })
+        soundTv.setOnClickListener { showTermCard() }
         // أزرار عايمة فوق الفيديو: 📋 اللوج (يخفي/يظهر حالة الترجمة) و 👁 بصري
         batchTv = IconTextView(this).apply {
             setTextColor(Color.WHITE); textSize = 10f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
@@ -945,17 +1100,6 @@ class PlayerActivity : Activity(), Host {
         }
         fitFsB = fitB
         val menuB = IconGlyphButton(this, "menu").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { togglePop(this, gTool, false) } }
-        val gFilter = gCol()
-        fun fillFilterMenu() {
-            gFilter.removeAllViews()
-            val cur = Cfg.str("vfilter", "orig")
-            for ((id, label) in filterLabels) gFilter.addView(pd((if (id == cur) "✓ " else "") + label) { setFilterMode(id) })
-        }
-        val filterB = IconGlyphButton(this, "palette").apply {
-            background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12)
-            setOnClickListener { fillFilterMenu(); togglePop(this, gFilter, false) }
-            setOnLongClickListener { giShow("فلتر الألوان", Gravity.CENTER); true }
-        }
         val bgOnB = IconGlyphButton(this, if (Cfg.bool("bg_on_exit", false)) "check_box" else "box").apply {
             background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12)
             setOnClickListener {
@@ -1028,6 +1172,28 @@ class PlayerActivity : Activity(), Host {
         for ((tid, tl) in listOf("fonts" to "🔤 الخطوط", "anim" to "✨ الأنيميشن", "look" to "🎬 العرض والألوان", "general" to "🌐 اللهجة والأسلوب", "chars" to "🧑 الشخصيات",
             "engine" to "⚙ الترجمة والمحرك", "keys" to "🔑 المفاتيح", "bg" to "🌙 الترجمة في الخلفية", "sec" to "🔒 الأمان", "theme" to "🎨 المظهر"))
             gSet.addView(pd(tl) { openSettings(tid) })
+        // (v134) تضخيم الصوت: سلايدر 0..100% (لحد +15dB) — للفيديوهات اللي صوتها واطي
+        val gBoost = gCol()
+        val boostTv = ui.text("", 12f, 0xFFE8EAED.toInt()).apply { gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(6), ui.dp(8), 0) }
+        fun boostLabel(p: Int) = if (p == 0) "🔊 تضخيم الصوت: مطفي" else "🔊 تضخيم الصوت: ${p}%  (≈ +${"%.1f".format(p * 0.15)} dB)"
+        val bp0 = (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100)
+        gBoost.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
+        boostTv.text = boostLabel(bp0)
+        gBoost.addView(boostTv, LinearLayout.LayoutParams(ui.dp(240), -2))
+        gBoost.addView(android.widget.SeekBar(this).apply {
+            max = 100; progress = bp0; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8))
+            val tint = android.content.res.ColorStateList.valueOf(th.primary); progressTintList = tint; thumbTintList = tint
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    Cfg.put("vol_boost", p.toString()); boostTv.text = boostLabel(p); applyBoost()
+                }
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
+            })
+        }, LinearLayout.LayoutParams(ui.dp(240), -2))
+        gTool.addView(pk("🔊 تضخيم الصوت ›") { dismissPop(); togglePop(menuB, gBoost, false) })
         gTool.addView(pk("⚙️ الإعدادات ›") { dismissPop(); togglePop(menuB, gSet, false) })
         gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
         gAi.addView(pd("🧹 عائلي") { runTool("عائلي", "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام.", true) })
@@ -1128,7 +1294,6 @@ class PlayerActivity : Activity(), Host {
             tbRow.addView(textB, LinearLayout.LayoutParams(-2, ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(toolBtns[0], lp(0)); tbRow.addView(toolBtns[5], lp(5)); tbRow.addView(toolBtns[3], lp(3))
             tbRow.addView(bgOnB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
-            tbRow.addView(filterB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             textB.minimumWidth = ui.dp(38); textB.setPadding(ui.dp(8), 0, ui.dp(8), 0)
             textAtBottom = false
@@ -1559,8 +1724,14 @@ class PlayerActivity : Activity(), Host {
                 if (ccOn && curIdx >= 0 && !sub.suppressed && !pipNow() && (sub.visibility != View.VISIBLE || sub.height <= 0)) {
                     if (++hideTicks >= 2) { hideTicks = 0; LogStore.add("⚠ الترجمة #${curIdx + 1} المفروض ظاهرة بس الـview مخفي/ارتفاعه صفر — اتصلّحت"); sub.visibility = View.VISIBLE; sub.requestLayout(); curIdx = -2 }
                 } else hideTicks = 0
-                val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { list[it].translated }
-                if (sTxt != soundKey) { soundKey = sTxt; soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE }
+                // (v134) شرح المصطلحات: علامة ⓘ + اسم المصطلح بس بخط صغير (الشرح بيظهر لما تدوس عليها)؛ أوصاف الأصوات بتفضل زي ما هي
+                val termIx = if (!ccOn) -1 else sact.firstOrNull { list[it].translated.trimStart().startsWith("«") } ?: -1
+                val sTxt = if (!ccOn || sact.isEmpty()) "" else sact.joinToString("   ") { ix -> val t = list[ix].translated; if (t.trimStart().startsWith("«")) "ⓘ " + termName(t) else t }
+                if (sTxt != soundKey) {
+                    soundKey = sTxt; termFull = if (termIx >= 0) list[termIx].translated else ""
+                    soundTv.textSize = if (termIx >= 0) 10.5f else 13f
+                    soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE
+                }
                 st.text = status
                 if (now - lastBatch > 700) {
                     lastBatch = now
@@ -1603,7 +1774,7 @@ class PlayerActivity : Activity(), Host {
                 androidx.media3.exoplayer.source.MergingMediaSource(pf.createMediaSource(MediaItem.fromUri(Uri.parse(o.url))), pf.createMediaSource(MediaItem.fromUri(Uri.parse(au)))) }
             else DefaultMediaSourceFactory(f).createMediaSource(MediaItem.fromUri(Uri.parse(o.url)))
             player.setMediaSource(src, pos); player.prepare(); player.playWhenReady = play
-            qCur = i; setQualLabel(o.h)
+            qCur = i; sizeTxt = ""; setQualLabel(o.h); refreshSize()
             if (intent.getStringExtra("ytid") != null) Cfg.put("yt_maxh", o.h.toString())
             Notice.show(this, "🎞 الجودة: " + o.label, 2000L)
         } catch (e: Exception) { LogStore.err("Player:switchYt", e); Notice.show(this, "ما قدرتش أغيّر الجودة", 2300L) }
@@ -1627,10 +1798,11 @@ class PlayerActivity : Activity(), Host {
         val rf = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this, rf).setMediaSourceFactory(factory).build()
         player.setVideoSurfaceView(sv)
-        applyFilter()
+        applyBoost()
         player.setPlaybackSpeed(speed)
         var firstFrame = false
         player.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) { try { loud?.release() } catch (_: Throwable) {}; loud = null; applyBoost() }
             override fun onVideoSizeChanged(v: VideoSize) {
                 if (v.width > 0 && v.height > 0) {
                     vidW = v.width; vidH = v.height; videoBox.post { applyFit(sv, videoBox) }
@@ -1659,6 +1831,8 @@ class PlayerActivity : Activity(), Host {
             }
             override fun onRenderedFirstFrame() { firstFrame = true; webFirstFrame = true }
             override fun onTracksChanged(t: Tracks) {
+                paintQual()
+                if (sizeTxt.isEmpty()) refreshSize()
                 for (g in t.groups) {
                     if (g.type != C.TRACK_TYPE_VIDEO || g.length == 0) continue
                     val f = g.getTrackFormat(0)
@@ -1710,13 +1884,17 @@ class PlayerActivity : Activity(), Host {
         engine = eng
         engine.convDialect = Cfg.str("conv_dialect", "")
         engine.toneStyle = Cfg.str("tone_style", ""); engine.toneStrength = Cfg.str("tone_strength", "متوسطة")
-        engine.onGenre = genreCb
-        engine.genreWanted = Cfg.str("vfilter", "orig") == "auto" && Cfg.str("vgenre:$vid", "").isEmpty()
-        applyFilter()
         engine.titleHint = run {
             val t = (intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)).substringBeforeLast('.', Recents.titleOf(vid))
             val folder = try { uri?.toString()?.let { SrtWriter.pathOf(applicationContext, it)?.parentFile?.name } } catch (_: Exception) { null } ?: ""
-            listOf(t, folder).filter { it.isNotBlank() }.distinct().joinToString(" | ")
+            // (v134) تنضيف الاسم قبل البحث على النت: شيل [الجروب] و(السنة) والجودة وصيغ الريبّ (1080p / x265 / WEB-DL …) عشان جوجل يلاقي العمل أسهل
+            fun clean(x: String): String {
+                val c = x.replace(Regex("\\[[^\\]]*\\]|\\([^)]*\\)"), " ")
+                    .replace(Regex("(?i)\\b(2160p|1080p|720p|480p|360p|x264|x265|h\\.?264|h\\.?265|hevc|web-?dl|web-?rip|blu-?ray|brrip|hdrip|hdtv|aac|ac3|mkv|mp4)\\b"), " ")
+                    .replace(Regex("[._]+"), " ").replace(Regex("\\s+"), " ").trim()
+                return if (c.length >= 3) c else x
+            }
+            listOf(clean(t), clean(folder)).filter { it.isNotBlank() }.distinct().joinToString(" | ")
         }
         Live.engine = engine
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Notice.show(this, (m).toString(), 2300L) } }, { })
@@ -1858,6 +2036,7 @@ class PlayerActivity : Activity(), Host {
         try { visual.stop() } catch (e: Exception) { LogStore.err("Main:2164", e) }
         try { engine.stop() } catch (e: Exception) { LogStore.err("Main:2165", e) }
         try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2166", e) }
+        try { loud?.release(); loud = null } catch (_: Throwable) {}
         try { player.release() } catch (e: Exception) { LogStore.err("Main:2167", e) }
         uri = newUri; url = null; hdr.clear()
         cur = 0L; durMs = 0L; vidW = 0; vidH = 0; curIdx = -2; curKey = ""; dirty = true
@@ -2116,7 +2295,13 @@ class PlayerActivity : Activity(), Host {
             orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
             setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12)
         }
-        for (l in langs) col.addView(ui.fsBtn((if (l == curL) "✓ " else "") + (if (l == "فصحى") "فصحى (حرفية)" else l)) { _ ->
+        // (v134) الشكل بقى صفوف أفقية: اللهجات جنب بعض · تحتها الأسلوب والشدة · تحتها أزرار التطبيق (كانت عمود طويل)
+        fun flow() = FlowRow(this).apply { layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        fun cLp() = ViewGroup.MarginLayoutParams(-2, ui.dp(34)).apply { setMargins(ui.dp(3), ui.dp(2), ui.dp(3), ui.dp(2)) }
+        fun lbl(t: String) = ui.text(t, 11f, 0xFF9AA0A6.toInt()).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), 0, ui.dp(4), 0) }
+        fun lblLp() = ViewGroup.MarginLayoutParams(-2, ui.dp(34))
+        val rowL = flow()
+        for (l in langs) rowL.addView(ui.fsBtn((if (l == curL) "✓ " else "") + (if (l == "فصحى") "فصحى (حرفية)" else l)) { _ ->
             langPop?.dismiss()
             val v = if (l == "فصحى") "" else l
             Cfg.p.edit().putString("conv_dialect", v).apply()
@@ -2124,27 +2309,50 @@ class PlayerActivity : Activity(), Host {
             if (v.isNotEmpty() && v == conf.lang) { say("لهجة الترجمة في الإعدادات أصلًا $v — مفيش تحويل مطلوب"); touchSubs(); return@fsBtn }
             say(if (l == "فصحى") "الترجمة بالفصحى الحرفية" else "هحوّل للهجة $l من الباتش اللي إنت فيه وللقدّام، وبعدين اللي قبله — والباتشات الجديدة هتيجي باللهجة دي (النسخة القديمة اتحفظت في 🗂)")
             touchSubs()
-        }.apply { minimumWidth = ui.dp(150) })
-        // (v89) أسلوب الترجمة وشدته: بيتحفظوا وبيدخلوا في برومبت كل باتش جديد وكل تحويل لهجة، ومعاهم زرار تطبيق على اللي اتترجم فعلًا
-        fun hdr(t: String) = col.addView(ui.text(t, 11f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(2)) })
+        }, cLp())
+        col.addView(rowL, LinearLayout.LayoutParams(-1, -2))
+        // أسلوب الترجمة وشدته: بيتحفظوا وبيدخلوا في برومبت كل باتش جديد وكل تحويل لهجة، ومعاهم زرار تطبيق على اللي اتترجم فعلًا
+        // (v134) الأسلوب والشدة بقوا سلايدرين بدل أزرار — بتحرّك واللي بتقف عليه بيتحفظ
         val toneStyles = listOf("حرفي", "شعبي", "جرئ", "+18"); val toneDegrees = listOf("خفيفة", "متوسطة", "شديدة")
-        val styleBtns = ArrayList<Pair<String, TextView>>(); val degBtns = ArrayList<Pair<String, TextView>>()
-        fun curStyle() = Cfg.str("tone_style", "").ifBlank { "حرفي" }
-        fun curDeg() = Cfg.str("tone_strength", "متوسطة")
-        fun paintTone() {
-            styleBtns.forEach { (k, v) -> v.text = (if (k == curStyle()) "✓ " else "") + k }
-            degBtns.forEach { (k, v) -> v.text = (if (k == curDeg()) "✓ " else "") + k; v.alpha = if (curStyle() == "حرفي") 0.4f else 1f }
+        var stI = toneStyles.indexOf(Cfg.str("tone_style", "").ifBlank { "حرفي" }).coerceAtLeast(0)
+        var dgI = toneDegrees.indexOf(Cfg.str("tone_strength", "متوسطة")).let { if (it < 0) 1 else it }
+        fun curStyle() = toneStyles[stI]
+        fun curDeg() = toneDegrees[dgI]
+        val styleLbl = lbl(""); val degLbl = lbl("")
+        fun mkSb(max: Int, p: Int) = android.widget.SeekBar(this).apply {
+            this.max = max; progress = p; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(6))
+            val tint = android.content.res.ColorStateList.valueOf(th.primary)
+            progressTintList = tint; thumbTintList = tint
         }
-        hdr("الأسلوب")
-        for (k in toneStyles) { val b = ui.fsBtn(k) { _ ->
-            Cfg.put("tone_style", if (k == "حرفي") "" else k); engine.toneStyle = if (k == "حرفي") "" else k; paintTone()
-            say(if (k == "حرفي") "الأسلوب حرفي — الباتشات الجاية من غير تعديل أسلوب" else "الأسلوب $k (${curDeg()}) — الباتشات الجاية هتتترجم بيه. لو عايزه على اللي اتترجم دوس «طبّق»")
-        }.apply { minimumWidth = ui.dp(150) }; styleBtns.add(k to b); col.addView(b) }
-        hdr("الشدة")
-        for (k in toneDegrees) { val b = ui.fsBtn(k) { _ ->
-            Cfg.put("tone_strength", k); engine.toneStrength = k; paintTone()
-            say(if (curStyle() == "حرفي") "الشدة بتشتغل مع شعبي / جرئ / +18 بس" else "الشدة $k — الباتشات الجاية هتتترجم بيها")
-        }.apply { minimumWidth = ui.dp(150) }; degBtns.add(k to b); col.addView(b) }
+        val styleSb = mkSb(toneStyles.size - 1, stI); val degSb = mkSb(toneDegrees.size - 1, dgI)
+        fun paintTone() {
+            styleLbl.text = "الأسلوب:  " + curStyle() + "   (حرفي ◂ شعبي ◂ جرئ ◂ +18)"
+            degLbl.text = "الشدة:  " + curDeg() + if (stI == 0) "   (بتشتغل مع شعبي / جرئ / +18 بس)" else ""
+            degSb.alpha = if (stI == 0) 0.4f else 1f
+        }
+        styleSb.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                stI = p; val v = if (p == 0) "" else toneStyles[p]; Cfg.put("tone_style", v); engine.toneStyle = v; paintTone()
+            }
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {
+                say(if (stI == 0) "الأسلوب حرفي — الباتشات الجاية من غير تعديل أسلوب" else "الأسلوب ${curStyle()} (${curDeg()}) — الباتشات الجاية هتتترجم بيه. لو عايزه على اللي اتترجم دوس «طبّق»")
+            }
+        })
+        degSb.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                dgI = p; Cfg.put("tone_strength", toneDegrees[p]); engine.toneStrength = toneDegrees[p]; paintTone()
+            }
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {
+                say(if (stI == 0) "الشدة بتشتغل مع شعبي / جرئ / +18 بس" else "الشدة ${curDeg()} — الباتشات الجاية هتتترجم بيها")
+            }
+        })
+        col.addView(styleLbl, LinearLayout.LayoutParams(-1, -2)); col.addView(styleSb, LinearLayout.LayoutParams(-1, -2))
+        col.addView(degLbl, LinearLayout.LayoutParams(-1, -2)); col.addView(degSb, LinearLayout.LayoutParams(-1, -2))
         paintTone()
         fun toneInstr(): String {
             val st = curStyle()
@@ -2152,16 +2360,19 @@ class PlayerActivity : Activity(), Host {
             return if (what.isEmpty()) "رجّع كل جملة لترجمة حرفية أمينة قريبة من الأصل من غير مبالغة في العامية أو الجرأة."
             else "أعد صياغة كل جملة بأسلوب «$st»: $what. الشدة: ${curDeg()}. حافظ على المعنى والجنس."
         }
-        col.addView(ui.fsBtn("🔁 طبّق من هنا للآخر") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), false) }.apply { minimumWidth = ui.dp(150) })
-        col.addView(ui.fsBtn("🔁 طبّق على الفيديو كله") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), true) }.apply { minimumWidth = ui.dp(150) })
+        val rowA = flow()
+        rowA.addView(ui.fsBtn("🔁 طبّق من هنا للآخر") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), false) }, cLp())
+        rowA.addView(ui.fsBtn("🔁 طبّق على الفيديو كله") { _ -> langPop?.dismiss(); runTool("أسلوب " + curStyle() + " (" + curDeg() + ")", toneInstr(), true) }, cLp())
+        col.addView(rowA, LinearLayout.LayoutParams(-1, -2))
         val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
-        col.measure(View.MeasureSpec.makeMeasureSpec(ui.dp(170), View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
+        val popW = minOf(resources.displayMetrics.widthPixels - ui.dp(24), ui.dp(430))
+        col.measure(View.MeasureSpec.makeMeasureSpec(popW, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2); anchor.getLocationOnScreen(loc)
         val screenH = resources.displayMetrics.heightPixels
         val up = loc[1] > screenH / 2   // الزرار في النص التحتاني (الشريط السفلي) → القايمة تفتح فوقه
         val avail = (if (up) loc[1] - ui.dp(12) else screenH - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
         val popH = minOf(col.measuredHeight, avail)
-        val pw = android.widget.PopupWindow(scroll, ui.dp(170), popH, true)
+        val pw = android.widget.PopupWindow(scroll, popW, popH, true)
         pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
         pw.isOutsideTouchable = true
         pw.setOnDismissListener { if (langPop === pw) langPop = null; showChrome() }
