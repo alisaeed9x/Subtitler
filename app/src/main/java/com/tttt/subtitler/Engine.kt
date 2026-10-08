@@ -110,13 +110,8 @@ class Engine(
     private class RaceWin(val key: String, val model: String, val res: Api.Result, val ms: Long)
     private fun fmtSec(ms: Long) = String.format(java.util.Locale.US, "%.1f", ms / 1000.0) + "ث"
 
-    /** مرشحين الاختبار: الموديل الحالي + أحدث flash-lite اتبلّغ بيه + الاسم المتحرك + 2.5 lite */
-    private fun raceModels(): List<String> {
-        val l = ArrayList<String>(); l.add(conf.model)
-        try { l.addAll(ModelWatch.pending().reversed()) } catch (_: Throwable) {}
-        l.add("gemini-flash-lite-latest"); l.add("gemini-2.5-flash-lite")
-        return l.distinct()
-    }
+    /** (v149) مرشحين الاختبار: الموديل اللي إنت مختاره + flash-lite-latest بس */
+    private fun raceModels(): List<String> = listOf(conf.model, "gemini-flash-lite-latest").distinct()
 
     /**
      * أول باتش: بيتبعت على كل مفتاح صالح في نفس اللحظة، كل مفتاح بموديل مختلف. أول رد سليم هو اللي بيتطبّق،
@@ -132,15 +127,15 @@ class Engine(
             }
         } catch (_: Throwable) {}
         val cands = raceModels()
-        val n = minOf(keys.size, cands.size)
+        val n = keys.size   // (v149) كل المفاتيح الصالحة بتشارك، والموديلين بيتوزعوا عليها
         if (n < 2) return null
         val prompt = buildPrompt(w.durSec, w.startSec, false, i)
-        host.log("🏎 اختبار سرعة: باتش ${i + 1} على $n مفاتيح، كل مفتاح بموديل مختلف…")
+        host.log("🏎 اختبار سرعة: باتش ${i + 1} على $n مفاتيح بالموديلات: ${cands.joinToString(" و ") { shortModel(it) }}…")
         val winner = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
         val latch = java.util.concurrent.CountDownLatch(1)
         val left = java.util.concurrent.atomic.AtomicInteger(n)
         for (x in 0 until n) {
-            val key = keys[x]; val model = cands[x]
+            val key = keys[x]; val model = cands[x % cands.size]
             Thread {
                 val t0 = System.currentTimeMillis()
                 var line: String

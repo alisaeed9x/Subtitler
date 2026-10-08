@@ -616,10 +616,10 @@ class PlayerActivity : Activity(), Host {
         }
         if (goHome) try { startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { LogStore.err("Main:1029", e) }
         try { pipOv?.hide(); pipOv = null } catch (_: Throwable) {}
-        if (pipNow()) finishAndRemoveTask() else finish()   // (v148) من نافذة الـ PiP: يشيل النافذة خالص
+        if (pipNow()) finishAndRemoveTask() else finish()   // (v149) من نافذة الـ PiP: يشيل النافذة خالص
     }
 
-    /** (v148) وضع «صوت بس» (من زرار الـ PiP): يشيل نافذة الـ PiP ويسيب الفيديو شغّال كصوت في الخلفية، ويوقف الترجمة */
+    /** (v149) وضع «صوت بس» (من زرار الـ PiP): يشيل نافذة الـ PiP ويسيب الفيديو شغّال كصوت في الخلفية، ويوقف الترجمة */
     private var audioOnlyMode = false
     fun audioOnly() {
         audioOnlyMode = true
@@ -632,7 +632,7 @@ class PlayerActivity : Activity(), Host {
         try { moveTaskToBack(true) } catch (e: Exception) { LogStore.err("Player:audioOnly5", e) }
     }
 
-    /** (v148) إيقاف نهائي (من زرار الـ PiP): يحفظ التقدم، يوقف الفيديو والمحرك وكل الترجمة في الخلفية والإشعارات، ويطلّع التطبيق من الرام */
+    /** (v149) إيقاف نهائي (من زرار الـ PiP): يحفظ التقدم، يوقف الفيديو والمحرك وكل الترجمة في الخلفية والإشعارات، ويطلّع التطبيق من الرام */
     fun fullStop() {
         try { player.pause() } catch (e: Exception) { LogStore.err("Player:fullStop1", e) }
         try { if (!handedOff) saveRecentForce() } catch (e: Exception) { LogStore.err("Player:fullStop2", e) }
@@ -1852,7 +1852,7 @@ class PlayerActivity : Activity(), Host {
         // MKV وغيره: لو الديكودر الأول فشل (HEVC / 10-bit) جرّب اللي بعده بدل شاشة سودا
         val rf = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this, rf).setMediaSourceFactory(factory).build()
-        // (v148) المشغّل بيمسك الـ audio focus: أي تطبيق تاني شغّال صوت بيتوقف، ولو حد تاني خد الصوت المشغّل بيقف بدل ما الصوتين يتخلطوا
+        // (v149) المشغّل بيمسك الـ audio focus: أي تطبيق تاني شغّال صوت بيتوقف، ولو حد تاني خد الصوت المشغّل بيقف بدل ما الصوتين يتخلطوا
         try { player.setAudioAttributes(androidx.media3.common.AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true); player.setHandleAudioBecomingNoisy(true) } catch (e: Throwable) { LogStore.err("Player:focus", e) }
         WebMute.pauseAll()
         player.setVideoSurfaceView(sv)
@@ -2699,7 +2699,7 @@ class PlayerActivity : Activity(), Host {
     }
     override fun onResume() {
         super.onResume(); internalNav = false; resumedNow = true; h.removeCallbacks(pipExitCheck)
-        WebMute.pauseAll()   // (v148) أي صوت WebView (متصفح/يوتيوب) يتقفل أول ما المشغّل يظهر
+        WebMute.pauseAll()   // (v149) أي صوت WebView (متصفح/يوتيوب) يتقفل أول ما المشغّل يظهر
         if (audioOnlyMode) {   // رجعنا من وضع «صوت بس»: المحرك كان موقوف، نجهّزه من جديد (الترجمة بتبدأ لما تدوس ترجم)
             audioOnlyMode = false; engineStarted = false
             try { initEngine(); say("الترجمة كانت موقوفة في وضع الصوت — دوس ترجم لو عايز تكمّل") } catch (e: Throwable) { LogStore.err("Player:audioResume", e) }

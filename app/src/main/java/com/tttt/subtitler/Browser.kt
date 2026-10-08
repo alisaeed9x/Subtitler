@@ -987,7 +987,7 @@ class BrowserActivity : Activity() {
         persistTabs()
         super.onBackPressed()
     }
-    // (v148) أول ما تخرج من المتصفح: كل الفيديو/الصوت في كل التبويبات يقف (من غير ما يكمّل في الخلفية)، وكل التبويبات تتجمّد
+    // (v149) أول ما تخرج من المتصفح: كل الفيديو/الصوت في كل التبويبات يقف (من غير ما يكمّل في الخلفية)، وكل التبويبات تتجمّد
     override fun onPause() { persistTabs(); WebMute.pauseAll(); for (t in tabs) try { t.wv?.onPause() } catch (_: Throwable) {}; super.onPause() }
     override fun onResume() { super.onResume(); try { wvOrNull?.onResume() } catch (_: Throwable) {} }
     override fun onDestroy() {

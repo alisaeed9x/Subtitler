@@ -46,7 +46,7 @@ class PipSubBar(private val ctx: Context, private val rect: () -> IntArray?, pri
         if (added && actions.isNotEmpty()) addBar(type)
     }
 
-    /** (v148) أزرار فوق نافذة الـ PiP (قابلة للمس): ترجم في الخلفية / إيقاف نهائي */
+    /** (v149) أزرار فوق نافذة الـ PiP (قابلة للمس): ترجم في الخلفية / إيقاف نهائي */
     private fun addBar(type: Int) {
         val row = android.widget.LinearLayout(ctx).apply { orientation = android.widget.LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
         actions.forEachIndexed { i, a ->

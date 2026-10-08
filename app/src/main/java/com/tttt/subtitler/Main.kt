@@ -212,7 +212,7 @@ class MainActivity : Activity() {
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
-            "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (كل مفتاح بموديل flash-lite مختلف) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
+            "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
@@ -234,7 +234,7 @@ class MainActivity : Activity() {
         }
         rebuildModes()
         val modesBtn = ui.button("↻ حدّث قايمة أوضاع المفاتيح") { rebuildModes() }
-        // ===== (v148) اختبار سرعة رد الـ AI من الإعدادات — زي لوج الباتشات في المشغّل: كل مفتاح × كل موديل + زمن الرد والأسرع =====
+        // ===== (v149) اختبار سرعة رد الـ AI من الإعدادات — زي لوج الباتشات في المشغّل: كل مفتاح × كل موديل + زمن الرد والأسرع =====
         class SpRes(val keyNo: Int, val model: String, val ms: Long, val ok: Boolean, val note: String)
         val speedOut = ui.text("", 12f, th.text).apply {
             typeface = android.graphics.Typeface.MONOSPACE; layoutDirection = View.LAYOUT_DIRECTION_RTL
@@ -250,11 +250,8 @@ class MainActivity : Activity() {
             if (speedRunning) { Notice.show(this, ("الاختبار شغّال لسه…").toString(), 1800L); return@button }
             val ks = (keyList(keys.text.toString()) + keyList(extra.text.toString()) + keyList(backup.text.toString())).distinct().take(6)
             if (ks.isEmpty()) { Notice.show(this, ("ضيف مفتاح API الأول").toString(), 2300L); return@button }
-            val cands = ArrayList<String>()
-            cands.add(model.text.toString().trim().ifEmpty { Models.DEFAULT })
-            try { cands.addAll(ModelWatch.pending().reversed()) } catch (_: Throwable) {}
-            cands.add("gemini-flash-lite-latest"); cands.add("gemini-2.5-flash-lite")
-            val ms = cands.distinct()
+            // (v149) الموديل اللي مختاره + flash-lite-latest، وكل المفاتيح على الاتنين
+            val ms = listOf(model.text.toString().trim().ifEmpty { Models.DEFAULT }, "gemini-flash-lite-latest").distinct()
             val total = ks.size * ms.size
             val res = java.util.ArrayList<SpRes>()
             val left = java.util.concurrent.atomic.AtomicInteger(total)
@@ -415,7 +412,7 @@ class MainActivity : Activity() {
             TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
                 ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
                 ui.section("🏎 اختبار سرعة رد الـ AI", false,
-                    ui.text("بيبعت طلب صغير على كل مفتاح بكل موديل ويوريك زمن الرد والأسرع (🏆) — زي لوج الباتشات في المشغّل. بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
+                    ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "speedtest")),
