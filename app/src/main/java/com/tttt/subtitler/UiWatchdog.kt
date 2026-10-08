@@ -17,11 +17,14 @@ object UiWatchdog {
         val main = Looper.getMainLooper(); val h = Handler(main)
         val pending = AtomicBoolean(false)
         Thread {
-            var reported = 0L
+            var reported = 0L; var lastLoop = System.currentTimeMillis()
             while (true) {
                 if (pending.compareAndSet(false, true)) h.post { beat = System.currentTimeMillis(); pending.set(false) }
                 try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
                 val now = System.currentTimeMillis()
+                // (v150) لو اللفة نفسها اتأخرت كتير = العملية كلها اتجمّدت (أندرويد جمّد التطبيق في الخلفية): مش هنج حقيقي
+                if (now - lastLoop > 3000) { lastLoop = now; beat = now; continue }
+                lastLoop = now
                 val stall = now - beat
                 if (stall > 2000 && now - reported > 4000) {
                     reported = now

@@ -126,12 +126,15 @@ class Engine(
                 modelOv = cm; host.log("🏁 الموديل الأسرع (من اختبار قريب): ${shortModel(cm)}"); speedLines.add("🏁 الموديل المثبّت: ${shortModel(cm)} (من اختبار قريب)"); return null
             }
         } catch (_: Throwable) {}
+        try { if (System.currentTimeMillis() - Cfg.p.getLong("speed_fail_at", 0L) < 10 * 60_000L) return null } catch (_: Throwable) {}   // (v150) فشل قريب: ماتعيدش الاختبار كل مرة
         val cands = raceModels()
         val n = keys.size   // (v149) كل المفاتيح الصالحة بتشارك، والموديلين بيتوزعوا عليها
         if (n < 2) return null
         val prompt = buildPrompt(w.durSec, w.startSec, false, i)
         host.log("🏎 اختبار سرعة: باتش ${i + 1} على $n مفاتيح بالموديلات: ${cands.joinToString(" و ") { shortModel(it) }}…")
         val winner = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
+        val mainWin = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
+        val mainLatch = java.util.concurrent.CountDownLatch(1)
         val latch = java.util.concurrent.CountDownLatch(1)
         val left = java.util.concurrent.atomic.AtomicInteger(n)
         for (x in 0 until n) {
@@ -147,22 +150,32 @@ class Engine(
                     val cnt = if (j == null) 0 else Parse.subs(j, w.startSec, w.durSec).size
                     val valid = (r.finish.isEmpty() || r.finish == "STOP") && (cnt > 0 || (r.text.isBlank() && w.silent))
                     line = "🔑${keyNo(key)} · ${shortModel(model)}: ${fmtSec(ms)} · $cnt جملة" + if (valid) "" else " ⚠ رد مش سليم"
+                    if (valid && model == conf.model && mainWin.compareAndSet(null, RaceWin(key, model, r, ms))) mainLatch.countDown()
                     if (valid && winner.compareAndSet(null, RaceWin(key, model, r, ms))) { line += " 🏆"; latch.countDown() }
                 } catch (e: Throwable) {
                     line = "🔑${keyNo(key)} · ${shortModel(model)}: ❌ " + (e.message ?: e.toString()).take(70)
                 }
                 host.log("🏎 $line"); speedLines.add(line)
-                if (left.decrementAndGet() == 0) latch.countDown()
+                if (left.decrementAndGet() == 0) { latch.countDown(); mainLatch.countDown() }
             }.apply { isDaemon = true }.start()
         }
         try { latch.await(150, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) { return null }
-        val win = winner.get()
-        if (win == null) { host.log("🏎 اختبار السرعة: مفيش رد سليم من أي مفتاح — كمّلت بالموديل العادي"); return null }
-        modelOv = win.model
-        try { Cfg.p.edit().putString("speed_model", win.model).putString("speed_from", conf.model).putLong("speed_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
-        host.log("🏁 الموديل الأسرع: ${shortModel(win.model)} (${fmtSec(win.ms)} على مفتاح ${keyNo(win.key)}) — كل المفاتيح اتحوّلت له")
-        host.notice("🏁 الموديل الأسرع: ${shortModel(win.model)} — كل المفاتيح اتحوّلت له")
-        return win
+        var win: RaceWin? = winner.get()
+        // (v150) flash-lite أضعف: لو الموديل اللي اخترته رد سليم في ≤6ث بعد الأسرع يفضل هو
+        if (win != null && win!!.model != conf.model && cands.contains(conf.model)) {
+            try { mainLatch.await(6, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+            val mw = mainWin.get(); if (mw != null) win = mw
+        }
+        if (win == null) {
+            try { Cfg.p.edit().putLong("speed_fail_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
+            host.log("🏎 اختبار السرعة: مفيش رد سليم من أي مفتاح — كمّلت بالموديل العادي"); return null
+        }
+        val win0 = win!!
+        modelOv = win0.model
+        try { Cfg.p.edit().putString("speed_model", win0.model).putString("speed_from", conf.model).putLong("speed_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
+        host.log("🏁 الموديل الأسرع: ${shortModel(win0.model)} (${fmtSec(win0.ms)} على مفتاح ${keyNo(win0.key)}) — كل المفاتيح اتحوّلت له")
+        host.notice("🏁 الموديل الأسرع: ${shortModel(win0.model)} — كل المفاتيح اتحوّلت له")
+        return win0
     }
 
     @Volatile private var maxApplied = -1                           // أعلى باتش اتطبّق (لو في باتش قبله لسه شغال يبقى متأخر)
@@ -204,6 +217,10 @@ class Engine(
     }
     private val convBusy = AtomicBoolean(false)
     @Volatile private var lastConvFail = 0L
+    @Volatile private var convFailN = 0
+    /** (v150) جمل conv=true لسه شكلها فصحى: بتتعاد مرة واحدة بس (عشان ما نلفّش في حلقة) */
+    private val msaTried = ConcurrentHashMap.newKeySet<String>()
+    private fun needsConv(s: Sub) = !s.conv || (Msa.fusha(s) && pk(s) !in msaTried)
     /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
     private val incomplete = ConcurrentHashMap.newKeySet<Int>()
     /** باتشات المستخدم طلب إعادتها بالإيد: نتخطّى فلتر الصمت (VAD) عليها عشان ماتتعلّمش «خلصت» من غير ما تتبعت */
@@ -389,7 +406,7 @@ class Engine(
         if (existing && subs.isNotEmpty() && prev != d) { val lb = if (prev.isBlank()) "فصحى" else prev; saveVersion("ترجمة $lb", lb) }
         convDialect = d
         if (d.isBlank() || d == "فصحى") { pend.clear(); return }
-        lastConvFail = 0L
+        lastConvFail = 0L; convFailN = 0
         if (existing) synchronized(lock) { subs = subs.map { it.copy(conv = false) }; pend.addAll(subs.map { pk(it) }) }
         maybeConvert(true)
     }
@@ -402,8 +419,8 @@ class Engine(
     fun maybeConvert(force: Boolean = false) {
         val tgt = convDialect
         if (tgt.isBlank() || tgt == "فصحى" || tgt == conf.lang) return
-        if (System.currentTimeMillis() - lastConvFail < 60_000) return
-        val todo = synchronized(lock) { subs.filter { !it.conv } }
+        if (System.currentTimeMillis() - lastConvFail < minOf(60_000L, 10_000L shl minOf(convFailN, 3))) return
+        val todo = synchronized(lock) { subs.filter { needsConv(it) } }
         if (todo.isEmpty()) return
         val span = todo.maxOf { it.end } - todo.minOf { it.start }
         if (!force && span < ch * 0.5) return
@@ -413,8 +430,9 @@ class Engine(
     private fun convertSubs(tgt: String): Int {
         var changed = 0
         val snap = synchronized(lock) { subs }
-        val idx0 = snap.indices.filter { !snap[it].conv }
+        val idx0 = snap.indices.filter { needsConv(snap[it]) }
         if (idx0.isEmpty()) return 0
+        for (k in idx0) if (snap[k].conv) msaTried.add(pk(snap[k]))
         // من أول الباتش اللي المشاهد فيه ولقدّام الأول، وبعدين اللي قبله
         val focus = try { cStart(maxOf(0, (host.position() / ch).toInt())) } catch (_: Exception) { 0.0 }
         val idx = idx0.filter { snap[it].start >= focus - 0.05 } + idx0.filter { snap[it].start < focus - 0.05 }
@@ -446,8 +464,8 @@ class Engine(
                     subs = cur
                     for (ix in got) pend.remove(pk(snap[ix]))
                 }
-                host.changed()
-            } catch (e: Exception) { lastConvFail = System.currentTimeMillis(); host.log("⚠ التحويل للهجة فشل: " + (e.message ?: "").take(130)) }
+                host.changed(); convFailN = 0
+            } catch (e: Exception) { lastConvFail = System.currentTimeMillis(); convFailN++; host.log("⚠ التحويل للهجة فشل: " + (e.message ?: "").take(130)) }
         }
         if (changed > 0) { persist(); host.log("✅ اتحوّلت $changed جملة للهجة $tgt") }
         return changed
@@ -996,6 +1014,7 @@ class Engine(
         while (true) {
             try { return Api.generate(curModel(), key, prompt, null, maxTokens, temp, json, search) }
             catch (e: ApiErr) {
+                if (e.code >= 500) { if (++tries > 2) throw e; nap(2000L * tries); helperKey(i + tries)?.let { key = it }; continue }   // (v150) 503 مؤقت: جرّب تاني على مفتاح تاني
                 if (e.code == 429) pool.block(key, 60_000) else if (e.code == 403) pool.block(key, 3_600_000) else throw e
                 val alt = helperKey(i + 1)
                 if (alt == null || alt == key || ++tries > 2) throw e

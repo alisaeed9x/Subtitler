@@ -576,6 +576,20 @@ object LangGuard {
     fun foreignOf(subs: List<Sub>): List<Sub> = subs.filter { foreign(it) }
 }
 
+/** (v150) كشف محلي للجمل اللي لسه فصحى (كلمات المصريين مابيقولوهاش) — بيتستخدم عشان تحويل اللهجة يتعاد عليها */
+object Msa {
+    private val MARK = setOf("لقد","سوف","لماذا","ماذا","هذا","هذه","هؤلاء","هناك","الآن","أريد","أريدك","كيف","أين","متى","الذي","التي","الذين","حيث","يجب","أستطيع","يمكنك","يمكنني","لست","لستِ","إنه","إنها","إنني","أنني","لكن","لكنني","لكنك","إذا","أيضا","أيضاً","بالفعل","هل","أتريد","أتريدين","أنتِ","أليس","كان بإمكانك")
+    private val STRIP = Regex("[\\u064B-\\u0652\\u0640.,!?؟،:;«»\"'()\\-–—…]")
+    fun fusha(t: String): Boolean {
+        if (t.isBlank()) return false
+        val w = STRIP.replace(t, " ").split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (w.size < 2) return false
+        val first = w[0]
+        return w.any { it in MARK && !(it == "هل" && it != first) } || (first == "هل")
+    }
+    fun fusha(s: Sub): Boolean = !s.isSound && !s.isSong && fusha(s.translated)
+}
+
 // ===== تحليل الرد (نفس منطق الإنقاذ الجزئي في الأصل) =====
 object Parse {
     fun json(text: String): JSONObject? {
@@ -675,7 +689,10 @@ object Subs {
         }
     }
     private fun norm(t: String) = t.replace(Regex("[\\s.,!?؟،«»\"']"), "").trim()
-    fun dedup(subs: List<Sub>): List<Sub> {
+    /** (v150) جملة أصلها مجرد علامات ترقيم («...») وليها ترجمة = تأليف على صمت — بتتشال */
+    private fun emptyOrig(s: Sub) = !s.isSound && !s.isSong && s.original.isNotBlank() && s.original.none { it.isLetterOrDigit() }
+    fun dedup(subs0: List<Sub>): List<Sub> {
+        val subs = if (subs0.any { emptyOrig(it) }) subs0.filter { !emptyOrig(it) } else subs0
         if (subs.size < 2) return subs
         val sorted = subs.sortedWith(compareBy({ it.start }, { it.end }))
         val res = ArrayList<Sub>()
