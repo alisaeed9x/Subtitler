@@ -122,6 +122,16 @@ object PlayerLogic {
         }
         return sb.toString()
     }
+    /** (v153) SRT بالنص الأصلي المستخرج (من غير الترجمة) — لتحميله من الإعدادات */
+    fun toSrtOriginal(subs: List<Sub>, offsetMs: Long = 0): String {
+        val sb = StringBuilder(); var n = 1
+        for (q in subs.sortedBy { it.start }) {
+            if (q.isSound || q.original.isBlank()) continue
+            val a = maxOf(0L, (q.start * 1000).toLong() + offsetMs); val b = maxOf(a, (q.end * 1000).toLong() + offsetMs)
+            sb.append("${n++}\n${srtTime(a)} --> ${srtTime(b)}\n${q.original.trim()}\n\n")
+        }
+        return sb.toString()
+    }
     /** نسبة التغطية % */
     fun percent(coveredSec: Double, durSec: Double) = if (durSec <= 0) 0 else (coveredSec / durSec * 100).toInt().coerceIn(0, 100)
 

@@ -1179,6 +1179,7 @@ class PlayerActivity : Activity(), Host {
         qualPopFn = { v -> if (fillQ()) togglePop(v, gQ, true) else Notice.show(this, "مفيش جودات تانية للفيديو ده", 2300L) }
         setQualLabel(qOpts.getOrNull(qCur)?.h ?: 0)
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
+        val charsB = mini("🧑") { showChars() }   // (v151) الشخصيات وجنسها — نافذة فوق الفيديو من غير ما تضغط شاشته
         val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
         // لوحة ⏱: تزامن الترجمة (تقديم −0.1 / القيمة / تأخير +0.1) — حجم الخط بالقرص (pinch)
@@ -1206,12 +1207,14 @@ class PlayerActivity : Activity(), Host {
         gTool.addView(pd("🔄 إعادة ترجمة") { batchDialog() })
         gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
+        gTool.addView(pd("🌍 ترجمة جوجل (من غير API)") { googleTranslateNow() })
         // (v87) الإعدادات: قايمة صغيرة منسدلة بالأقسام — دوسة على قسم تفتحه دايركت (من غير شاشة القايمة الكبيرة)
         val gSet = gCol()
         gSet.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
         for ((tid, tl) in listOf("fonts" to "🔤 الخطوط", "anim" to "✨ الأنيميشن", "look" to "🎬 العرض والألوان", "general" to "🌐 اللهجة والأسلوب", "chars" to "🧑 الشخصيات",
             "engine" to "⚙ الترجمة والمحرك", "keys" to "🔑 المفاتيح", "bg" to "🌙 الترجمة في الخلفية", "sec" to "🔒 الأمان", "theme" to "🎨 المظهر"))
             gSet.addView(pd(tl) { openSettings(tid) })
+        gSet.addView(pd("📥 تحميل النص الأصلي (SRT)") { exportOriginalSrt() })
         // (v134) تضخيم الصوت: سلايدر 0..100% (لحد +15dB) — للفيديوهات اللي صوتها واطي
         val gBoost = gCol()
         val boostTv = ui.text("", 12f, 0xFFE8EAED.toInt()).apply { gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(6), ui.dp(8), 0) }
@@ -1247,11 +1250,22 @@ class PlayerActivity : Activity(), Host {
         gTools.addView(pd("🎬 ترجمة ثابتة (هارد ساب)") { withSrc { toolsUi.hardsub(it) } })
         gTools.addView(ui.text("النتيجة بتظهر في توبيب «المهام» في الشاشة الرئيسية", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(2)) })
         val toolsB = IconGlyphButton(this, "toolbox").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { togglePop(this, gTools, false) } }
-        gAi.addView(pd("🔥 لهجة") { runTool("زيادة شدة اللهجة", "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس.", true) })
-        gAi.addView(pd("🧹 عائلي") { runTool("عائلي", "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام.", true) })
-        gAi.addView(pd("🔞 صريح") { runTool("صريح", "رجّع الترجمة لمطابقة صراحة النص الأصلي بالظبط (الألفاظ والإيحاءات زي ما هي في الأصل من غير تلطيف ولا حذف).", true) })
-        gAi.addView(pd("🔧 ضمائر") { pronounsNow() })
-        gAi.addView(pd("🧠 دمج مكرر") { val n = engine.removeDuplicates(); Notice.show(this, (if (n > 0) "اتدمجت $n جملة مكررة" else "مفيش جمل مكررة متداخلة").toString(), 2300L); curIdx = -2 })
+        // (v151) خيارات متعددة الاختيار + زرار واحد «طبّق المحدد»: بيتنفّذوا ورا بعض (تنقيح ← لهجة+ ← عائلي/صريح ← ضمائر ← دمج مكرر)
+        val aiBase = linkedMapOf("refine" to "✍ تنقيح بالسياق", "dial" to "🔥 لهجة +", "family" to "🧹 عائلي", "explicit" to "🔞 صريح", "pron" to "🔧 ضمائر", "dedup" to "🧠 دمج مكرر")
+        val aiBtns = HashMap<String, TextView>()
+        val aiApplyB = pd("▶ طبّق المحدد (0)") { applyAiOptions() }
+        fun paintAi() {
+            for ((id, b) in aiBtns) { val on = id in aiSel; b.text = (if (on) "✓ " else "") + aiBase[id]; b.background = ui.box(if (on) 0xFF1F5FBF.toInt() else 0xE0141418.toInt(), 0x1FFFFFFF, 12) }
+            aiApplyB.text = "▶ طبّق المحدد (${aiSel.size})"; aiApplyB.alpha = if (aiSel.isEmpty()) 0.45f else 1f
+        }
+        for ((id, base) in aiBase) {
+            val b = pk(base) { _ ->
+                if (!aiSel.remove(id)) { aiSel.add(id); if (id == "family") aiSel.remove("explicit"); if (id == "explicit") aiSel.remove("family") }   // عائلي وصريح عكس بعض
+                paintAi()
+            }
+            aiBtns[id] = b; gAi.addView(b)
+        }
+        gAi.addView(aiApplyB); paintAi()
         // ===== الصف العلوي: الأساسي ظاهر دايمًا (☰ 📝 CC وضع-الترجمة Aa) والباقي بيتفرد بسهم ❮ وبيتلم بعد 5 ثواني =====
         fun tip(v: TextView, name: String): TextView { v.setOnLongClickListener { giShow(name, Gravity.CENTER); true }; return v }   // ضغطة طويلة = اسم الزرار
         // (v96) الزرار ❮ اتشال: كل أزرار الصف العلوي ظاهرة على طول (☰ القائمة + 🔤 النص)
@@ -1294,7 +1308,7 @@ class PlayerActivity : Activity(), Host {
         val aiB = barPill(tip(grp("✨", gAi, true), "لهجة (عائلي/صريح)"))
         val syncB = barPill(tip(grp("⏱", gSub, true), "تزامن الترجمة (تقديم / تأخير)"))   // (v91) مكان Aa — حجم الخط بقى بالقرص (pinch) على الشاشة
         toolR.addView(syncB)
-        val toolBtns = listOf<TextView>(syncB, tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(loopB, "تكرار الفيديو"), tip(dualB, "وضع الترجمة"))
+        val toolBtns = listOf<TextView>(syncB, tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(loopB, "تكرار الفيديو"), tip(dualB, "وضع الترجمة"), tip(charsB, "الشخصيات"))
         toolBtns.drop(1).forEach { b ->
             toolR.addView(b, LinearLayout.LayoutParams(ui.dp(30), ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
         }
@@ -1336,14 +1350,14 @@ class PlayerActivity : Activity(), Host {
             toolBtns.forEach { (it.parent as? ViewGroup)?.removeView(it) }
             (menuB.parent as? ViewGroup)?.removeView(menuB); (textB.parent as? ViewGroup)?.removeView(textB)
             leftB.removeAllViews(); rightB.removeAllViews(); tbRow.removeAllViews()
-            // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 🔁 تكرار, 💬 وضع الترجمة]
+            // toolBtns = [⏱ توقيت, 📋 لوج, 📝 جمل, CC, 🔁 تكرار, 💬 وضع الترجمة, 🧑 شخصيات]
             fun lp(i: Int) = LinearLayout.LayoutParams(if (i == 0) -2 else ui.dp(38), ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) }
             leftB.addView(lockB, lockLp()); leftB.addView(aiB)
             rightB.addView(rotBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(8) })
             rightB.addView(pipBarB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
             rightB.addView(fsBarFs, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginStart = ui.dp(8) })
             // من الشمال لليمين (LTR): 🔁 📋 📝 🔤 ⏱ 💬 CC ☰  ← يعني ☰ على اليمين جنب عداد الجمل
-            tbRow.addView(toolBtns[4], lp(4)); tbRow.addView(toolBtns[1], lp(1)); tbRow.addView(toolBtns[2], lp(2))
+            tbRow.addView(toolBtns[4], lp(4)); tbRow.addView(toolBtns[1], lp(1)); tbRow.addView(toolBtns[2], lp(2)); tbRow.addView(toolBtns[6], lp(6))
             tbRow.addView(textB, LinearLayout.LayoutParams(-2, ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(toolBtns[0], lp(0)); tbRow.addView(toolBtns[5], lp(5)); tbRow.addView(toolBtns[3], lp(3))
             tbRow.addView(bgOnB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
@@ -2100,6 +2114,50 @@ class PlayerActivity : Activity(), Host {
     /** زرار 📋 في المشغّل = نفس صفحة اللوجز بتاعة القايمة (اللوج العايم اتلغى) */
     fun toggleLog() { if (logDlg.isShowing) logDlg.dismiss() else logDlg.show() }
 
+    /**
+     * (v151) 🧑 الشخصيات وجنسها: نافذة سفلية فوق الفيديو (الفيديو مابيتضغطش ولا بيتوقف).
+     * لو مفيش شخصيات متحللة لسه (فيديو اتترجم قبل كده، أو التحليل التلقائي ماجاش) بتحلّلها من الترجمة الحالية أول ما تفتح.
+     */
+    private var charsDlg: android.app.Dialog? = null
+    private fun showChars() {
+        if (charsDlg?.isShowing == true) { charsDlg?.dismiss(); return }
+        if (!::engine.isInitialized) { Notice.show(this, "المحرك لسه بيحمّل — جرّب كمان لحظة", 2300L); return }
+        val eng = engine
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        val d = ui.sheet(this, "🧑 الشخصيات", listOf<View>(col), false, onClose = { charsDlg = null })
+        charsDlg = d
+        var busy = false
+        var analyzeRef: () -> Unit = {}
+        fun render(list: List<Chr>, msg: String) {
+            col.removeAllViews()
+            if (msg.isNotEmpty()) col.addView(ui.text(msg, 12f, th.muted).apply { setPadding(0, 0, 0, ui.dp(6)) })
+            for (c in list) {
+                val f = c.gender == "female"
+                val row = LinearLayout(this).apply {
+                    layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(ui.dp(12), ui.dp(9), ui.dp(12), ui.dp(9)); background = ui.box(th.surface, th.border, 10)
+                }
+                row.addView(ui.text(c.name, 15f, th.text, true), LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(ui.text(if (f) "👩 أنثى" else "👨 ذكر", 13f, if (f) 0xFFE0559A.toInt() else 0xFF4F8FE8.toInt(), true))
+                col.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(5) })
+                if (c.role.isNotBlank()) col.addView(ui.text(c.role, 11f, th.muted).apply { setPadding(ui.dp(12), ui.dp(2), ui.dp(12), 0) })
+            }
+            col.addView(ui.button(if (busy) "⏳ بحلّل…" else "🔄 حلّل الشخصيات من الترجمة دلوقتي") { if (!busy) analyzeRef() }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10) })
+        }
+        fun analyze() {
+            busy = true
+            render(eng.charactersNow(), "⏳ بحلّل الشخصيات من الترجمة… (ممكن ياخد شوية — تقدر تقفل النافذة)")
+            eng.analyzeCharsNow(
+                { m -> runOnUiThread { if (d.isShowing) Notice.show(this, m, 2600L) } },
+                { list -> runOnUiThread { busy = false; if (d.isShowing) render(list, if (list.isEmpty()) "ملقيتش شخصيات واضحة في الجمل الحالية — كمّل الترجمة وجرّب تاني" else "") } }
+            )
+        }
+        analyzeRef = { analyze() }
+        val now = eng.charactersNow()
+        d.show()
+        if (now.isEmpty()) analyze() else render(now, "")
+    }
+
     /** (v125) ⏮ ⏭: لو الفيديو من فولدر في المكتبة → الحلقة اللي قبلها/بعدها، وإلا (فيديو إنترنت/ملف لوحده) → الجملة اللي قبلها/بعدها (قبل كده كانت بتطلّع رسالة بس) */
     fun stepOrSeek(d: Int) {
         val curU = uri?.toString(); val all = VideoScan.cache
@@ -2337,6 +2395,13 @@ class PlayerActivity : Activity(), Host {
                 Notice.show(this, ("اتستورد ${parsed.size} جملة").toString(), 2300L)
             }
         }
+        if (r == 32) {
+            val t = pendingOrigSrt; pendingOrigSrt = null
+            if (c == RESULT_OK && t != null) d?.data?.let { u ->
+                try { contentResolver.openOutputStream(u)?.use { it.write(t.toByteArray(Charsets.UTF_8)) }; Notice.show(this, ("تم حفظ SRT بالنص الأصلي").toString(), 2300L) }
+                catch (_: Exception) { Notice.show(this, ("تعذّر حفظ الملف").toString(), 2300L) }
+            }
+        }
         if (r == 31) {
             val t = pendingSentTxt; pendingSentTxt = null
             if (c == RESULT_OK && t != null) d?.data?.let { u ->
@@ -2405,6 +2470,54 @@ class PlayerActivity : Activity(), Host {
         }
     }
     var giShowFn: (String) -> Unit = {}
+
+    private var pendingOrigSrt: String? = null
+    /** (v153) تحميل SRT بالنص الأصلي المستخرج (من الإعدادات) — بيفتح اختيار مكان الحفظ */
+    fun exportOriginalSrt() {
+        val txt = PlayerLogic.toSrtOriginal(engine.subs, offsetMs)
+        if (txt.isBlank()) { say("مفيش نص أصلي لسه"); return }
+        val base = try { Recents.titleOf(vid).substringBeforeLast('.', Recents.titleOf(vid)) } catch (_: Throwable) { "video" }
+        val safe = base.replace(Regex("[\\\\/:*?\"<>|]+"), " ").trim().ifEmpty { "video" }
+        pendingOrigSrt = txt
+        try { startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/x-subrip"; putExtra(Intent.EXTRA_TITLE, "$safe.orig.srt") }, 32) }
+        catch (_: Exception) { pendingOrigSrt = null; say("تعذّر فتح اختيار مكان الحفظ") }
+    }
+
+    /** (v153) 🌍 ترجمة كل الجمل بجوجل (من غير API) وعرضها على الفيديو مكان الترجمة الحالية */
+    fun googleTranslateNow() {
+        if (engine.subs.none { !it.isSound && it.original.isNotBlank() }) { say("مفيش نص أصلي لسه — لازم الفيديو يتحلل الأول"); return }
+        say("🌍 بترجم بجوجل… (من غير API)")
+        engine.googleTranslateAll({ m -> say(m) }) { n -> say(if (n > 0) "✅ جوجل: اتترجمت $n جملة (تقدر ترجع من 🗂 ترجمات الفيديو)" else "جوجل: مفيش جمل اتغيّرت"); touchSubs() }
+    }
+
+    private val aiSel = linkedSetOf<String>()
+    private val DIAL_INSTR get() = "زوّد شدة اللهجة الشعبية في كل جملة درجة واحدة: ألفاظ وتعبيرات الشارع والعامية المحلية (${conf.lang}) بدل الفصحى والكلام الرسمي، من غير ما تغيّر المعنى أو الجنس."
+    private val FAMILY_INSTR = "نضّف الجملة من الألفاظ الخارجة والإيحاءات الجنسية وخليها عائلية ومناسبة لكل الأعمار مع الحفاظ على المعنى العام."
+    private val EXPLICIT_INSTR = "رجّع الترجمة لمطابقة صراحة النص الأصلي بالظبط (الألفاظ والإيحاءات زي ما هي في الأصل من غير تلطيف ولا حذف)."
+
+    /** (v151) بينفّذ كل الخيارات المحددة في قايمة ✨ بالترتيب بدوسة واحدة، وكل خطوة بتستنى اللي قبلها */
+    fun applyAiOptions() {
+        if (aiSel.isEmpty()) { say("اختار خيار واحد على الأقل من القايمة"); return }
+        if (Cfg.allMainKeys().isEmpty() && conf.keys.isEmpty()) { say("ضيف مفتاح API الأول"); return }
+        val order = listOf("refine", "dial", "family", "explicit", "pron", "dedup").filter { it in aiSel }
+        val results = ArrayList<String>()
+        var stopped = false
+        fun rep(m: String) { if (m.startsWith("في عملية شغالة")) { stopped = true; say(m) } else say(m) }
+        fun step(k: Int) {
+            if (stopped) return
+            if (k >= order.size) { say("✅ خلصت: " + results.joinToString(" · ") + " (تقدر ترجع من 🗂 ترجمات الفيديو)"); touchSubs(); return }
+            fun fin(label: String, n: Int) { results.add("$label $n"); touchSubs(); step(k + 1) }
+            when (order[k]) {
+                "refine" -> { say("✍ (${k + 1}/${order.size}) تنقيح بالسياق…"); engine.refineWholeNow({ m -> rep(m) }) { n -> fin("تنقيح", n) } }
+                "dial" -> { say("🔥 (${k + 1}/${order.size}) لهجة +…"); engine.rewriteAll("زيادة شدة اللهجة", DIAL_INSTR, 0.0, { m -> rep(m) }) { n -> fin("لهجة", n) } }
+                "family" -> { say("🧹 (${k + 1}/${order.size}) عائلي…"); engine.rewriteAll("عائلي", FAMILY_INSTR, 0.0, { m -> rep(m) }) { n -> fin("عائلي", n) } }
+                "explicit" -> { say("🔞 (${k + 1}/${order.size}) صريح…"); engine.rewriteAll("صريح", EXPLICIT_INSTR, 0.0, { m -> rep(m) }) { n -> fin("صريح", n) } }
+                "pron" -> { say("🔧 (${k + 1}/${order.size}) ضمائر…"); engine.correctPronounsNow({ m -> rep(m) }) { n -> fin("ضمائر", n) } }
+                else -> { val n = engine.removeDuplicates(); fin("دمج مكرر", n) }
+            }
+        }
+        step(0)
+    }
 
     fun pronounsNow() {
         say("🔧 بصحّح الضمائر…")

@@ -23,6 +23,8 @@ interface Host {
 }
 
 private class BadReply(msg: String) : Exception(msg)
+/** (v151) مفتاح الباتش فشل ومفيش مفتاح فاضي دلوقتي: الباتش بيرجع للطابور ويستنى أقرب مفتاح يخلص باتشه (مش بيتحط فوق باتش شغال) */
+private class RehomeEx(val avoid: String?) : Exception("rehome")
 
 class Engine(
     @Volatile private var conf: Conf,
@@ -95,6 +97,10 @@ class Engine(
     private val keyOf = ConcurrentHashMap<Int, String>()            // المفتاح اللي الباتش شغال عليه دلوقتي
     private val hedged = ConcurrentHashMap.newKeySet<Int>()         // باتشات اتبعتلها نسخة احتياطية
     private val claimed = ConcurrentHashMap.newKeySet<Int>()        // باتشات نتيجتها اتطبّقت (أول نسخة تخلص تكسب)
+    /** (v151) باتشات فاشلة مستنية أقرب مفتاح فاضي: avoid = المفتاح اللي فشلت عليه، prep = الصوت المفكوك (من غير فك تاني) */
+    private class Rehome(val avoid: String?, val at: Long, val prep: Prep?)
+    private val rehomeQ = ConcurrentHashMap<Int, Rehome>()
+    private val perKey get() = conf.parallelPerKey.coerceIn(1, 4)
     private val hedgeBusy = AtomicInteger(0)
     private val recentMs = java.util.concurrent.ConcurrentLinkedDeque<Long>()   // أزمنة آخر باتشات خلصت
     // ===== (v146) مفتاح/موديل/زمن رد كل باتش + اختبار سرعة الموديلات =====
@@ -482,7 +488,7 @@ class Engine(
         synchronized(lock) { subs = subs.filter { !(it.chunk in from..hi) && !(it.start >= a && it.start < b) } }
         done.remove(a, b); gapTried.remove(a, b)
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
-        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i); claimed.remove(i) }
+        for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i); claimed.remove(i); rehomeQ.remove(i) }
         pool.clear(); lastGapTry = 0L; gapScanClean = false
         host.changed(); persist()
     }
@@ -507,6 +513,25 @@ class Engine(
         host.log("🔁 هعيد محاولة المقاطع الفاشلة (${failedCount()})")
     }
     fun charactersNow(): List<Chr> = effectiveChars()
+
+    /**
+     * (v151) زرار 🧑 في المشغّل: بيحلّل الشخصيات من الترجمة الحالية دلوقتي (حتى لو التحليل التلقائي مقفول، أو الفيديو اتترجم قبل كده
+     * ومفيش ولا باتش جديد يشغّل التحليل). الشخصيات اليدوية من الإعدادات هي المرجع ومبتتلمسش.
+     * done بتتنادى مرة واحدة بالقايمة النهائية (من خيط تاني).
+     */
+    fun analyzeCharsNow(report: (String) -> Unit, done: (List<Chr>) -> Unit) {
+        if (conf.manualChars.isNotEmpty()) { done(conf.manualChars); return }
+        if (subs.size < 4) { report("لسه مفيش جمل مترجمة كفاية للتحليل"); done(effectiveChars()); return }
+        val go = synchronized(lock) { if (charsBusy) false else { charsBusy = true; true } }
+        if (!go) { report("التحليل شغّال دلوقتي — استنى لحظة"); done(effectiveChars()); return }
+        Thread {
+            try { analyzeChars() } catch (e: Exception) {
+                host.log("⚠ تحليل الشخصيات فشل: " + (e.message ?: e.toString()).take(100))
+                report("التحليل فشل: " + (e.message ?: "").take(80))
+            } finally { synchronized(lock) { charsBusy = false }; persist() }
+            done(effectiveChars())
+        }.apply { isDaemon = true }.start()
+    }
 
     /** يسترجع التقدم المحفوظ. يرجع آخر مكان تشغيل (بالثواني) أو 0. */
     fun load(): Double {
@@ -548,6 +573,18 @@ class Engine(
                 if (paused) { host.status("⏸ مستني اختيارك: كمّل على الترجمة الحالية ولا ترجم من جديد"); nap(300); continue }
                 hedgeTick()
                 autoRetryTick()
+                // (v151) باتش فشل: يتبعت الأول لأقرب مفتاح خلّص باتشه (مفيش باتشين على مفتاح واحد) وبعدين الترجمة تكمّل باقي الباتشات عادي
+                if (rehomeQ.isNotEmpty()) {
+                    val ri = rehomeQ.keys.minOrNull()
+                    val re = ri?.let { rehomeQ[it] }
+                    if (ri == null || re == null || ri in inflight || isDone(ri, d)) { if (ri != null) rehomeQ.remove(ri); continue }
+                    var rk = pool.pickIdle(ri, re.avoid, perKey)
+                    if (rk == null && System.currentTimeMillis() - re.at > 20_000L) rk = pool.pickIdle(ri, null, perKey)
+                    if (rk == null) { nap(150); continue }
+                    rehomeQ.remove(ri)
+                    host.log("🔁 باتش ${ri + 1} (فاشل) → أقرب مفتاح فاضي ${pool.tail(rk)} — قبل باقي الباتشات")
+                    dispatch(ri, ex, true, rk, re.prep); continue
+                }
                 // إعادة الباتشات الفاشلة بالأولوية (أكتر من 3): مفيش باتشات جديدة تتبعت لحد ما الفاشلين يتبعتوا، وبعدين الترجمة تكمّل عادي
                 if (priorityRetry.isNotEmpty()) {
                     val nx = priorityRetry.firstOrNull { it !in inflight }
@@ -571,7 +608,7 @@ class Engine(
                 var next = -1
                 for (i in lo..hi) {
                     if (d > 0 && cStart(i) >= d) break
-                    if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight) continue
+                    if (isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || i in rehomeQ) continue
                     next = i; break
                 }
                 if (next < 0 && only == null && keepGoing && d > 0) next = nextUndone(c + window, d)
@@ -605,7 +642,7 @@ class Engine(
     private fun nextUndone(from: Int, d: Double): Int {
         var i = maxOf(0, from)
         while (cStart(i) < d) {
-            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight)) return i
+            if (!(isDone(i, d) || (failed[i] ?: 0) >= MAX_FAILS || i in inflight || i in rehomeQ)) return i
             i++
         }
         return -1
@@ -655,36 +692,47 @@ class Engine(
             fatal = e.message
             host.log("⛔ ${e.message}"); host.status("⛔ ${e.message}")
             running = false
+        } catch (e: RehomeEx) {
+            if (!running) return false
+            rehomeQ[i] = Rehome(e.avoid, System.currentTimeMillis(), preps[i])
+            host.log("↪ باتش ${i + 1}: مفتاح ${pool.tail(e.avoid ?: "")} فشل ومفيش مفتاح فاضي — الباتش مستني أقرب مفتاح يخلص باتشه")
         } catch (e: Exception) {
             if (!running) return false
             val n = (failed[i] ?: 0) + 1
             failed[i] = n
+            val failedKey = keyOf[i]
             val where = e.stackTrace.filter { it.className.startsWith("com.tttt") || it.className.startsWith("android.media") }.take(3).joinToString(" ← ") { it.className.substringAfterLast('.') + "." + it.methodName + ":" + it.lineNumber }
             host.log("⚠ مقطع ${i + 1} فشل ($n/$MAX_FAILS): " + (e.message ?: e.javaClass.simpleName).take(160) + (if (where.isNotEmpty()) " [$where]" else ""))
             if (n >= MAX_FAILS) host.log("🕳 المقطع ${i + 1} اتسجل كفجوة — هعيد محاولته تلقائيًا بعد شوية")
             persist()
-            nap(4000)
+            // (v151) باتش فشل على مفتاح: يروح لأقرب مفتاح تاني خلّص باتشه، والمفتاح اللي فشل يكمّل باتشاته عادي
+            if (n < MAX_FAILS && failedKey != null && pool.usableCount() >= 2) {
+                rehomeQ[i] = Rehome(failedKey, System.currentTimeMillis(), preps[i])
+                nap(1000)
+            } else nap(4000)
         }
         return false
     }
 
     /** فك صوت المقطع + الإرسال لجيميناي كله في خيط من الحوض: عدة باتشات بتفك صوتها وتتبعت بالتوازي على كل المفاتيح (قبل كده الفك كان بالترتيب في حلقة واحدة فالباتشات كانت بتمشي واحد ورا التاني) */
-    private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService, force: Boolean = false) {
+    private fun dispatch(i: Int, ex: java.util.concurrent.ExecutorService, force: Boolean = false, firstKey: String? = null, prep0: Prep? = null) {
         if (!inflight.add(i)) return
         startedAt[i] = System.currentTimeMillis(); hedged.remove(i)
+        // (v151) المفتاح بيتحجز للباتش من لحظة الإرسال (قبل فك الصوت) عشان باتشين ما يتحطوش على نفس المفتاح
+        val fk = firstKey ?: pool.pickIdle(i, null, perKey)
         try {
             ex.submit {
                 try {
-                    var p: Prep? = null
-                    val ok = guard(i) { val got = prepare(i, force); p = got; if (got != null) preps[i] = got }
+                    var p: Prep? = prep0
+                    val ok = if (prep0 != null) { preps[i] = prep0; true } else guard(i) { val got = prepare(i, force); p = got; if (got != null) preps[i] = got }
                     if (ok) {
                         val pp = p
                         if (pp == null) failed.remove(i)
-                        else { startedAt[i] = System.currentTimeMillis(); if (guard(i) { send(i, pp) }) failed.remove(i) }
+                        else { startedAt[i] = System.currentTimeMillis(); if (guard(i) { send(i, pp, firstKey = fk) }) failed.remove(i) }
                     }
-                } finally { inflight.remove(i); preps.remove(i); startedAt.remove(i); keyOf.remove(i); host.changed() }
+                } finally { inflight.remove(i); preps.remove(i); startedAt.remove(i); keyOf.remove(i); pool.unreserve(i); host.changed() }
             }
-        } catch (_: RejectedExecutionException) { inflight.remove(i); preps.remove(i); startedAt.remove(i) }
+        } catch (_: RejectedExecutionException) { inflight.remove(i); preps.remove(i); startedAt.remove(i); pool.unreserve(i) }
     }
 
     /**
@@ -777,14 +825,21 @@ class Engine(
         return Prep(w, rawStart, rawEnd)
     }
 
-    private fun send(i: Int, p: Prep, backupFirst: Boolean = false, avoidKey: String? = null, hedge: Boolean = false) {
+    private fun send(i: Int, p: Prep, backupFirst: Boolean = false, avoidKey: String? = null, hedge: Boolean = false, firstKey: String? = null) {
         val w = p.w; val rawStart = p.rawStart; val rawEnd = p.rawEnd
         val prior = subs
         // المفتاح الأقل شغلًا ثم الأسرع (مش تبادل بالدور): الباتشات بتمشي ورا بعض بدل ما الزوجية تتحبس على مفتاح بطيء
         fun nextKey(avoid: String?): String? = if (backupFirst) (pool.pickBackup(avoid) ?: pool.pickFree(avoid, rr.getAndIncrement())) else pool.pickFree(avoid, rr.getAndIncrement())
+        // (v151) تغيير المفتاح أثناء الباتش: لأقرب مفتاح فاضي بس. لو كلهم مشغولين الباتش بيرجع للطابور (RehomeEx) بدل ما يتحط على مفتاح شغّال
+        fun switchKey(cur: String): String? {
+            if (hedge || backupFirst) return nextKey(cur)
+            pool.pickIdle(i, cur, perKey)?.let { return it }
+            if (nextKey(cur) == null) return null
+            throw RehomeEx(cur)
+        }
         var raced: RaceWin? = null
         if (!hedge && !backupFirst && conf.speedTest && speedDone.compareAndSet(false, true)) raced = try { speedRace(i, w) } catch (e: Exception) { host.log("⚠ اختبار السرعة فشل: " + (e.message ?: e.toString()).take(80)); null }
-        var key = raced?.key ?: nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
+        var key = raced?.key ?: firstKey?.takeIf { pool.ok(it) } ?: nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
         var partial = false
         var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
@@ -796,7 +851,7 @@ class Engine(
                 val rw = raced; raced = null
                 val mdl = rw?.model ?: curModel()
                 val r = if (rw != null) rw.res else {
-                    pool.begin(key)
+                    pool.begin(key, i)
                     try { Api.generate(mdl, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
                 }
                 val took = rw?.ms ?: (System.currentTimeMillis() - t0)
@@ -817,7 +872,7 @@ class Engine(
                 if (fresh.isEmpty() && empties < (if (w.silent) 1 else 3)) {
                     empties++
                     if (!w.silent) host.log("⚠ المقطع ${i + 1} رجع من غير جمل رغم وجود صوت — إعادة محاولة ($empties/3)")
-                    nextKey(key)?.let { key = it }
+                    switchKey(key)?.let { key = it }
                     nap(400); continue
                 }
                 if (fresh.isEmpty() && !w.silent) { partial = true; host.log("⚠ المقطع ${i + 1} لسه من غير جمل — هيتحاول تاني كفجوة") }
@@ -838,7 +893,7 @@ class Engine(
                 val invalid = e.code == 401 || e.code == 403 || (e.code == 400 && (e.message ?: "").contains("API key", true))
                 if (e.code == 429) {
                     pool.block(key, 60_000)
-                    val alt = nextKey(key)
+                    val alt = switchKey(key)
                     if (alt != null) { host.log("⏳ ${(e.message ?: "").take(130)} على ${pool.tail(key)} — تحويل لمفتاح ${pool.tail(alt)}"); key = alt; continue }
                     val s = pool.streakUp(); val wait = minOf(60, 10 * s)
                     host.log("⏳ كل المفاتيح في كوتة (${(e.message ?: "").take(130)}) — انتظار ${wait}ث"); nap(wait * 1000L)
@@ -846,7 +901,7 @@ class Engine(
                 }
                 if (invalid) {
                     pool.block(key, 3_600_000)
-                    val alt = nextKey(key)
+                    val alt = switchKey(key)
                     if (alt != null) { host.log("🔑 ${(e.message ?: "").take(110)} — مفتاح ${pool.tail(key)} غير صالح — تحويل"); key = alt; continue }
                     throw Exception("مفتاح API غير صالح أو الموديل مش متاح — ${(e.message ?: "").take(120)}")
                 }
@@ -1426,6 +1481,153 @@ class Engine(
             } finally { pend.removeAll(mine); toolBusy = null }
             done(changed)
         }.start()
+    }
+
+    /**
+     * (v151) ✍ تنقيح كامل بطلب واحد: الأصل المستخرج + الترجمة الحالية لكل الجمل المترجمة بتتبعت مرة واحدة (مش باتش باتش)
+     * للمفتاح الاحتياطي، ولو مفيش فلأي مفتاح أساسي فاضي. الموديل بيصلّح الترجمة بالسياق (والكلمات الحرفية اللي معناها
+     * بيتغيّر مع المشهد) وبيرجّع الجمل اللي اتغيّرت بس، وإحنا بنطبّقها مكانها. فيه نسخة محفوظة قبل التنقيح للرجوع.
+     */
+    fun refineWholeNow(report: (String) -> Unit, done: (Int) -> Unit) {
+        if (toolBusy != null) { report("في عملية شغالة: " + toolBusy); return }
+        toolBusy = "تنقيح بالسياق"
+        Thread {
+            var fixed = 0
+            try {
+                val snap = subs.filter { !it.isSound && it.original.isNotBlank() && it.translated.isNotBlank() && !it.translated.startsWith("«") }.sortedBy { it.start }
+                if (snap.size < 3) report("مفيش جمل مترجمة كفاية للتنقيح")
+                else {
+                    saveVersion("قبل التنقيح بالسياق")
+                    val roster = pb.rosterText(effectiveChars(), effectiveGloss())
+                    val parts = snap.chunked(3000)
+                    for ((pi, part) in parts.withIndex()) {
+                        report("✍ تنقيح ${pi + 1}/${parts.size} — ${part.size} جملة في طلب واحد")
+                        val arr = JSONArray()
+                        for ((k, q) in part.withIndex()) arr.put(JSONArray().put(k).put(q.original).put(q.translated).put(q.gender))
+                        val prompt = "أنت مراجع ترجمة محترف. دي كل جمل فيلم/مسلسل/فيديو بالترتيب. كل عنصر: [رقم، الأصل، الترجمة الحالية، جنس المتكلم]. الترجمة الحالية اتعملت على مقاطع صوتية منفصلة من غير ما كل مقطع يشوف باقي الفيديو، فغالبًا فيها جمل حرفية أو غلط في السياق.\n" +
+                            (if (roster.isNotBlank()) "\nمعلومات الشخصيات والمصطلحات:\n$roster\n" else "") +
+                            "\nالجمل:\n$arr\n\n" +
+                            "اقرا الفيديو كله كأنك بتتفرج عليه، وصحّح الترجمة (النقاط دي بس):\n" +
+                            "1) كلمة أو تعبير اتترجم حرفي ومعناه في المشهد مختلف (اصطلاح، سخرية، تلميح، مجاز، رد على جملة قبلها).\n" +
+                            "2) ضمير/فاعل/مفعول أو جنس غلط، أو اسم ومصطلح متترجم بأكتر من شكل.\n" +
+                            "3) جملة مقطوعة بين مقطعين وترجمتها مش متصلة بجارتها، أو ترجمة بتتناقض مع اللي حواليها.\n" +
+                            "القواعد: حافظ على لهجة ${conf.lang} وأسلوب ${conf.style}؛ الجملة قصيرة قد الأصلية تقريبًا؛ ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس؛ ممنوع تضيف أو تحذف أو تدمج جمل.\n" +
+                            "رجّع JSON فقط بالجمل اللي اتغيّرت: {\"corrections\":[{\"i\":12,\"translated\":\"النص المصحح الكامل\"}]} — لو كله سليم: {\"corrections\":[]}"
+                        var key: String = conf.backup.firstOrNull { pool.ok(it) } ?: pool.pickIdle(-1000, null, perKey) ?: helperKey() ?: throw Exception("مفيش مفتاح")
+                        pool.unreserve(-1000)
+                        var r: Api.Result? = null; var tries = 0
+                        while (r == null) {
+                            try { r = Api.generate(curModel(), key, prompt, null, 30000, 0.1, true, false) }
+                            catch (e: Exception) {
+                                val code = (e as? ApiErr)?.code ?: 0
+                                if (++tries > 3 || code == 400 || e is Unsupported) throw e
+                                if (code == 429) pool.block(key, 60_000) else if (code == 401 || code == 403) pool.block(key, 3_600_000)
+                                nap(2000L * tries)
+                                key = pool.pickIdle(-1000, key, perKey)?.also { pool.unreserve(-1000) } ?: helperKey(tries) ?: key
+                            }
+                        }
+                        val ca = Parse.json(r!!.text)?.optJSONArray("corrections")
+                        if (ca == null) { report("رد التنقيح مش صالح (ممكن اتقطع) — جرّب تاني"); continue }
+                        var n = 0
+                        synchronized(lock) {
+                            val cur = subs.toMutableList()
+                            for (q in 0 until ca.length()) {
+                                val c = ca.optJSONObject(q) ?: continue
+                                val k = c.optInt("i", -1); if (k < 0 || k >= part.size) continue
+                                val nt = c.optString("translated").trim(); if (nt.isEmpty()) continue
+                                val t = part[k]
+                                if (nt == t.translated || nt.length > t.translated.length * 3 + 20 || nt.length * 3 + 20 < t.translated.length) continue
+                                val at = cur.indexOfFirst { Math.abs(it.start - t.start) < 0.05 && it.original == t.original }
+                                if (at < 0 || cur[at].translated != t.translated) continue
+                                cur[at] = cur[at].copy(translated = nt); n++
+                            }
+                            if (n > 0) subs = cur
+                            for (q in part) refinedKeys.add(pk(q))
+                        }
+                        fixed += n
+                    }
+                    if (fixed > 0) { host.changed(); persist() }
+                    host.log("✍ تنقيح بالسياق (طلب واحد): ${snap.size} جملة — اتصحّح $fixed")
+                }
+            } catch (e: Exception) {
+                host.log("⚠ التنقيح بالسياق فشل: " + (e.message ?: e.toString()).take(120)); report("التنقيح فشل: " + (e.message ?: "").take(80))
+            } finally { toolBusy = null }
+            done(fixed)
+        }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * (v153) 🌍 ترجمة جوجل (الرابط غير الرسمي translate.googleapis.com — من غير مفتاح ولا API): بتترجم النص الأصلي لكل الجمل
+     * (25 جملة في الطلب) وتحطه مكان الترجمة الحالية، فيتعرض على الفيديو عادي. جوجل بيترجم لـ«العربية» بس (مش لهجة).
+     * بيتحفظ نسخة «قبل ترجمة جوجل» للرجوع.
+     */
+    private fun gtCall(texts: List<String>, tl: String): List<String>? {
+        val body = "client=gtx&sl=auto&tl=" + tl + "&dt=t&q=" + java.net.URLEncoder.encode(texts.joinToString("\n"), "UTF-8")
+        var last: Exception? = null
+        for (t in 1..4) {
+            try {
+                val c = java.net.URL("https://translate.googleapis.com/translate_a/single").openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 25000
+                c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = c.responseCode
+                if (code == 429 || code >= 500) { c.disconnect(); nap(3000L * t); continue }
+                if (code != 200) { c.disconnect(); throw IOException("HTTP $code") }
+                val txt = c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }; c.disconnect()
+                val segs = JSONArray(txt).optJSONArray(0) ?: return null
+                val sb = StringBuilder()
+                for (k in 0 until segs.length()) sb.append(segs.optJSONArray(k)?.optString(0, "") ?: "")
+                val parts = sb.toString().split("\n")
+                return if (parts.size == texts.size) parts.map { it.trim() } else null
+            } catch (e: Exception) { last = e; nap(1500L * t) }
+        }
+        if (last != null) throw last
+        return null
+    }
+
+    fun googleTranslateAll(report: (String) -> Unit, done: (Int) -> Unit) {
+        if (toolBusy != null) { report("في عملية شغالة: " + toolBusy); return }
+        toolBusy = "ترجمة جوجل"
+        Thread {
+            var changed = 0
+            try {
+                val snap = subs.sortedBy { it.start }
+                val idx = snap.indices.filter { !snap[it].isSound && snap[it].original.isNotBlank() }
+                if (idx.isEmpty()) report("مفيش نص أصلي لسه للترجمة")
+                else {
+                    saveVersion("قبل ترجمة جوجل")
+                    val out = HashMap<Int, String>()
+                    val batches = idx.chunked(25)
+                    var failedB = 0
+                    for ((bi, b) in batches.withIndex()) {
+                        if (!running && isClosed) break
+                        if (bi % 8 == 0) report("🌍 جوجل ${bi + 1}/${batches.size}")
+                        val src = b.map { snap[it].original.replace(Regex("\\s*\n\\s*"), " ").trim() }
+                        try {
+                            val r = gtCall(src, "ar")
+                            if (r != null) { for ((q, k) in b.withIndex()) out[k] = r[q] }
+                            else for ((q, k) in b.withIndex()) { gtCall(listOf(src[q]), "ar")?.firstOrNull()?.let { out[k] = it } }   // عدد الأسطر اختلف: جملة جملة
+                        } catch (e: Exception) { failedB++; host.log("⚠ ترجمة جوجل: " + (e.message ?: e.toString()).take(80)); if (failedB >= 5) { report("جوجل واقف أو النت فاصل — وقفت"); break } }
+                    }
+                    synchronized(lock) {
+                        val cur = subs.toMutableList()
+                        for ((k, tr) in out) {
+                            if (tr.isBlank()) continue
+                            val t = snap[k]
+                            val at = cur.indexOfFirst { Math.abs(it.start - t.start) < 0.05 && it.original == t.original }
+                            if (at >= 0 && cur[at].translated != tr) { cur[at] = cur[at].copy(translated = tr); changed++ }
+                        }
+                        if (changed > 0) subs = cur
+                    }
+                    if (changed > 0) { host.changed(); persist() }
+                    host.log("🌍 ترجمة جوجل: ${idx.size} جملة — اتغيّرت $changed")
+                }
+            } catch (e: Exception) {
+                host.log("⚠ ترجمة جوجل فشلت: " + (e.message ?: e.toString()).take(120)); report("ترجمة جوجل فشلت: " + (e.message ?: "").take(80))
+            } finally { toolBusy = null }
+            done(changed)
+        }.apply { isDaemon = true }.start()
     }
 
     /** 🧠 دمج الجمل المكررة المتداخلة زمنيًا (محلي بدون Gemini): جملتين متداخلتين ومتشابهتين جدًا = واحدة بأطول وقت */

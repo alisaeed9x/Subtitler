@@ -95,6 +95,11 @@ fun main() {
     check2("الاستيعاب = مفاتيح × توازي", pool3.capacity(2) == 6 && Pool(conf(1)).capacity(3) == 6)
     check2("pick بيتجنب المراقب لو فيه أساسي", (0 until 10).all { pool3.pick(null, it) != "D_aaaaaaaaaaa" })
     check2("gapKey بيفضّل المراقب", pool3.gapKey(emptySet(), 0) == "D_aaaaaaaaaaa")
+    val pI = Pool(conf(1, listOf("A_aaaaaaaaaaa", "B_aaaaaaaaaaa")))
+    val i1 = pI.pickIdle(0, null, 1); val i2 = pI.pickIdle(1, null, 1); val i3 = pI.pickIdle(2, null, 1)
+    check2("pickIdle: كل باتش على مفتاح لوحده (والتالت يستنى)", i1 != null && i2 != null && i1 != i2 && i3 == null)
+    pI.begin(i1!!, 0); pI.unreserve(1)
+    check2("pickIdle: المفتاح الشغّال والمفتاح اللي فشل مستبعدين", pI.pickIdle(5, i2, 1) == null && pI.pickIdle(6, i1, 1) == i2)
 
     println("=== كشف الصمت وتقصير المقطع ===")
     val w1 = makeWav(60.0, 53.0, 54.0)

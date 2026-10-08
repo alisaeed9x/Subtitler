@@ -348,7 +348,20 @@ class Pool(private val c: Conf) {
     /** طلبات شغالة دلوقتي على كل مفتاح + متوسط زمن الرد (ms): بنوزّع الباتشات على المفتاح الفاضي/الأسرع بدل التبادل الأعمى (التبادل كان بيحبس الباتشات الزوجية على المفتاح البطيء) */
     private val load = HashMap<String, Int>()
     private val lat = HashMap<String, Double>()
-    @Synchronized fun begin(k: String) { load[k] = (load[k] ?: 0) + 1 }
+    /** (v151) حجز مفتاح لباتش قبل ما يبدأ فعلًا (فك الصوت بياخد وقت): من غير الحجز باتشين ممكن يشوفوا نفس المفتاح فاضي ويتحطوا عليه سوا */
+    private val rsv = HashMap<Int, String>()
+    private fun used(k: String): Int = (load[k] ?: 0) + rsv.values.count { it == k }
+    @Synchronized fun unreserve(i: Int) { rsv.remove(i) }
+    /** أقرب مفتاح فاضي فعلًا (مفيش عليه باتش شغال ولا محجوز لحد perKey) — بيحجزه للباتش i. null = كل المفاتيح مشغولة أو معطلة. مفتاح avoid مستبعد. */
+    @Synchronized fun pickIdle(i: Int, avoid: String?, perKey: Int): String? {
+        rsv.remove(i)
+        fun free(l: List<String>) = l.filter { it != avoid && ok(it) && used(it) < perKey }
+        val g = free(mains).ifEmpty { free(watchers) }.ifEmpty { free(c.backup) }
+        if (g.isEmpty()) return null
+        val k = g.sortedWith(compareBy<String>({ used(it) }, { lat[it] ?: 0.0 })).first()
+        rsv[i] = k; return k
+    }
+    @Synchronized fun begin(k: String, i: Int = -1) { if (i >= 0) rsv.remove(i); load[k] = (load[k] ?: 0) + 1 }
     @Synchronized fun end(k: String, ms: Long, okReply: Boolean) {
         load[k] = maxOf(0, (load[k] ?: 1) - 1)
         val v = if (okReply) ms.toDouble() else 45_000.0   // الفشل/الانتهاء بتايم أوت بيأخّر المفتاح في الترتيب
