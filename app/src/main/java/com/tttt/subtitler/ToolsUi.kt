@@ -39,7 +39,6 @@ class ToolsUi(private val act: Activity, private val ui: Ui, private val th: The
     }
 
     fun trim(s: ToolSrc) {
-        if (s.audioUri != null) { toast("الفيديو ده صورته وصوته منفصلين (زي يوتيوب) — حمّله من ⬇ الأول وبعدين اقصّه"); return }
         var q = "عالية"
         val c = col()
         val endDef = if (s.durMs > 0) minOf(s.durMs, s.curMs + 30_000L) else s.curMs + 30_000L
@@ -88,7 +87,6 @@ class ToolsUi(private val act: Activity, private val ui: Ui, private val th: The
     }
 
     fun compress(s: ToolSrc) {
-        if (s.audioUri != null) { toast("الفيديو ده صورته وصوته منفصلين (زي يوتيوب) — حمّله من ⬇ الأول وبعدين اضغطه"); return }
         var q = "متوسطة"; var res = "نفس الدقة"
         val c = col()
         c.addView(label("الدقة")); c.addView(ui.chips(listOf("نفس الدقة", "720p", "480p", "360p", "240p"), { res }, { res = it }))
@@ -102,20 +100,37 @@ class ToolsUi(private val act: Activity, private val ui: Ui, private val th: The
     }
 
     fun hardsub(s: ToolSrc) {
-        if (s.audioUri != null) { toast("الفيديو ده صورته وصوته منفصلين (زي يوتيوب) — حمّله من ⬇ الأول"); return }
         if (s.subs.none { it.translated.isNotBlank() || it.original.isNotBlank() }) { toast("مفيش ترجمة للفيديو ده لسه — ترجمه الأول"); return }
         var q = "عالية"; var which = "الترجمة"; var size = "عادي"
         val sizes = mapOf("صغير" to 80, "عادي" to 100, "كبير" to 130)
+        val st0 = SubStyle.load { k, d -> Cfg.str(k, d) }
+        val fonts = SubStyle.fonts
+        var fontLabel = (fonts.firstOrNull { it.id == st0.font } ?: fonts.first()).label
         val c = col()
-        c.addView(note("الترجمة هتتحرق في الصورة نفسها بخطك المختار في الإعدادات وبتفضل ظاهرة في أي مشغّل. بياخد وقت قد الفيديو تقريبًا، فسيب التطبيق شغّال."))
+        if (s.uri.startsWith("http")) c.addView(note("الفيديو أونلاين — هيتنزّل الأول لملف مؤقت وبعدها تتحرق عليه الترجمة (بياخد وقت ومساحة)."))
+        c.addView(note("الترجمة هتتحرق في الصورة نفسها وبتفضل ظاهرة في أي مشغّل. بياخد وقت قد الفيديو تقريبًا، فسيب التطبيق شغّال."))
+        // معاينة صغيرة بالخط والحجم المختارين (على خلفية داكنة زي الفيديو)
+        val sample = s.subs.firstOrNull { it.translated.isNotBlank() }?.translated?.take(60) ?: "ده شكل الترجمة على الفيديو"
+        val prev = TextView(act).apply {
+            text = sample; setTextColor(android.graphics.Color.WHITE); gravity = Gravity.CENTER; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK); setPadding(ui.dp(10), ui.dp(14), ui.dp(10), ui.dp(14))
+            background = ui.box(0xFF1B1B1F.toInt(), 0x33FFFFFF, 12)
+        }
+        fun refreshPrev() {
+            val f = fonts.firstOrNull { it.label == fontLabel }
+            prev.typeface = try { if (f?.file != null) android.graphics.Typeface.createFromAsset(act.assets, "fonts/${f.file}") else android.graphics.Typeface.DEFAULT_BOLD } catch (_: Throwable) { android.graphics.Typeface.DEFAULT_BOLD }
+            prev.textSize = 18f * (sizes[size] ?: 100) / 100f * st0.scale / 100f
+        }
+        refreshPrev()
+        c.addView(label("معاينة")); c.addView(prev, LinearLayout.LayoutParams(-1, -2))
+        c.addView(label("الخط")); c.addView(ui.chips(fonts.map { it.label }, { fontLabel }, { fontLabel = it; refreshPrev() }))
         c.addView(label("النص")); c.addView(ui.chips(listOf("الترجمة", "الأصلي"), { which }, { which = it }))
-        c.addView(label("حجم الخط")); c.addView(ui.chips(sizes.keys.toList(), { size }, { size = it }))
+        c.addView(label("حجم الخط")); c.addView(ui.chips(sizes.keys.toList(), { size }, { size = it; refreshPrev() }))
         c.addView(label("الجودة")); c.addView(qChips({ q }, { q = it }))
         GAlert(act).setTitle("🎬 ترجمة ثابتة في الفيديو (هارد ساب)").setView(c)
             .setPositiveButton("ابدأ") { _, _ ->
-                val st = SubStyle.load { k, d -> Cfg.str(k, d) }
-                val file = SubStyle.fonts.firstOrNull { it.id == st.font }?.file
-                Tools.hardsub(act, s, q, file, (sizes[size] ?: 100) * st.scale / 100, which == "الأصلي"); added()
+                val file = fonts.firstOrNull { it.label == fontLabel }?.file
+                Tools.hardsub(act, s, q, file, (sizes[size] ?: 100) * st0.scale / 100, which == "الأصلي"); added()
             }.setNegativeButton("إلغاء", null).show()
     }
 }

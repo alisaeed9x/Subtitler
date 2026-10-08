@@ -66,6 +66,9 @@ class MainActivity : Activity() {
     private var ytUi: YoutubeUi? = null
     private var navUi: BottomNav? = null
     private var showTabFn: (Int) -> Unit = {}
+    private var toolsUiM: ToolsUi? = null
+    private var pendingTool = ""
+    private var pendingSrc: ToolSrc? = null
     override fun onCreate(b: Bundle?) {
         fromPlayer = intent?.getBooleanExtra("from_player", false) == true
         if (fromPlayer) setTheme(android.R.style.Theme_Translucent_NoTitleBar)
@@ -465,7 +468,8 @@ class MainActivity : Activity() {
 
         // (v124) الشريط السفلي: بوابتين — الفيديوهات (المكتبة) · المتصفح (تبويب يوتيوب اتشال)
         // (v135) بوابة تالتة: «المهام» (قص · صوت · GIF · ضغط · ترجمة ثابتة)
-        val tasksUi = TasksUi(this, ui, th); tasksUi.root.visibility = View.GONE
+        toolsUiM = ToolsUi(this, ui, th)
+        val tasksUi = TasksUi(this, ui, th) { k -> pickTool(k) }; tasksUi.root.visibility = View.GONE
         showTabFn = { i ->
             if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; tasksUi.root.visibility = View.GONE; navUi?.set(0) }
             else if (i == 2) { curTab = 2; lib.root.visibility = View.GONE; tasksUi.root.visibility = View.VISIBLE; tasksUi.refresh(); navUi?.set(2) }
@@ -665,6 +669,45 @@ class MainActivity : Activity() {
         try { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (e: Exception) { LogStore.err("Main:621", e) }
     }
 
+    // ===== (v137) أدوات الفيديو من تبويب «المهام»: الأداة → اختيار الفيديو → نافذة الإعدادات → تبدأ =====
+    fun pickTool(kind: String) {
+        pendingTool = kind
+        try { startActivityForResult(filePicker("video/*", "اختار الفيديو", true), 52) } catch (e: Exception) { Notice.show(this, "مفيش تطبيق ملفات يفتح", 2400L) }
+    }
+    private fun onToolPicked(u: Uri) {
+        try { contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+        val kind = pendingTool
+        Notice.show(this, "بقرا الفيديو…", 1500L)
+        Thread {
+            var name = "video"; var size = 0L
+            try { contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c -> if (c.moveToFirst()) { name = c.getString(0) ?: name; size = c.getLong(1) } } } catch (_: Exception) {}
+            val pr = Tools.probe(applicationContext, u.toString())
+            val subs = try { Store(File(filesDir, "progress"), Store.keyFor("f:$name:$size")).load()?.subs ?: emptyList() } catch (_: Throwable) { emptyList<Sub>() }
+            val src = ToolSrc(u.toString(), null, name.substringBeforeLast('.', name), pr.durMs, pr.w, pr.h, 0L, subs)
+            runOnUiThread { if (!isDestroyed && !isFinishing) runTool(kind, src) }
+        }.start()
+    }
+    private fun runTool(kind: String, src: ToolSrc) {
+        val tu = toolsUiM ?: return
+        when (kind) {
+            "trim" -> tu.trim(src); "audio" -> tu.audio(src); "gif" -> tu.gif(src); "compress" -> tu.compress(src)
+            "hardsub" -> if (src.subs.none { it.translated.isNotBlank() || it.original.isNotBlank() }) askSrt(src) else tu.hardsub(src)
+        }
+    }
+    private fun askSrt(src: ToolSrc) {
+        GAlert(this).setTitle("🎬 مفيش ترجمة محفوظة للفيديو ده")
+            .setMessage("اختار ملف ترجمة SRT عشان يتحرق في الفيديو، أو ترجم الفيديو في المشغّل الأول.")
+            .setPositiveButton("اختار ملف SRT") { _, _ -> pendingSrc = src; try { startActivityForResult(filePicker("*/*", "اختار ملف الترجمة (SRT)", false), 53) } catch (_: Exception) {} }
+            .setNegativeButton("إلغاء", null).show()
+    }
+    private fun onSrtPicked(u: Uri) {
+        val src = pendingSrc ?: return; pendingSrc = null
+        val text = try { contentResolver.openInputStream(u)?.use { String(it.readBytes(), Charsets.UTF_8) } } catch (_: Exception) { null } ?: ""
+        val subs = PlayerLogic.parseSrt(text.removePrefix("\uFEFF")).map { (a, b, t) -> Sub(a, b, t, t, "", "", "", emptyList(), emptyList(), false, false) }
+        if (subs.isEmpty()) { Notice.show(this, "الملف ده مش SRT صالح", 2600L); return }
+        toolsUiM?.hardsub(ToolSrc(src.uri, null, src.name, src.durMs, src.w, src.h, 0L, subs))
+    }
+
     fun pickVideo() { startActivityForResult(filePicker("video/*", "اختار فيديو", true), 1) }
     /** landscape: الفيديو من الجهاز بيفتح لاندسكيب مباشرة (زي MX) إلا لو معروف إنه طولي */
     /** لينك فيديو مباشر → يشتغل على طول؛ أي لينك تاني (يوتيوب / صفحة) → شاشة الصيد بتفتح الصفحة وتلقط الفيديوهات */
@@ -691,6 +734,8 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(r: Int, c: Int, d: Intent?) {
         super.onActivityResult(r, c, d)
+        if (r == 52) { if (c == RESULT_OK) d?.data?.let { onToolPicked(it) }; return }
+        if (r == 53) { if (c == RESULT_OK) d?.data?.let { onSrtPicked(it) } else pendingSrc = null; return }
         if (r == 47) { if (c == RESULT_OK) d?.data?.let { ytUi?.importUri(it) }; return }   // (v118) ملف اشتراكات يوتيوب
         if (lockUi?.onResult(r, c == RESULT_OK) == true) return
         if (mediaOps?.onResult(r, c == RESULT_OK) == true) return

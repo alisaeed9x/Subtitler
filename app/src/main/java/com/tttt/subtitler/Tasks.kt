@@ -67,6 +67,10 @@ class TaskItem(val id: Int, val kind: String, val title: String) {
     @Volatile var cancelled = false
     @Volatile var onCancel: (() -> Unit)? = null
     @Volatile var work: ((TaskItem) -> Unit)? = null
+    /** (v137) نسخة من الشغل للإعادة بعد فشل/إلغاء، وإيقاف مؤقت للتحميلات */
+    @Volatile var workKeep: ((TaskItem) -> Unit)? = null
+    @Volatile var paused = false
+    @Volatile var onPause: ((Boolean) -> Unit)? = null
 }
 
 class TaskCancelled : RuntimeException("اتلغت")
@@ -77,24 +81,29 @@ object TaskCenter {
     @Volatile var listener: (() -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
     private val q = LinkedBlockingQueue<TaskItem>()
+    private val qd = LinkedBlockingQueue<TaskItem>()   // (v137) التحميلات في طابور لوحدها عشان ما تستناش الترميز
     private var worker: Thread? = null
+    private var workerD: Thread? = null
+    private var appCtx: Context? = null
     private var seq = 0
 
     fun changed() { main.post { try { listener?.invoke() } catch (_: Throwable) {} } }
     fun active(): Int = items.count { it.state == 0 || it.state == 1 }
 
     @Synchronized fun add(app: Context, kind: String, title: String, work: (TaskItem) -> Unit): TaskItem {
-        val t = TaskItem(++seq, kind, title); t.work = work
-        items.add(0, t); q.add(t); ensureWorker(app.applicationContext); changed()
+        val t = TaskItem(++seq, kind, title); t.work = work; t.workKeep = work
+        appCtx = app.applicationContext
+        val dl = kind == "download"
+        items.add(0, t); (if (dl) qd else q).add(t); ensureWorker(app.applicationContext, dl); changed()
         return t
     }
 
-    private fun ensureWorker(app: Context) {
-        if (worker?.isAlive == true) return
-        worker = Thread { loop(app) }.apply { isDaemon = true; start() }
+    private fun ensureWorker(app: Context, dl: Boolean) {
+        if (dl) { if (workerD?.isAlive == true) return; workerD = Thread { loop(app, qd) }.apply { isDaemon = true; start() } }
+        else { if (worker?.isAlive == true) return; worker = Thread { loop(app, q) }.apply { isDaemon = true; start() } }
     }
 
-    private fun loop(app: Context) {
+    private fun loop(app: Context, q: LinkedBlockingQueue<TaskItem>) {
         while (true) {
             val t = try { q.take() } catch (_: InterruptedException) { return }
             if (t.cancelled) { t.state = 4; t.msg = "اتلغت"; changed(); continue }
@@ -112,7 +121,7 @@ object TaskCenter {
                 t.msg = if (t.cancelled) "اتلغت" else (e.message ?: e.javaClass.simpleName).take(160)
                 LogStore.err("Tasks:" + t.kind, e)
             }
-            t.work = null; t.onCancel = null; changed()
+            t.work = null; t.onCancel = null; t.onPause = null; t.paused = false; changed()
         }
     }
 
@@ -120,12 +129,20 @@ object TaskCenter {
         t.cancelled = true
         if (t.state == 0) { t.state = 4; t.msg = "اتلغت"; changed() } else t.onCancel?.invoke()
     }
+    /** (v137) إيقاف مؤقت / استكمال (للتحميلات) */
+    fun pause(t: TaskItem, p: Boolean) { t.paused = p; t.onPause?.invoke(p); changed() }
+    /** (v137) إعادة مهمة فشلت أو اتلغت من الأول */
+    fun retry(t: TaskItem) {
+        val w = t.workKeep ?: return; val app = appCtx ?: return
+        if (t.state < 2) return
+        items.remove(t); add(app, t.kind, t.title, w)
+    }
     fun remove(t: TaskItem) { if (t.state == 0 || t.state == 1) cancel(t); items.remove(t); changed() }
     fun clearFinished() { items.removeIf { it.state >= 2 }; changed() }
 }
 
 /** مصدر الأدوات: الفيديو الشغّال دلوقتي في المشغّل */
-class ToolSrc(val uri: String, val audioUri: String?, val name: String, val durMs: Long, val w: Int, val h: Int, val curMs: Long, val subs: List<Sub>)
+class ToolSrc(val uri: String, val audioUri: String?, val name: String, val durMs: Long, val w: Int, val h: Int, val curMs: Long, val subs: List<Sub>, val hdr: Map<String, String> = emptyMap())
 
 class Probe(val w: Int, val h: Int, val durMs: Long, val aRate: Int)
 
@@ -277,6 +294,33 @@ object Tools {
     }
     fun aBitrate(q: String): Int = when (q) { "منخفضة" -> 96_000; "عالية" -> 256_000; else -> 160_000 }
 
+    /** (v137) لينك نت → ينزل لملف مؤقت الأول (بالهيدرز، وبيدمج الصورة والصوت لو منفصلين)؛ ملف محلي → زي ما هو. بيرجّع (المسار، الملف المؤقت لو اتعمل) */
+    private fun localSrc(app: Context, t: TaskItem, s: ToolSrc): Pair<String, File?> {
+        if (!s.uri.startsWith("http")) return Pair(s.uri, null)
+        val isHls = s.uri.contains(".m3u8", true)
+        val f = tmp(app, t, "src." + (if (isHls) "ts" else "mp4"))
+        val ctl = Downloader.Ctl(); ctl.ext = { t.cancelled }
+        t.onCancel = { ctl.cancelled = true }
+        t.msg = "⬇ بينزّل الفيديو الأول…"; TaskCenter.changed()
+        try {
+            Downloader.toCache(s.uri, s.audioUri, isHls, 0, s.hdr, f, ctl) { p -> t.pct = p * 30 / 100; t.msg = "⬇ بينزّل الفيديو… $p%"; TaskCenter.changed() }
+        } catch (e: Throwable) { try { f.delete() } catch (_: Throwable) {}; throw e }
+        t.onCancel = null
+        return Pair(Uri.fromFile(f).toString(), f)
+    }
+    private fun localAudio(app: Context, t: TaskItem, url: String, hdr: Map<String, String>): Pair<String, File?> {
+        if (!url.startsWith("http")) return Pair(url, null)
+        val f = tmp(app, t, "src.m4a")
+        val ctl = Downloader.Ctl(); ctl.ext = { t.cancelled }
+        t.onCancel = { ctl.cancelled = true }
+        t.msg = "⬇ بينزّل الصوت الأول…"; TaskCenter.changed()
+        try { Downloader.toCache(url, null, false, 0, hdr, f, ctl) { p -> t.pct = p * 30 / 100; t.msg = "⬇ بينزّل الصوت… $p%"; TaskCenter.changed() } }
+        catch (e: Throwable) { try { f.delete() } catch (_: Throwable) {}; throw e }
+        t.onCancel = null
+        return Pair(Uri.fromFile(f).toString(), f)
+    }
+    private fun del(f: File?) { try { f?.delete() } catch (_: Throwable) {} }
+
     private fun tmp(ctx: Context, t: TaskItem, ext: String): File { val d = File(ctx.cacheDir, "tasks"); d.mkdirs(); return File(d, "t${t.id}.$ext") }
 
     fun probe(ctx: Context, src: String): Probe {
@@ -305,15 +349,16 @@ object Tools {
     fun trim(ctx: Context, s: ToolSrc, a: Long, b: Long, q: String): TaskItem {
         val app = ctx.applicationContext
         return TaskCenter.add(app, "trim", "✂ قص ${clock(a)} ← ${clock(b)} · ${s.name}") { t ->
-            val pr = probe(app, s.uri)
-            val item = MediaItem.Builder().setUri(s.uri)
+            val (src, srcF) = localSrc(app, t, s)
+            val pr = probe(app, src)
+            val item = MediaItem.Builder().setUri(src)
                 .setClippingConfiguration(MediaItem.ClippingConfiguration.Builder().setStartPositionMs(a).setEndPositionMs(b).build()).build()
             val out = tmp(app, t, "mp4")
             try {
                 t.msg = "بيقص…"
                 Xform.run(app, t, EditedMediaItem.Builder(item).build(), out, MimeTypes.VIDEO_H264, vBitrate(minOf(pr.w, pr.h).let { if (pr.w == 0 || pr.h == 0) 0 else it }, q), aBitrate(q))
                 Out.publish(app, t, out, "${safe(s.name)} قص ${secs(a)}-${secs(b)} ث.mp4", "video/mp4")
-            } finally { try { out.delete() } catch (_: Throwable) {} }
+            } finally { try { out.delete() } catch (_: Throwable) {}; del(srcF) }
         }
     }
 
@@ -321,7 +366,7 @@ object Tools {
     fun audio(ctx: Context, s: ToolSrc, q: String): TaskItem {
         val app = ctx.applicationContext
         return TaskCenter.add(app, "audio", "🎧 صوت ($q) · ${s.name}") { t ->
-            val src = s.audioUri ?: s.uri
+            val (src, srcF) = if (s.audioUri != null) localAudio(app, t, s.audioUri, s.hdr) else localSrc(app, t, s)
             val out = tmp(app, t, "m4a")
             try {
                 if (q == ORIG) {
@@ -339,7 +384,7 @@ object Tools {
                     Xform.run(app, t, ed, out, null, 0, aBitrate(q))
                 }
                 Out.publish(app, t, out, "${safe(s.name)}.m4a", "audio/mp4")
-            } finally { try { out.delete() } catch (_: Throwable) {} }
+            } finally { try { out.delete() } catch (_: Throwable) {}; del(srcF) }
         }
     }
 
@@ -378,8 +423,9 @@ object Tools {
         return TaskCenter.add(app, "gif", "🎞 GIF ${clock(startMs)} (${lenMs / 1000} ث) · ${s.name}") { t ->
             val mr = MediaMetadataRetriever()
             val out = tmp(app, t, "gif")
+            val (src, srcF) = localSrc(app, t, s)
             try {
-                if (s.uri.startsWith("http")) mr.setDataSource(s.uri, HashMap<String, String>()) else mr.setDataSource(app, Uri.parse(s.uri))
+                mr.setDataSource(app, Uri.parse(src))
                 val frames = (lenMs * fps / 1000).toInt().coerceIn(1, 240)
                 var gw: GifWriter? = null; var px: IntArray? = null; var ow = 0; var oh = 0; var got = 0
                 out.outputStream().buffered().use { os ->
@@ -401,7 +447,7 @@ object Tools {
                     gw!!.finish()
                 }
                 Out.publish(app, t, out, "${safe(s.name)} ${secs(startMs)}ث.gif", "image/gif")
-            } finally { try { mr.release() } catch (_: Throwable) {}; try { out.delete() } catch (_: Throwable) {} }
+            } finally { try { mr.release() } catch (_: Throwable) {}; try { out.delete() } catch (_: Throwable) {}; del(srcF) }
         }
     }
 
@@ -410,7 +456,8 @@ object Tools {
         val app = ctx.applicationContext
         val lab = if (targetShort > 0) "${targetShort}p" else "نفس الدقة"
         return TaskCenter.add(app, "compress", "📦 ضغط ($lab · $q) · ${s.name}") { t ->
-            val pr = probe(app, s.uri)
+            val (src, srcF) = localSrc(app, t, s)
+            val pr = probe(app, src)
             val short = minOf(pr.w, pr.h)
             val fx = ArrayList<Effect>(); var outShort = short
             if (targetShort > 0 && short > 0 && targetShort < short) {
@@ -418,13 +465,13 @@ object Tools {
                 fx.add(Presentation.createForWidthAndHeight(even((pr.w * sc).toInt()).coerceAtLeast(2), even((pr.h * sc).toInt()).coerceAtLeast(2), Presentation.LAYOUT_SCALE_TO_FIT))
                 outShort = targetShort
             }
-            val ed = EditedMediaItem.Builder(MediaItem.fromUri(s.uri)).setEffects(Effects(emptyList<AudioProcessor>(), fx)).build()
+            val ed = EditedMediaItem.Builder(MediaItem.fromUri(src)).setEffects(Effects(emptyList<AudioProcessor>(), fx)).build()
             val out = tmp(app, t, "mp4")
             try {
                 t.msg = "بيضغط…"
                 Xform.run(app, t, ed, out, MimeTypes.VIDEO_H264, vBitrate(outShort, q), aBitrate(q))
                 Out.publish(app, t, out, "${safe(s.name)} مضغوط.mp4", "video/mp4")
-            } finally { try { out.delete() } catch (_: Throwable) {} }
+            } finally { try { out.delete() } catch (_: Throwable) {}; del(srcF) }
         }
     }
 
@@ -432,18 +479,20 @@ object Tools {
     fun hardsub(ctx: Context, s: ToolSrc, q: String, fontFile: String?, scale: Int, useOrig: Boolean): TaskItem {
         val app = ctx.applicationContext
         return TaskCenter.add(app, "hardsub", "🎬 ترجمة ثابتة في الفيديو · ${s.name}") { t ->
-            val pr = probe(app, s.uri)
-            if (pr.w <= 0 || pr.h <= 0) throw IOException("ما قدرتش أعرف أبعاد الفيديو")
+            val (src, srcF) = localSrc(app, t, s)
+            var pr = probe(app, src)
+            if ((pr.w <= 0 || pr.h <= 0) && s.w > 0 && s.h > 0) pr = Probe(s.w, s.h, pr.durMs, pr.aRate)   // أبعاد من المشغّل لو الفحص فشل
+            if (pr.w <= 0 || pr.h <= 0) { del(srcF); throw IOException("ما قدرتش أعرف أبعاد الفيديو") }
             val tf = try { if (fontFile != null) Typeface.createFromAsset(app.assets, "fonts/$fontFile") else Typeface.DEFAULT_BOLD } catch (_: Throwable) { Typeface.DEFAULT_BOLD }
             val ov = SubOverlay(s.subs, pr.w, pr.h, tf, scale, useOrig)
             val fx = ArrayList<Effect>(); fx.add(OverlayEffect(ImmutableList.of<TextureOverlay>(ov)))
-            val ed = EditedMediaItem.Builder(MediaItem.fromUri(s.uri)).setEffects(Effects(emptyList<AudioProcessor>(), fx)).build()
+            val ed = EditedMediaItem.Builder(MediaItem.fromUri(src)).setEffects(Effects(emptyList<AudioProcessor>(), fx)).build()
             val out = tmp(app, t, "mp4")
             try {
                 t.msg = "بيحرق الترجمة (بياخد وقت)…"
                 Xform.run(app, t, ed, out, MimeTypes.VIDEO_H264, vBitrate(minOf(pr.w, pr.h), q), aBitrate(q))
                 Out.publish(app, t, out, "${safe(s.name)} (ترجمة ثابتة).mp4", "video/mp4")
-            } finally { try { out.delete() } catch (_: Throwable) {} }
+            } finally { try { out.delete() } catch (_: Throwable) {}; del(srcF) }
         }
     }
 }

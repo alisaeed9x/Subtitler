@@ -121,14 +121,14 @@ class PlayerActivity : Activity(), Host {
     private var sizeTxt = ""
     private var sizeBusy = false
     private var dlRunning = false
-    private var dlPop: android.widget.PopupWindow? = null
+    private var dlDlg: android.app.Dialog? = null
     private fun isHlsUrl(): Boolean = (url ?: "").contains(".m3u8", true)
     private fun dlName(): String = (intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid)).substringBeforeLast('.', "").ifBlank { intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: Recents.titleOf(vid) }
 
     /** (v135) مصدر 🧰 أدوات الفيديو: الفيديو الشغّال دلوقتي (محلي = Uri، نت = لينك مباشر؛ aurl = صوت منفصل لو موجود) */
     private fun toolSrc(): ToolSrc? {
         val u = uri?.toString() ?: url ?: return null
-        return ToolSrc(u, if (uri == null) aurl else null, dlName(), durMs, vidW, vidH, player.currentPosition, engine.subs)
+        return ToolSrc(u, if (uri == null) aurl else null, dlName(), durMs, vidW, vidH, player.currentPosition, engine.subs, HashMap(hdr))
     }
     /** (v134) حجم الفيديو الحالي: HEAD للينك المباشر/اليوتيوب (صورة+صوت)، وتقدير bitrate×المدة لـ HLS */
     fun refreshSize(show: Boolean = false) {
@@ -154,36 +154,32 @@ class PlayerActivity : Activity(), Host {
         }.start()
     }
     private fun startDownload(job: Downloader.Job) {
-        if (dlRunning) return
-        dlRunning = true
-        try { Notice.show(this, "⬇ بدأ التحميل: ${job.name}", 2500L) } catch (_: Throwable) {}
         val app = applicationContext
-        Thread {
-            var lastShown = -10
-            val res = Downloader.run(app, job) { what, pct ->
-                if (pct < lastShown) lastShown = pct - 10
-                if (pct >= lastShown + 10 || pct == 99) { lastShown = pct; runOnUiThread { try { Notice.show(this, "$what $pct%", 1200L) } catch (_: Throwable) {} } }
-            }
-            runOnUiThread {
-                dlRunning = false
-                try { Notice.show(this, (if (res.first) "✅ اتحمّل: " else "⚠ ") + res.second, 5000L); log((if (res.first) "✅ تحميل: " else "⚠ تحميل: ") + res.second) } catch (_: Throwable) {}
-            }
-        }.start()
+        // (v137) التحميل بقى مهمة في تبويب «المهام»: إيقاف مؤقت / استكمال / إلغاء / إعادة، وممكن أكتر من تحميل ورا بعض
+        TaskCenter.add(app, "download", (if (job.audioOnly) "🎧 " else "⬇ ") + job.name) { t ->
+            job.ctl.cancelled = false; job.ctl.paused = false
+            job.ctl.ext = { t.cancelled }
+            t.onCancel = { job.ctl.cancelled = true }
+            t.onPause = { p -> job.ctl.paused = p }
+            val res = Downloader.run(app, job) { what, pct -> t.pct = pct.coerceIn(0, 99); t.msg = what; TaskCenter.changed() }
+            if (!res.first) throw java.io.IOException(res.second)
+            t.msg = ""; t.outPath = res.second
+        }
+        try { Notice.show(this, "⬇ اتضاف للتحميل — تابعه من تبويب «المهام» (إيقاف · استكمال · إلغاء)", 3200L) } catch (_: Throwable) {}
     }
     /** (v134) زرار ⬇: قايمة الجودات (بحجم كل واحدة) — الاختيار بيبدأ التحميل */
     fun downloadPopup(anchor: View) {
-        dlPop?.let { if (it.isShowing) { it.dismiss(); dlPop = null; return } }
-        if (dlRunning) { Notice.show(this, "فيه تحميل شغّال دلوقتي — استنى يخلص", 2300L); return }
+        dlDlg?.let { if (it.isShowing) { it.dismiss(); dlDlg = null; return } }
         val u0 = url ?: return
         val hs = HashMap(hdr); val nm = dlName()
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12)
+            setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(2))
         }
-        col.addView(ui.text("⬇ تحميل — 🎬 فيديو (اختار الجودة)", 12f, th.primary, true).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(4)) })
+        col.addView(ui.text("🎬 فيديو — اختار الجودة", 13f, th.muted, true).apply { setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(4)) })
         fun addItem(label: String, job: Downloader.Job, sizeFn: (() -> Long)?) {
-            val b = ui.fsBtn(label) { _ -> dlPop?.dismiss(); startDownload(job) }.apply { minimumWidth = ui.dp(220) }
-            col.addView(b)
+            val b = ui.button(label) { dlDlg?.dismiss(); startDownload(job) }
+            col.addView(b, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, ui.dp(3), 0, ui.dp(3)) })
             if (sizeFn != null) Thread {
                 val n = try { sizeFn() } catch (_: Throwable) { -1L }
                 if (n > 0) runOnUiThread { b.text = label + "  ·  " + Sniff.fmtSize(n) }
@@ -200,7 +196,7 @@ class PlayerActivity : Activity(), Host {
             if (tl.isEmpty()) addItem("أعلى جودة متاحة", Downloader.Job(nm, u0, null, true, 0, hs), null)
             else for ((hh, br) in tl.sortedByDescending { it.first })
                 addItem("${hh}p", Downloader.Job(nm, u0, null, true, hh, hs), if (br > 0 && durMs > 0) ({ br / 8L * (durMs / 1000L) }) else null)
-            col.addView(ui.text("HLS: بيتحمّل ملف .ts (مقاطع من غير تشفير بس)", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(2)) })
+            col.addView(ui.text("HLS: بيتحمّل ملف .ts (مقاطع من غير تشفير بس)", 11f, th.muted).apply { setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(2)) })
         } else {
             val ht = if (vidW > 0 && vidH > 0) minOf(vidW, vidH) else 0
             addItem("الفيديو بالجودة الحالية" + (if (ht > 0) " (${ht}p)" else ""), Downloader.Job(nm, u0, aurl, false, ht, hs)) {
@@ -208,7 +204,7 @@ class PlayerActivity : Activity(), Host {
             }
         }
         // (v134) صوت فقط: M4A (AAC) — لو الصوت لينك لوحده (يوتيوب) بيتحمّل هو بس، وإلا بيتحمّل الفيديو ويتستخرج منه الصوت (أقل جودة عشان الحجم)
-        col.addView(ui.text("🎧 صوت فقط", 11f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(2)) })
+        col.addView(ui.text("🎧 صوت فقط", 13f, th.muted, true).apply { setPadding(ui.dp(4), ui.dp(10), ui.dp(4), ui.dp(4)) })
         val aOpt = qOpts.firstOrNull { it.audio != null }
         val loOpt = qOpts.filter { it.h > 0 }.minByOrNull { it.h } ?: qOpts.lastOrNull()
         val aJob: Downloader.Job = when {
@@ -219,20 +215,8 @@ class PlayerActivity : Activity(), Host {
         }
         val aSrc = aJob.audio
         addItem("🎧 تحميل كصوت (M4A)", aJob, if (aSrc != null) ({ Downloader.sizeOf(aSrc, hs) }) else null)
-        val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
-        val popW = minOf(resources.displayMetrics.widthPixels - ui.dp(24), ui.dp(300))
-        col.measure(View.MeasureSpec.makeMeasureSpec(popW, View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
-        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
-        val screenH = resources.displayMetrics.heightPixels
-        val up = loc[1] > screenH / 2
-        val avail = (if (up) loc[1] - ui.dp(12) else screenH - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
-        val popH = minOf(col.measuredHeight, avail)
-        val pw = android.widget.PopupWindow(scroll, maxOf(col.measuredWidth, ui.dp(220)), popH, true)
-        pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0)); pw.isOutsideTouchable = true
-        pw.setOnDismissListener { if (dlPop === pw) dlPop = null; showChrome() }
-        if (up) pw.showAsDropDown(anchor, 0, -(anchor.height + popH + ui.dp(2))) else pw.showAsDropDown(anchor, 0, ui.dp(2))
-        dlPop = pw
-        h.removeCallbacks(hideChrome); showChrome(); h.removeCallbacks(hideChrome)
+        h.removeCallbacks(hideChrome); showChrome()
+        dlDlg = GAlert(this).setTitle("⬇ تحميل").setView(col).setNegativeButton("إغلاق", null).show().also { d -> d.setOnDismissListener { if (dlDlg === d) dlDlg = null; showChrome() } }
     }
     var uri: Uri? = null
     private var httpDsf: DefaultHttpDataSource.Factory? = null

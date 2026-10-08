@@ -22,7 +22,10 @@ import java.nio.ByteBuffer
  * كله بيشتغل على خيط خلفي (استدعيه من Thread).
  */
 object Downloader {
-    class Job(val name: String, val url: String, val audio: String?, val hls: Boolean, val targetH: Int, val headers: Map<String, String>, val audioOnly: Boolean = false)
+    /** (v137) تحكم في التحميل: إيقاف مؤقت / إلغاء (ext = إلغاء جاي من مهمة المهام) */
+    class Ctl { @Volatile var paused = false; @Volatile var cancelled = false; @Volatile var ext: () -> Boolean = { false }
+        fun stop(): Boolean = cancelled || ext() }
+    class Job(val name: String, val url: String, val audio: String?, val hls: Boolean, val targetH: Int, val headers: Map<String, String>, val audioOnly: Boolean = false, val ctl: Ctl = Ctl())
 
     private const val UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 
@@ -57,25 +60,52 @@ object Downloader {
 
     private fun resolve(base: String, ref: String): String = URL(URL(base), ref).toString()
 
-    private fun copyTo(url: String, headers: Map<String, String>, out: File, onPct: (Int) -> Unit) {
-        val c = open(url, headers)
-        try {
-            val total = c.contentLengthLong
-            c.inputStream.use { ins ->
-                out.outputStream().buffered().use { os ->
-                    val buf = ByteArray(64 * 1024); var done = 0L; var last = -1
-                    while (true) {
-                        val n = ins.read(buf); if (n < 0) break
-                        os.write(buf, 0, n); done += n
-                        if (total > 0) { val p = (done * 100 / total).toInt(); if (p != last) { last = p; onPct(p) } }
+    private fun waitIfPaused(ctl: Ctl) {
+        while (ctl.paused && !ctl.stop()) Thread.sleep(200)
+        if (ctl.stop()) throw TaskCancelled()
+    }
+
+    /** (v137) تنزيل بيستكمل من نفس المكان (Range) بعد الإيقاف المؤقت أو قطع الاتصال */
+    private fun copyTo(url: String, headers: Map<String, String>, out: File, ctl: Ctl, onPct: (Int) -> Unit) {
+        try { out.delete() } catch (_: Throwable) {}
+        var done = 0L; var total = -1L; var last = -1; var fails = 0
+        while (true) {
+            if (ctl.stop()) throw TaskCancelled()
+            waitIfPaused(ctl)
+            var interrupted = false
+            val c = open(url, headers, "GET", if (done > 0) "bytes=$done-" else null)
+            try {
+                val code = c.responseCode
+                if (code !in 200..299) throw java.io.IOException("HTTP $code")
+                val partial = code == 206
+                if (done > 0 && !partial) { done = 0; try { out.delete() } catch (_: Throwable) {} }
+                val len = c.contentLengthLong
+                if (total < 0 && len > 0) total = if (partial) done + len else len
+                c.inputStream.use { ins ->
+                    java.io.FileOutputStream(out, true).use { os ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            if (ctl.stop()) throw TaskCancelled()
+                            if (ctl.paused) { interrupted = true; break }
+                            val n = ins.read(buf); if (n < 0) break
+                            os.write(buf, 0, n); done += n
+                            if (total > 0) { val p = (done * 100 / total).toInt().coerceIn(0, 100); if (p != last) { last = p; onPct(p) } }
+                        }
                     }
                 }
-            }
-        } finally { c.disconnect() }
+            } catch (e: TaskCancelled) { throw e
+            } catch (e: java.io.IOException) {
+                if (++fails > 4) throw e
+                Thread.sleep(1500); continue
+            } finally { c.disconnect() }
+            if (interrupted) continue
+            if (total > 0 && done < total) { if (++fails > 4) throw java.io.IOException("الاتصال اتقطع"); Thread.sleep(1500); continue }
+            return
+        }
     }
 
     /** HLS غير مشفّر (مقاطع TS): بيختار أقرب جودة للمطلوب وبيضم المقاطع. بيرجّع رسالة خطأ أو null */
-    private fun hls(url: String, headers: Map<String, String>, targetH: Int, out: File, onPct: (Int) -> Unit): String? {
+    private fun hlsFetch(url: String, headers: Map<String, String>, targetH: Int, out: File, ctl: Ctl, onPct: (Int) -> Unit): String? {
         var base = url; var pl = readText(url, headers)
         if (pl.contains("#EXT-X-STREAM-INF")) {
             val lines = pl.lines(); var best: String? = null; var bestScore = Long.MAX_VALUE
@@ -100,8 +130,15 @@ object Downloader {
         out.outputStream().buffered().use { os ->
             var last = -1
             for ((k, s) in segs.withIndex()) {
-                val c = open(s, headers)
-                try { c.inputStream.use { it.copyTo(os) } } finally { c.disconnect() }
+                if (ctl.stop()) throw TaskCancelled()
+                waitIfPaused(ctl)
+                var tries = 0
+                while (true) {
+                    val c = open(s, headers)
+                    try { c.inputStream.use { it.copyTo(os) }; break }
+                    catch (e: java.io.IOException) { if (++tries > 3) throw e; Thread.sleep(1200) }
+                    finally { c.disconnect() }
+                }
                 val p = (k + 1) * 100 / segs.size; if (p != last) { last = p; onPct(p) }
             }
         }
@@ -197,6 +234,18 @@ object Downloader {
 
     private fun safeName(s: String): String = s.replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), " ").trim().take(80).ifBlank { "video" }
 
+    /** (v137) تنزيل لملف مؤقت للأدوات (قص/ضغط/هارد ساب…): لينك مباشر / صورة+صوت (بيتدمجوا) / HLS. بيرمي استثناء لو فشل */
+    fun toCache(url: String, audio: String?, hls: Boolean, targetH: Int, headers: Map<String, String>, out: File, ctl: Ctl, onPct: (Int) -> Unit) {
+        if (hls) { val err = hlsFetch(url, headers, targetH, out, ctl, onPct); if (err != null) throw java.io.IOException(err); return }
+        if (audio == null) { copyTo(url, headers, out, ctl, onPct); return }
+        val v = File(out.parentFile, out.name + ".v"); val a = File(out.parentFile, out.name + ".a")
+        try {
+            copyTo(url, headers, v, ctl) { onPct(it / 2) }
+            copyTo(audio, headers, a, ctl) { onPct(50 + it / 2) }
+            mux(v, a, out)
+        } finally { try { v.delete() } catch (_: Throwable) {}; try { a.delete() } catch (_: Throwable) {} }
+    }
+
     /** بيرجّع (نجح؟, رسالة). استدعيه من خيط خلفي. onPct: 0..100 */
     fun run(ctx: Context, job: Job, onPct: (String, Int) -> Unit): Pair<Boolean, String> {
         val tmpDir = File(ctx.cacheDir, "dl"); tmpDir.mkdirs()
@@ -205,28 +254,28 @@ object Downloader {
             if (job.audioOnly) {
                 val raw = File(tmpDir, "raw.bin")
                 if (job.hls) {
-                    val err = hls(job.url, job.headers, job.targetH, raw) { onPct("⬇ تحميل", it) }
+                    val err = hlsFetch(job.url, job.headers, job.targetH, raw, job.ctl) { onPct("⬇ تحميل", it) }
                     if (err != null) { raw.delete(); return Pair(false, err) }
-                } else copyTo(job.audio ?: job.url, job.headers, raw) { onPct("⬇ تحميل الصوت", it) }
+                } else copyTo(job.audio ?: job.url, job.headers, raw, job.ctl) { onPct("⬇ تحميل الصوت", it) }
                 onPct("🎧 استخراج الصوت", 99)
                 return finishAudio(ctx, raw, base, tmpDir)
             }
             if (job.hls) {
                 val t = File(tmpDir, "h.ts")
-                val err = hls(job.url, job.headers, job.targetH, t) { onPct("⬇ تحميل", it) }
+                val err = hlsFetch(job.url, job.headers, job.targetH, t, job.ctl) { onPct("⬇ تحميل", it) }
                 if (err != null) { t.delete(); return Pair(false, err) }
                 return Pair(true, publish(ctx, t, "$base.ts", "video/mp2t"))
             }
             val v = File(tmpDir, "v.bin")
             if (job.audio == null) {
-                copyTo(job.url, job.headers, v) { onPct("⬇ تحميل", it) }
+                copyTo(job.url, job.headers, v, job.ctl) { onPct("⬇ تحميل", it) }
                 val ext = job.url.substringBefore('?').substringAfterLast('.', "mp4").lowercase().let { if (it.length in 2..4) it else "mp4" }
                 val mime = if (ext == "webm") "video/webm" else if (ext == "mkv") "video/x-matroska" else "video/mp4"
                 return Pair(true, publish(ctx, v, "$base.$ext", mime))
             }
             val a = File(tmpDir, "a.bin")
-            copyTo(job.url, job.headers, v) { onPct("⬇ الصورة", it / 2) }
-            copyTo(job.audio, job.headers, a) { onPct("⬇ الصوت", 50 + it / 2) }
+            copyTo(job.url, job.headers, v, job.ctl) { onPct("⬇ الصورة", it / 2) }
+            copyTo(job.audio, job.headers, a, job.ctl) { onPct("⬇ الصوت", 50 + it / 2) }
             onPct("🔧 دمج الصوت والصورة", 99)
             val out = File(tmpDir, "m.mp4")
             return try {
@@ -239,6 +288,7 @@ object Downloader {
                 Pair(true, "الدمج مدعمش الصيغة دي — اتحفظ ملفين: $p1 + $p2")
             }
         } catch (e: Throwable) {
+            if (e is TaskCancelled) throw e
             LogStore.err("Downloader", e)
             return Pair(false, "التحميل فشل: " + (e.message ?: e.javaClass.simpleName).take(80))
         }
