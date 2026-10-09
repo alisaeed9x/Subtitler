@@ -24,7 +24,7 @@ echo "== 1) compile-check للتطبيق كله"
 "$KC" -jvm-target 17 -cp "$AJ" -opt-in=kotlin.RequiresOptIn -d "$OUT/all" "$SRC"/*.kt $(find "$ROOT/dev-tests/stubs" -name '*.kt' -o -name '*.java') 2>&1 | grep -E "error" && { echo "FAIL: compile errors"; exit 1; } || echo "OK"
 
 echo "== 2) اختبارات JVM (المنطق بدون Android: Core/Store/AudioCore/Engine)"
-NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt $SRC/Stats.kt $SRC/KeyVault.kt $SRC/Speech.kt $SRC/Coverage.kt"
+NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/ExtrasFlags.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt $SRC/Stats.kt $SRC/KeyVault.kt $SRC/Speech.kt $SRC/Coverage.kt"
 "$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep error && exit 1 || true
 CP="$OUT/app:$TOOLS/jsonout:$STD:$AJ"   # jsonout قبل android.jar عشان org.json الحقيقي يتقدم على الـ stubs
 JOPT="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8"

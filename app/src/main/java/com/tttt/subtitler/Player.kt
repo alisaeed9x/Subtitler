@@ -53,6 +53,7 @@ class PlayerActivity : Activity(), Host {
     lateinit var sub: SubtitleView
     lateinit var visual: VisualMode
     lateinit var visOv: VisualOverlay
+    var fx: Fx? = null
     lateinit var miniBar: DualProgress
     lateinit var st: TextView
     lateinit var floatBar: View
@@ -856,7 +857,7 @@ class PlayerActivity : Activity(), Host {
             if (gap in 0..350 && differ && !b.isContinuation && !a.isSong && !b.isSong && !a.isSound && !b.isSound && !a.translated.startsWith("«") && !b.translated.startsWith("«") &&
                 ends[j] - starts[j] <= 4000 && ends[j + 1] - starts[j + 1] in 600..5000) ends[j] = ends[j + 1]
         }
-        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound && !l[it].translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") } }   // (v105) أوصاف الأصوات القديمة [موسيقى] متظهرش
+        val sp = l.indices.filter { !l[it].isSound }; val sd = l.indices.filter { l[it].isSound && (Extras.deaf || !l[it].translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") }) }   // (v105) أوصاف الأصوات القديمة [موسيقى] متظهرش
         spMap = sp.toIntArray(); spStarts = LongArray(sp.size) { starts[sp[it]] }; spEnds = LongArray(sp.size) { ends[sp[it]] }
         sdMap = sd.toIntArray(); sdStarts = LongArray(sd.size) { starts[sd[it]] }; sdEnds = LongArray(sd.size) { ends[sd[it]] }
         if (::sentDlg.isInitialized && sentDlg.isShowing) adapter.notifyDataSetChanged()   // القايمة مش ظاهرة = مفيش داعي نرسمها كل ثانية
@@ -908,6 +909,9 @@ class PlayerActivity : Activity(), Host {
         val subLp = FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = ui.dp(12) }
         visOv = VisualOverlay(this); videoBox.addView(visOv, FrameLayout.LayoutParams(-1, -1))
         visOv.area = { if (sv.width > 0 && sv.height > 0) android.graphics.RectF(sv.left.toFloat(), sv.top.toFloat(), sv.right.toFloat(), sv.bottom.toFloat()) else android.graphics.RectF(0f, 0f, videoBox.width.toFloat(), videoBox.height.toFloat()) }
+        fx = Fx(this, videoBox, sub, { visOv.area() }, { player.currentPosition / 1000.0 }, { durMs / 1000.0 }, { try { player.isPlaying } catch (_: Exception) { false } },
+            { makeRetriever() }, { s -> runOnUiThread { try { player.seekTo((s * 1000).toLong().coerceAtLeast(0L)) } catch (_: Exception) {} } },
+            { m -> runOnUiThread { Notice.show(this, m, 2300L) } }, { t -> if (::visual.isInitialized) visual.boxesAt(t) else emptyList() })
         videoBox.addView(sub, subLp)
         sub.backdrop = sv
         st = IconTextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
@@ -923,6 +927,7 @@ class PlayerActivity : Activity(), Host {
         // (v134) فوق طبقة الإيماءات عشان علامة ⓘ تستقبل اللمس
         videoBox.addView(soundTv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = ui.dp(28) })
         soundTv.setOnClickListener { showTermCard() }
+        fx?.attachButton()
         // أزرار عايمة فوق الفيديو: 📋 اللوج (يخفي/يظهر حالة الترجمة) و 👁 بصري
         batchTv = IconTextView(this).apply {
             setTextColor(Color.WHITE); textSize = 10f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
@@ -1218,6 +1223,7 @@ class PlayerActivity : Activity(), Host {
         gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
         gTool.addView(pd("🌍 ترجمة جوجل (من غير API)") { googleTranslateNow() })
+        gTool.addView(pd("🎛 ميزات المشاهدة") { ExtrasUi.show(this, fx) { fx?.refresh() } })
         // (v87) الإعدادات: قايمة صغيرة منسدلة بالأقسام — دوسة على قسم تفتحه دايركت (من غير شاشة القايمة الكبيرة)
         val gSet = gCol()
         gSet.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
@@ -1762,6 +1768,7 @@ class PlayerActivity : Activity(), Host {
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
                 visOv.showBoxes(visual.boxesAt(visNow))
+                try { fx?.tick(cur / 1000.0) } catch (_: Throwable) {}
                 val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs, 400L, 1).map { spMap[it] }   // (v158) كل متحدث بيظهر لوحده (الأحدث بس)
                 val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
                 // مراقبة العرض: لو جملة عدّى وقتها وأنا شغّال عادي ومظهرتش في act → اتسجلت في اللوج بتوقيتها ونصها
@@ -1815,6 +1822,7 @@ class PlayerActivity : Activity(), Host {
                 if (sTxt != soundKey) {
                     soundKey = sTxt; termFull = if (termIx >= 0) list[termIx].translated else ""
                     soundTv.textSize = if (termIx >= 0) 10.5f else 13f
+                    soundTv.setTextColor(if (Extras.deaf && termIx < 0) 0xFFB8C0CC.toInt() else 0xFFE8EAED.toInt())
                     soundTv.text = sTxt; soundTv.visibility = if (sTxt.isEmpty()) View.GONE else View.VISIBLE
                 }
                 st.text = status
@@ -2016,6 +2024,7 @@ class PlayerActivity : Activity(), Host {
         }
         Live.engine = engine
         visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Notice.show(this, (m).toString(), 2300L) } }, { })
+        fx?.start(vid)
         status = "⏳ بحمّل بيانات الفيديو…"
         val vidNow = vid
         Thread {
@@ -2861,6 +2870,7 @@ class PlayerActivity : Activity(), Host {
         pipOv?.hide(); pipOv = null
         saveRecent()
         try { visual.stop() } catch (e: Exception) { LogStore.err("Main:2590", e) }
+        try { fx?.stop() } catch (_: Throwable) {}
         if (Live.engine === engine) Live.engine = null
         retireEngine()
         if (!handedOff) try { engine.saveNow() } catch (e: Exception) { LogStore.err("Main:2593", e) }

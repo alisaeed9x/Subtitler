@@ -121,6 +121,7 @@ object Cfg {
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
         try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
+        try { Extras.load() } catch (_: Throwable) {}
         // (v158) مرة واحدة: كل المفاتيح (أساسي/إضافي/احتياطي) تتجمّع في قايمة واحدة والبرنامج بيوزّعها لوحده
         if (!p.getBoolean("keys_unified_v158", false)) {
             val all = allMainKeys()
@@ -341,7 +342,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -676,7 +677,7 @@ object Parse {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
         val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
             .filter { it.end > it.start && it.original.isNotEmpty() && !(Subs.isMusicLabel(it) && !it.isSound) }
-            .filter { !(it.isSound && it.translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") }) }   // (v105) أوصاف الأصوات [موسيقى] [ضحك] مبقتش بتظهر
+            .filter { Extras.deaf || !(it.isSound && it.translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") }) }   // (v105) — (v162) وضع الصم بيسيبهم أوصاف الأصوات [موسيقى] [ضحك] مبقتش بتظهر
         val ok = all.filter { it.start < off + maxEnd + 1.0 }.map { if (it.end > off + maxEnd + 0.3) it.copy(end = off + maxEnd) else it }.filter { it.end > it.start }
         if (ok.isEmpty() && all.isNotEmpty() && off > 1.0) {
             // الموديل ساعات بيرجّع أوقات مطلقة (من أول الفيديو) بدل نسبية لبداية المقطع → الجمل كانت بتتشال كلها والباتش يطلع ✅ فاضي
