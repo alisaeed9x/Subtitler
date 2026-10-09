@@ -203,6 +203,13 @@ class Engine(
     /** (v107) اسم الفيلم/المسلسل من اسم الملف + الفولدر — بنبحث بيه عن الشخصيات مرة واحدة */
     @Volatile var titleHint: String = ""
     @Volatile private var lookupState = 0   // 0 لسه · 1 شغال · 2 خلص
+    /** (v170) بنك بصمات الأصوات: بيفضل طول الفيديو وبيتحفظ مع التقدم، وبيتحوّل لنص في prompt كل مقطع */
+    private val voices = VoiceBank()
+    /** تقسيم آلي مبدئي لكل مقطع قبل الإرسال (المفتاح = بداية المقطع بالسنتي ثانية) */
+    private val voiceHints = ConcurrentHashMap<Long, String>()
+    /** (v170) العمل اتعرف عليه (من الاسم أو من الحوار) وشخصياته اتضافت */
+    @Volatile private var castFound = false
+    private var identTried = false
     private var chunksDone = 0; private var lastCharChunk = 0
     private var charsTrySize = 0
     private var charsBusy = false
@@ -547,6 +554,7 @@ class Engine(
             for (r in s.done) done.add(r[0], r[1])
             for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
             chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
+            voices.fromJson(s.voices)
             srcLang = s.srcLang; detDone = s.detDone; autoCharsAttempts = s.charsTried
             if (s.detDone) anyApplied = true
             pronUpTo = subs.size
@@ -838,6 +846,12 @@ class Engine(
         }
         // (v166) نضغط الصوت هنا (نفس خيط التجهيز) عشان الرفع يبدأ بحجم أصغر ونشوف النسبة في اللوج
         try { val pk = AudioEnc.pack(w.bytes); host.log("📦 المقطع ${i + 1}: ${pk.srcSize / 1024}KB ← ${pk.bytes.size / 1024}KB (${pk.mime.removePrefix("audio/")})") } catch (_: Throwable) {}
+        // (v170) تقسيم آلي مبدئي بالبصمة المحلية: أي صوت معروف بيتكلم إمتى (تلميح لجيميناي، مش أمر)
+        if (!w.silent) try {
+            val hk = Math.round(w.startSec * 100)
+            val h = VoiceTrack.hint(voices, w)
+            if (h.isNotEmpty()) voiceHints[hk] = h else voiceHints.remove(hk)
+        } catch (_: Throwable) {}
         return Prep(w, rawStart, rawEnd)
     }
 
@@ -941,7 +955,8 @@ class Engine(
         val c = if (dl.isEmpty() || dl == conf.lang) conf else dialConf.getOrPut(dl) { conf.withLang(dl) }
         val case = pb.caseOf(srcLang, detDone)
         val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(c, "other"))] } else null
-        return toneBlock() + pb.build(c, srcLang, detDone, durSec, if (hole) "" else Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict, hole)
+        val vt = if (hole) "" else voices.promptBlock() + (voiceHints[Math.round(start * 100)] ?: "")
+        return toneBlock() + pb.build(c, srcLang, detDone, durSec, if (hole) "" else Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict, hole, vt)
     }
 
     /** إصلاح الجمل اللي translated بتاعتها مش عربي: ترجمة نصية سريعة من original (وpivot) للهجة المختارة */
@@ -975,8 +990,9 @@ class Engine(
     private fun effectiveChars(): List<Chr> = if (conf.manualChars.isNotEmpty()) conf.manualChars else synchronized(lock) { chars.toList() }
     private fun effectiveGloss(): List<Gloss> = synchronized(lock) { gloss.toList() }
 
-    private fun applyChunk(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, j: JSONObject?, fresh: List<Sub>, prior: List<Sub>) {
+    private fun applyChunk(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, j: JSONObject?, fresh0: List<Sub>, prior: List<Sub>) {
         if (isClosed) return
+        val fresh = voiceStep(w, j, fresh0)
         if (j != null && !detDone) {
             val d = j.optString("detected_source_language", "").trim()
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
@@ -1005,6 +1021,27 @@ class Engine(
         persist()
         afterChunk(w, fresh, prior)
         maybeConvert(false)
+    }
+
+    /** (v170) بعد رد جيميناي: بصمة كل جملة من الصوت نفسه → كود صوت ثابت عبر المقاطع + تصحيح الجنس من جنس الصوت */
+    private fun voiceStep(w: WavChunk, j: JSONObject?, fresh: List<Sub>): List<Sub> {
+        voiceHints.remove(Math.round(w.startSec * 100))
+        if (fresh.isEmpty()) return fresh
+        return try {
+            val r = VoiceTrack.apply(voices, w, fresh, j?.optJSONArray("voices"))
+            if (r.matched + r.newVoices > 0) host.log("🎙 بصمة الصوت: ${r.matched} جملة اتطابقت · ${r.newVoices} صوت جديد · ${voices.size()} صوت في البنك" + (if (r.genderFixed > 0) " · اتصحّح جنس ${r.genderFixed} جملة" else ""))
+            syncVoiceCast()
+            r.subs
+        } catch (e: Throwable) { host.log("⚠ بصمة الصوت: " + (e.message ?: e.toString()).take(80)); fresh }
+    }
+
+    /** أي صوت اتسمّى (بيعرّف نفسه أو حد بيناديه) وظهر 3 مرات على الأقل بيدخل جدول الشخصيات بجنس صوته */
+    private fun syncVoiceCast() {
+        if (conf.manualChars.isNotEmpty()) return
+        val nv = voices.namedVoices(); if (nv.isEmpty()) return
+        synchronized(lock) {
+            for ((name, g, _) in nv) if (chars.none { it.name == name }) chars.add(Chr(name, g, ""))
+        }
     }
 
     private fun applyPrevCorrections(j: JSONObject) {
@@ -1098,6 +1135,7 @@ class Engine(
     private fun maybeAnalyze() {
         if (!conf.autoChars || conf.manualChars.isNotEmpty()) return
         maybeLookup()
+        maybeIdentify()
         synchronized(lock) {
             if (charsBusy || lookupState == 1 || subs.size < CHAR_MIN_LINES) return
             // أول تحليل: لما مفيش شخصيات. بعد كده: تحديث كل 5 باتشات (لو الترجمة زادت 20 جملة على الأقل)
@@ -1142,6 +1180,12 @@ class Engine(
         val r = bgCall(prompt, 2048, 0.1, true, 0, true)
         val j = Parse.json(r.text)
         if (j == null || !j.optBoolean("found", false)) { host.log("🔎 الاسم مش واضح أو مش متأكد — هطلّع الشخصيات من الترجمة نفسها"); return }
+        val n = applyCast(j)
+        host.log("🔎 لقيت العمل «" + j.optString("title") + "» — اتضافت $n شخصية هتتحط في الـ prompt من المقطع الجاي")
+    }
+
+    /** يضيف شخصيات العمل اللي اتلقى (من البحث) لجدول الشخصيات. يرجع عدد الجديد. */
+    private fun applyCast(j: JSONObject): Int {
         var n = 0
         synchronized(lock) {
             val ca = j.optJSONArray("characters")
@@ -1151,9 +1195,54 @@ class Engine(
                 val g = if (o.optString("gender").lowercase().startsWith("f")) "female" else "male"
                 chars.add(Chr(name, g, o.optString("role").trim())); n++
             }
+            castFound = true
         }
-        host.log("🔎 لقيت العمل «" + j.optString("title") + "» — اتضافت $n شخصية هتتحط في الـ prompt من المقطع الجاي")
+        return n
     }
+
+    /**
+     * (v170) مفيش اسم ملف مفيد (أو البحث بالاسم ملقاش حاجة): نتعرّف على العمل من الحوار نفسه (أسماء الشخصيات والأحداث) ونطابقه بجوجل.
+     * لو لقينا عمل بثقة عالية: شخصياته الرئيسية بتتضاف جاهزة بجنسها ودورها، ومن المقطع الجاي جيميناي بيربط الأصوات بيها.
+     */
+    private fun maybeIdentify() {
+        synchronized(lock) {
+            if (identTried || castFound || subs.size < 30) return
+            val pending = titleHint.trim().length >= 3 && lookupState != 2   // لسه بنجرّب الاسم الأول
+            if (pending) return
+            identTried = true
+        }
+        try {
+            bg.submit { try { identifyFromDialogue() } catch (e: Exception) { host.log("⚠ التعرف على العمل من الحوار فشل: " + (e.message ?: "").take(100)) } }
+        } catch (_: Exception) {}
+    }
+
+    private fun identifyFromDialogue() {
+        val snap = subs.filter { !it.isSound && it.original.isNotBlank() }
+        if (snap.size < 20) return
+        val step = maxOf(1, snap.size / 45)
+        val lines = snap.filterIndexed { i, _ -> i % step == 0 }.take(45).joinToString("\n") { s ->
+            "[" + (if (s.gender == "female") "أنثى" else "ذكر") + "] " + s.original.take(140) + (if (s.translated.isNotBlank()) "  ←  " + s.translated.take(140) else "")
+        }
+        val names = snap.flatMap { it.people }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(25).joinToString("، ") { it.key }
+        val known = synchronized(lock) { chars.map { it.name } }.joinToString("، ")
+        val hint = titleHint.trim()
+        host.log("🔎 مفيش اسم عمل واضح — بحاول أتعرّف عليه من الحوار نفسه (${snap.size} جملة)…")
+        val prompt = "ده حوار من فيديو (فيلم أو مسلسل أو أنمي؟) اتسمع واتترجم. لغة الصوت: ${srcLang.ifEmpty { "غير محددة" }}. اسم الملف/الفولدر (ممكن يكون ناقص أو عام): «${hint.ifEmpty { "مفيش" }}».\n" +
+            "أسماء ظهرت في الحوار: ${names.ifEmpty { "مفيش" }}\n" + (if (known.isNotEmpty()) "شخصيات معروفة عندنا: $known\n" else "") +
+            voices.promptBlock() +
+            "\nمقتطفات من الحوار (متكلم + الأصل + الترجمة):\n$lines\n\n" +
+            "مهمتك: تتعرّف على العمل ده، وتدوّر عليه في جوجل وتتأكد إنه عمل حقيقي وإن أسماء الشخصيات والأحداث دي بتاعته فعلًا.\n" +
+            "🔴 ممنوع التخمين: لو مش متأكد بثقة عالية (أسماء شخصيات وأحداث متطابقة مع مصدر موثوق)، أو لقيت أكتر من عمل محتمل، أو ده شكله فيديو يوتيوب/مقطع شخصي/برنامج/بودكاست — رجّع found=false وخلاص.\n" +
+            "لو لقيته بثقة: رجّع الشخصيات الرئيسية والمهمة (حد أقصى 15) بأسمائها العربية بنفس كتابتها في الترجمة (ولو الشخصية في «شخصيات معروفة عندنا» استخدم نفس الكتابة بالظبط)، وجنس كل شخصية، ودورها في سطر قصير (حد أقصى 12 كلمة) من غير حرق أحداث.\n" +
+            "رد JSON فقط بدون أي شرح أو markdown:\n{\"found\":true,\"title\":\"الاسم الكامل للعمل\",\"characters\":[{\"name\":\"...\",\"gender\":\"male\",\"role\":\"...\"}]}\nأو {\"found\":false}"
+        val r = bgCall(prompt, 2048, 0.1, true, 0, true)
+        val j = Parse.json(r.text)
+        if (j == null || !j.optBoolean("found", false)) { host.log("🔎 مقدرتش أتأكد من اسم العمل — هكمّل بالشخصيات اللي بتتطلّع من الترجمة والأصوات"); return }
+        val n = applyCast(j)
+        host.log("🔎 اتعرّفت على العمل من الحوار: «" + j.optString("title") + "» — اتضافت $n شخصية جاهزة")
+        persist()
+    }
+
 
     private fun analyzeChars() {
         val snap = subs
@@ -1927,7 +2016,7 @@ class Engine(
         if (isClosed && !force) return   // خيط متأخر من إنجن اتقفل: ممنوع يكتب
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }
-            Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list())
+            Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list(), voices.toJson())
         }
         try { st.save(saved) } catch (e: Exception) { host.log("⚠ تعذر حفظ التقدم: " + (e.message ?: "").take(80)) }
     }

@@ -16,7 +16,9 @@ class Saved(
     /** حدود المقاطع بعد تعديلها لأقرب صمت: رقم المقطع -> بدايته بالثواني */
     val bounds: Map<Int, Double> = emptyMap(),
     /** الفجوات اللي اتحاولت قبل كده (عشان متتعادش كل جلسة) */
-    val gapTried: List<DoubleArray> = emptyList()
+    val gapTried: List<DoubleArray> = emptyList(),
+    /** (v170) بنك بصمات الأصوات (JSON) */
+    val voices: String = ""
 )
 
 class Store(private val dir: File, key: String) {
@@ -39,7 +41,7 @@ class Store(private val dir: File, key: String) {
         .put("g", s.gender).put("a", s.addressee).put("tg", s.topicGender)
         .put("p", JSONArray(s.people)).put("pl", JSONArray(s.places))
         .put("song", s.isSong).put("low", s.lowConf).put("c", s.chunk)
-        .put("emo", s.emotion).put("ov", s.overlap).put("spk", s.speakerTag).put("cont", s.isContinuation).put("piv", s.pivot).put("fa", s.faint).put("cv", s.conv).put("snd", s.isSound)
+        .put("emo", s.emotion).put("ov", s.overlap).put("spk", s.speakerTag).put("cont", s.isContinuation).put("piv", s.pivot).put("fa", s.faint).put("cv", s.conv).put("snd", s.isSound).put("vo", s.voice)
 
     private fun strs(a: JSONArray?): List<String> = (0 until (a?.length() ?: 0)).map { a!!.optString(it) }
 
@@ -47,7 +49,7 @@ class Store(private val dir: File, key: String) {
         o.optDouble("s"), o.optDouble("e"), o.optString("o"), o.optString("t"),
         o.optString("g", "male"), o.optString("a", "unknown"), o.optString("tg", "none"),
         strs(o.optJSONArray("p")), strs(o.optJSONArray("pl")), o.optBoolean("song"), o.optBoolean("low"), o.optInt("c", -1),
-        o.optString("emo"), o.optBoolean("ov"), o.optString("spk"), o.optBoolean("cont"), o.optString("piv"), o.optBoolean("fa"), o.optBoolean("cv"), o.optBoolean("snd")
+        o.optString("emo"), o.optBoolean("ov"), o.optString("spk"), o.optBoolean("cont"), o.optString("piv"), o.optBoolean("fa"), o.optBoolean("cv"), o.optBoolean("snd"), o.optString("vo")
     )
 
     private fun ranges(l: List<DoubleArray>): JSONArray {
@@ -58,7 +60,7 @@ class Store(private val dir: File, key: String) {
 
     fun save(s: Saved) {
         val j = JSONObject().put("v", 2).put("chunkSec", s.chunkSec).put("srcLang", s.srcLang).put("detDone", s.detDone)
-            .put("pos", s.pos).put("charsTried", s.charsTried)
+            .put("pos", s.pos).put("charsTried", s.charsTried).put("voices", s.voices)
         val subs = JSONArray(); for (x in s.subs) subs.put(subJ(x)); j.put("subs", subs)
         j.put("done", ranges(s.done)).put("failed", ranges(s.failed))
         val ch = JSONArray(); for (c in s.chars) ch.put(JSONObject().put("n", c.name).put("g", c.gender).put("r", c.role)); j.put("chars", ch)
@@ -91,7 +93,7 @@ class Store(private val dir: File, key: String) {
             j.optJSONObject("bounds")?.let { o -> for (k in o.keys()) k.toIntOrNull()?.let { bnd[it] = o.optDouble(k) } }
             Saved(j.optInt("chunkSec", 60), j.optString("srcLang"), j.optBoolean("detDone"), subs,
                 rangesOf(j.optJSONArray("done")), rangesOf(j.optJSONArray("failed")), chars, gloss, tp,
-                j.optDouble("pos", 0.0), j.optInt("charsTried", 0), bnd, rangesOf(j.optJSONArray("gapTried")))
+                j.optDouble("pos", 0.0), j.optInt("charsTried", 0), bnd, rangesOf(j.optJSONArray("gapTried")), j.optString("voices"))
         } catch (e: Exception) {
             try { f.renameTo(File(dir, f.name + ".bad")) } catch (_: Exception) {}
             null

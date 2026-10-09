@@ -19,7 +19,9 @@ data class Sub(
     /** اتحوّلت للهجة المختارة (التحويل التلقائي بعد الترجمة الحرفية) */
     val conv: Boolean = false,
     /** صوت غير كلامي (همهمة، موسيقى بدون كلمات، ضحك، ضوضاء…): بيتعرض كوصف فوق الفيديو منفصل عن الحوار */
-    val isSound: Boolean = false
+    val isSound: Boolean = false,
+    /** (v170) كود بصمة الصوت (V1, V2…) من بنك الأصوات؛ أول ما الرد يوصل بيبقى الكود اللي جيميناي كتبه (V# أو new#) */
+    val voice: String = ""
 )
 
 data class Chr(val name: String, val gender: String, val role: String)
@@ -226,6 +228,13 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- original = المصطلح زي ما اتقال. translated = «المصطلح»: شرح بسيط بالمصري. الدوا: بيتاخد لإيه. المرض: هو إيه باختصار. المثل أو التعبير: المثل المصري اللي يقابله أو معناه. الإشارة: هي إيه والمقصود بيها في الجزء ده. بحد أقصى سطرين قصار.\n" +
             "- الترجمة الأساسية للجملة تفضل عادية زي ما هي، والشرح عنصر إضافي بس.\n" +
             "- اشرح الحاجات الغريبة فعلًا بس، مش المعروفة. لو مش متأكد من المعنى ماتشرحوش ماتخمّنش. ماتزودش عن مصطلح كل نص دقيقة تقريبًا.\n"
+        /** (v170) بصمة الصوت: ربط المتحدثين بين المقاطع (المقاطع بتتبعت لمفاتيح مختلفة ومفيش واحد فيهم سمع الفيديو كله) */
+        const val VOICE_BLOCK = "\n═══ بصمة الصوت (ربط المتحدثين بين المقاطع) ═══\n" +
+            "- 🔴 المقطع ده بيتبعت لوحده، وقبله وبعده مقاطع بتتبعت لمفاتيح تانية ومحدش بيسمع الفيديو كله. عشان كده الأصوات بتتربط بكود: لو في جدول «بصمات الأصوات المعروفة» تحت فاستخدمه، ولو في «تقسيم آلي تقريبي» فاستعين بيه.\n" +
+            "- أضف لكل subtitle حقل \"voice\": لو الصوت بيطابق صوت معروف اكتب كوده بالظبط (V1، V2…). لو صوت جديد مش في الجدول اكتب كود مؤقت للمقطع ده بس: new1، new2… (نفس الشخص = نفس الكود في كل جمله جوه المقطع). ممنوع تخترع كود V جديد.\n" +
+            "- التطابق من الصوت نفسه (طبقة الصوت، الخشونة، الجنس، العمر، طريقة النطق والإيقاع) مش من الكلام ولا الاسم. لو مش متأكد إن الصوت هو نفسه اعتبره صوت جديد (new#) أحسن من إنك تلزقه بالغلط في صوت معروف.\n" +
+            "- ضيف في الـ JSON الرئيسي (جنب subtitles) مصفوفة \"voices\": عنصر لكل كود ظهر في ردك: {\"id\":\"V1 أو new1\",\"gender\":\"male أو female\",\"age\":\"طفل/مراهق/شاب/بالغ/كبير سن\",\"style\":\"وصف الصوت وطريقة الكلام في 8 كلمات بالكتير (غليظ/رفيع، سريع/بطيء، هادي/عصبي، لهجة…)\",\"name\":\"اسمه بس لو اتقال صراحة إن ده اسم صاحب الصوت ده (بيعرّف نفسه أو حد بيناديه وهو بيرد)، وإلا فاضي\"}.\n" +
+            "- جنس وعمر كل متحدث يتحددوا من الصوت نفسه، وحقل gender في كل subtitle لازم يطابق جنس صاحب الكود. لو الصوت اتغيّر كتير بين جملتين (كود مختلف) افصلهم.\n"
         const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
@@ -330,7 +339,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
      * @param translatedFixed نسخة مترجمة من الجزء الثابت (للغات اللي ملهاش قالب جاهز) أو null
      */
     fun build(c: Conf, srcLang: String, detectDone: Boolean, durSec: Double, prev: String,
-              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null, strict: Boolean = false, hole: Boolean = false): String {
+              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null, strict: Boolean = false, hole: Boolean = false, voiceText: String = ""): String {
         val case = caseOf(srcLang, detectDone)
         val id = templateId(c, case)
         val raw = read("prompts/$id.txt")
@@ -342,7 +351,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (!hole) VOICE_BLOCK + voiceText else "") + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -673,7 +682,8 @@ object Parse {
             s.optString("emotion").trim().lowercase(), s.optBoolean("overlap", false), s.optString("speaker_tag").trim(),
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
             s.optBoolean("faint", false), false,
-            s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - "))
+            s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - ")),
+            s.optString("voice").trim().take(12)
         ))
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
