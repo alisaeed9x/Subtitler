@@ -47,11 +47,30 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
     private var winActive = 0
     private val winSize = outRate / 2
 
+    // (v166) فلتر low-pass (Butterworth درجة 4) قبل خفض المعدل: بيمنع الـ aliasing (الهسهسة/الخشونة) من الترددات فوق 8kHz
+    private class Biq(val b0: Double, val b1: Double, val b2: Double, val a1: Double, val a2: Double) {
+        var z1 = 0.0; var z2 = 0.0
+        fun run(x: Double): Double { val y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y }
+        companion object {
+            fun lowpass(fs: Double, fc: Double, q: Double): Biq {
+                val w = 2 * Math.PI * fc / fs; val c = Math.cos(w); val al = Math.sin(w) / (2 * q); val a0 = 1 + al
+                return Biq((1 - c) / 2 / a0, (1 - c) / a0, (1 - c) / 2 / a0, -2 * c / a0, (1 - al) / a0)
+            }
+        }
+    }
+    private var lp1: Biq? = null
+    private var lp2: Biq? = null
+    // (v166) ستريو بفرق طور (L ≈ -R): المتوسط بيلغي الكلام. بنقيس الارتباط ولو سالب بناخد القناة الأعلى بس
+    private var sLR = 0.0; private var sLL = 0.0; private var sRR = 0.0
+    private var stereoMode = 0   // 0 = متوسط، 1 = يسار بس، 2 = يمين بس
+
     val samples: Int get() = len / 2
     fun isEmpty() = len == 0
 
     private fun configure(rate: Int) {
         inRate = rate; step = rate.toDouble() / outRate; accSum = 0.0; accCnt = 0.0
+        if (rate > outRate) { lp1 = Biq.lowpass(rate.toDouble(), outRate * 0.45, 0.5412); lp2 = Biq.lowpass(rate.toDouble(), outRate * 0.45, 1.3066) }
+        else { lp1 = null; lp2 = null }
     }
 
     private fun emit(v: Float) {
@@ -70,7 +89,9 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
         winN = 0; winSq = 0.0
     }
 
-    private fun mono(x: Float) {
+    private fun mono(x0: Float) {
+        val a = lp1; val b = lp2
+        val x = if (a != null && b != null) b.run(a.run(x0.toDouble())).toFloat() else x0
         var w = 1.0
         while (w > 1e-9) {
             val need = step - accCnt
@@ -84,8 +105,9 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
 
     private fun mix(get: (Int, Int) -> Float, f: Int, ch: Int): Float = when {
         ch == 1 -> get(f, 0)
-        ch == 2 -> (get(f, 0) + get(f, 1)) * 0.5f
-        ch >= 6 -> (get(f, 0) + get(f, 1) + 1.4142f * get(f, 2)) / 3.4142f
+        ch == 2 -> when (stereoMode) { 1 -> get(f, 0); 2 -> get(f, 1); else -> (get(f, 0) + get(f, 1)) * 0.5f }
+        // 5.1: الحوار في السنتر؛ نركّز عليه ونخلّي الأمامي خفيف عشان الموسيقى/المؤثرات ماتغطيش على الكلام
+        ch >= 6 -> 0.2f * (get(f, 0) + get(f, 1)) + 0.8f * get(f, 2)
         else -> { var s = 0f; for (c in 0 until ch) s += get(f, c); s / ch }
     }
 
@@ -95,6 +117,10 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
      */
     fun addFrames(get: (Int, Int) -> Float, frames: Int, channels: Int, rate: Int, ptsUs: Long, startUs: Long, endUs: Long): Boolean {
         if (rate <= 0 || channels <= 0) return false
+        if (channels == 2 && stereoMode == 0) {
+            for (f in 0 until frames) { val l = get(f, 0).toDouble(); val r = get(f, 1).toDouble(); sLR += l * r; sLL += l * l; sRR += r * r }
+            if (sLL + sRR > 1.0 && sLR < -0.5 * Math.sqrt(sLL * sRR)) stereoMode = if (sLL >= sRR) 1 else 2
+        }
         for (f in 0 until frames) {
             val t = ptsUs + (f * 1_000_000L) / rate
             if (t < startUs) continue
@@ -115,12 +141,45 @@ class PcmSink(expectedSec: Double = 60.0, private val outRate: Int = 16000) {
     fun finish(startSec: Double): WavChunk {
         closeWindow()
         val pcm = len
-        // تضخيم تلقائي للصوت الخافت (عشان جيميناي يسمع الهمس وكلام الخلفية الضعيف) — بحد أقصى 6 أضعاف
-        var pk = 0; var q = 0; var appliedGain = 1.0
-        while (q + 1 < pcm) { val v = ((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF)).toShort().toInt(); val a = if (v < 0) -v else v; if (a > pk) pk = a; q += 2 }
-        if (pk in 300..22000) {
-            val g = minOf(6.0, 0.85 * 32767.0 / pk)
-            if (g > 1.15) { appliedGain = g; q = 0; while (q + 1 < pcm) { val v = ((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF)).toShort().toInt(); val n = (v * g).toInt().coerceIn(-32768, 32767); buf[q] = (n and 0xFF).toByte(); buf[q + 1] = ((n shr 8) and 0xFF).toByte(); q += 2 } }
+        val n = pcm / 2
+        fun rd(k: Int): Int = ((buf[2 * k + 1].toInt() shl 8) or (buf[2 * k].toInt() and 0xFF)).toShort().toInt()
+        fun wr(k: Int, v: Int) { val c = v.coerceIn(-32768, 32767); buf[2 * k] = (c and 0xFF).toByte(); buf[2 * k + 1] = ((c shr 8) and 0xFF).toByte() }
+        // (v166) 1) high-pass 80Hz: يشيل الدمدمة/الـ DC/هزّة الميكروفون اللي بتوسّخ الكلام وبتضلّل قياس الصوت
+        if (n > 64) {
+            val w0 = 2 * Math.PI * 80.0 / outRate; val c = Math.cos(w0); val al = Math.sin(w0) / (2 * 0.7071); val a0 = 1 + al
+            val b0 = (1 + c) / 2 / a0; val b1 = -(1 + c) / a0; val b2 = b0; val a1 = -2 * c / a0; val a2 = (1 - al) / a0
+            var x1 = 0.0; var x2 = 0.0; var y1 = 0.0; var y2 = 0.0
+            for (k in 0 until n) {
+                val x = rd(k).toDouble()
+                val y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                x2 = x1; x1 = x; y2 = y1; y1 = y
+                wr(k, Math.round(y).toInt())
+            }
+        }
+        // 2) تضخيم حسب مستوى الكلام الفعلي (مش أعلى قمة): قمة واحدة عالية (طقطقة/تصفيق) كانت بتمنع رفع باقي الكلام
+        var appliedGain = 1.0
+        var pk = 0
+        for (k in 0 until n) { val a = Math.abs(rd(k)); if (a > pk) pk = a }
+        val fr = outRate / 50   // إطار 20ms
+        val nf = n / fr
+        if (pk >= 300 && nf >= 10) {
+            val lv = DoubleArray(nf)
+            for (f in 0 until nf) { var sq = 0.0; for (k in f * fr until (f + 1) * fr) { val v = rd(k) / 32768.0; sq += v * v }; lv[f] = Math.sqrt(sq / fr) }
+            val sorted = lv.sortedArray()
+            val speech = sorted[(nf * 0.90).toInt().coerceIn(0, nf - 1)]    // مستوى الإطارات العالية = الكلام
+            if (speech > 0.003) {
+                val g = minOf(8.0, 0.12 / speech)                             // هدف: الكلام حوالي -18 dBFS
+                if (g > 1.15) {
+                    appliedGain = g
+                    for (k in 0 until n) {
+                        val v = rd(k) / 32768.0 * g
+                        val a = Math.abs(v)
+                        // 3) soft limiter: فوق 0.8 بنلين القمم بدل ما تتقصّ (تقطيع = تشويه بيوجع التعرّف)
+                        val o = if (a <= 0.8) v else Math.signum(v) * (0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2))
+                        wr(k, Math.round(o * 32767.0).toInt())
+                    }
+                }
+            }
         }
         val out = ByteArray(44 + pcm)
         System.arraycopy(Wav.header(pcm, outRate), 0, out, 0, 44)

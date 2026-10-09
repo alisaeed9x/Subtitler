@@ -836,6 +836,8 @@ class Engine(
                 }
             }
         }
+        // (v166) نضغط الصوت هنا (نفس خيط التجهيز) عشان الرفع يبدأ بحجم أصغر ونشوف النسبة في اللوج
+        try { val pk = AudioEnc.pack(w.bytes); host.log("📦 المقطع ${i + 1}: ${pk.srcSize / 1024}KB ← ${pk.bytes.size / 1024}KB (${pk.mime.removePrefix("audio/")})") } catch (_: Throwable) {}
         return Prep(w, rawStart, rawEnd)
     }
 

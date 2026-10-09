@@ -547,14 +547,17 @@ object Api {
     private fun generateOnce(model: String, key: String, prompt: String, wav: ByteArray?,
                  maxTokens: Int, temp: Double, json: Boolean, search: Boolean, think: String): Result {
         val enc = java.util.Base64.getEncoder()
-        val head = "{\"contents\":[{\"parts\":[" + (if (wav != null) "{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"" else "")
-        val mid = if (wav != null) "\"}}," else ""
+        // (v166) الصوت بيتضغط AAC قبل الرفع (أصغر ~8 مرات)؛ لو فشل الضغط بيتبعت WAV زي الأول
+        val pk = if (wav != null) AudioEnc.pack(wav) else null
+        val aud: ByteArray? = pk?.bytes
+        val head = "{\"contents\":[{\"parts\":[" + (if (pk != null) "{\"inline_data\":{\"mime_type\":\"" + pk.mime + "\",\"data\":\"" else "")
+        val mid = if (aud != null) "\"}},"  else ""
         val textPart = "{\"text\":" + JSONObject.quote(prompt) + "}"
         val tail = "]}],\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp" +
             (if (json && !search) ",\"responseMimeType\":\"application/json\"" else "") + think + "},\"safetySettings\":[$SAFETY]" + (if (search) ",\"tools\":[{\"google_search\":{}}]" else "") + "}"
         val hb = head.toByteArray(Charsets.UTF_8)
         val mb = (mid + textPart + tail).toByteArray(Charsets.UTF_8)
-        val b64Len = if (wav != null) ((wav.size + 2) / 3).toLong() * 4 else 0L
+        val b64Len = if (aud != null) ((aud.size + 2) / 3).toLong() * 4 else 0L
         val total = hb.size + b64Len + mb.size
 
         val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
@@ -564,12 +567,12 @@ object Api {
             c.setFixedLengthStreamingMode(total)
             c.outputStream.use { os ->
                 os.write(hb)
-                if (wav != null) {
+                if (aud != null) {
                     val step = 3 * 16384
                     var i = 0
-                    while (i < wav.size) {
-                        val e = minOf(wav.size, i + step)
-                        os.write(enc.encode(wav.copyOfRange(i, e)))
+                    while (i < aud.size) {
+                        val e = minOf(aud.size, i + step)
+                        os.write(enc.encode(aud.copyOfRange(i, e)))
                         i = e
                     }
                 }
