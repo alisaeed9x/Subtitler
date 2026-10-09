@@ -30,6 +30,14 @@
         <activity android:name=".LiveRequestActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
         <service android:name=".LiveCaptionService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
         <service android:name=".BgService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false"/>
+        <receiver android:name=".LiveWidget" android:exported="true" android:label="🔴 ترجمة حية">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_live_info"/>
+        </receiver>
+        <receiver android:name=".TasksWidget" android:exported="true" android:label="📋 مهام الخلفية">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_tasks_info"/>
+        </receiver>
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>

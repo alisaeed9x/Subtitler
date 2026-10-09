@@ -115,7 +115,7 @@ class LiveCaptionService : Service() {
         if (data == null) { stopSelf(); return START_NOT_STICKY }
         try {
             val m = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val p = m.getMediaProjection(rc, data)
+            val p = m.getMediaProjection(rc, data) ?: throw IllegalStateException("no projection")
             mp = p
             p.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { main.post { stopSelf() } }
@@ -123,6 +123,7 @@ class LiveCaptionService : Service() {
             startRec(p)
             addOverlay()
             running = true
+            WidgetHub.poke(this)
             say("🔴 الترجمة الحية شغّالة — الضغطة المطولة على الشريط بتقفلها")
         } catch (e: Throwable) {
             Toast.makeText(this, "مقدرتش أبدأ الترجمة الحية: " + (e.message ?: "").take(80), Toast.LENGTH_LONG).show()
@@ -310,6 +311,7 @@ class LiveCaptionService : Service() {
 
     override fun onDestroy() {
         alive = false; running = false
+        WidgetHub.poke(this)
         try { th?.interrupt() } catch (_: Exception) {}
         try { rec?.stop() } catch (_: Exception) {}
         try { rec?.release() } catch (_: Exception) {}

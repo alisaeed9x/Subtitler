@@ -1165,6 +1165,25 @@ class PlayerActivity : Activity(), Host {
             }
             setOnLongClickListener { giShow("كمّل الترجمة في الخلفية لما أخرج", Gravity.CENTER); true }
         }
+        // (v164) زرار مباشر لفلتر المشاهد الحساسة (زي ✔ الخلفية): ضغطة = يلف مقفول ← زرار «تخطي» ← تخطي تلقائي. ضغطة طويلة = إعدادات الأنواع
+        val sceneB = IconGlyphButton(this, "shield")
+        fun paintScene() {
+            val m = Extras.sceneMode
+            sceneB.background = ui.box(when (m) { 1 -> 0xFF1F5FBF.toInt(); 2 -> 0xFF2E7D32.toInt(); else -> 0xE0141418.toInt() }, 0x1FFFFFFF, 12)
+            sceneB.alpha = if (m == 0) 0.65f else 1f
+        }
+        sceneB.setOnClickListener {
+            val n = (Extras.sceneMode + 1) % 3
+            Cfg.put("fx_scene", n.toString()); Extras.load(); fx?.refresh(); paintScene()
+            giShowFn(if (n > 0 && Cfg.keys("viskeys").isEmpty()) "ضيف مفتاح «الوضع البصري» عشان فلتر المشاهد يشتغل" else when (n) {
+                1 -> "⏭ فلتر المشاهد: زرار «تخطي» هيظهر وقت المشهد"
+                2 -> "⏭ فلتر المشاهد: تخطي تلقائي"
+                else -> "⏭ فلتر المشاهد: مقفول"
+            })
+            showChrome()
+        }
+        sceneB.setOnLongClickListener { ExtrasUi.show(this, fx) { fx?.refresh(); paintScene() }; true }
+        paintScene()
         // (v118) زرار الجودة: يوتيوب بقايمة جودات (بحجمها التقريبي) · روابط HLS/DASH بمساراتها — للفرجة بداتا أقل
         val gQ = gCol()
         fun fillQ(): Boolean {
@@ -1377,6 +1396,7 @@ class PlayerActivity : Activity(), Host {
             tbRow.addView(textB, LinearLayout.LayoutParams(-2, ui.dp(38)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(toolBtns[0], lp(0)); tbRow.addView(toolBtns[5], lp(5)); tbRow.addView(toolBtns[3], lp(3))
             tbRow.addView(bgOnB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
+            tbRow.addView(sceneB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             (toolsB.parent as? ViewGroup)?.removeView(toolsB)
             tbRow.addView(toolsB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })
             tbRow.addView(menuB, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)) })

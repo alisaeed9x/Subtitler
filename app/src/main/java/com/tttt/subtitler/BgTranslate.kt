@@ -39,7 +39,7 @@ class BgJob(val vid: String, val title: String, val uri: String?, val url: Strin
 object BgJobs {
     val jobs = CopyOnWriteArrayList<BgJob>()
     @Volatile var onChange: (() -> Unit)? = null
-    fun notifyChange() { try { onChange?.invoke() } catch (e: Exception) { LogStore.err("BgTranslate:42", e) }; persist() }
+    fun notifyChange() { try { onChange?.invoke() } catch (e: Exception) { LogStore.err("BgTranslate:42", e) }; persist(); WidgetHub.poke(app) }
 
     // ===== الطابور بيتحفظ في filesDir/bg_queue.json (الشغّال والمستني بس) عشان يكمّل بعد قفل البرنامج/إعادة تشغيل الجهاز =====
     @Volatile private var app: Context? = null

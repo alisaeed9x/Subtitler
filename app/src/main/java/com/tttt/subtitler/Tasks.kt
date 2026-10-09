@@ -92,7 +92,7 @@ object TaskCenter {
     private var appCtx: Context? = null
     private var seq = 0
 
-    fun changed() { main.post { try { listener?.invoke() } catch (_: Throwable) {} } }
+    fun changed() { main.post { try { listener?.invoke() } catch (_: Throwable) {} }; WidgetHub.poke(appCtx) }
     fun active(): Int = items.count { it.state == 0 || it.state == 1 }
 
     @Synchronized fun add(app: Context, kind: String, title: String, work: (TaskItem) -> Unit): TaskItem {

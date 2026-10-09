@@ -346,7 +346,7 @@ class FaceGuard(
                         for (i in 0 until n) {
                             val f = faces[i] ?: continue
                             if (f.confidence() < 0.4f) continue
-                            val p = PointF(); f.midPoint(p)
+                            val p = PointF(); f.getMidPoint(p)
                             val e = f.eyesDistance()
                             if ((p.y + e * 2.4f) / b565.height > 0.72f) bot = true
                             if ((p.y - e * 1.8f) / b565.height < 0.28f) top = true
