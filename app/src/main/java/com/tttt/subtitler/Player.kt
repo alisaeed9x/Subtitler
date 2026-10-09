@@ -271,6 +271,15 @@ class PlayerActivity : Activity(), Host {
     // أشرطة التقدم: كاش مجالات التغطية والجمل المستنية (بيتحدّث لما الجمل أو عدد المستني يتغيّر بس)
     private var segSubsRef: List<Sub>? = null; private var segPendN = -1
     private var segCov: List<DoubleArray> = emptyList(); private var segPend: List<DoubleArray> = emptyList()
+    /** (v160) الأجزاء المحمّلة من الفيديو الأونلاين (بتتراكم أثناء المشاهدة وبتتدمج) */
+    private val bufSegs = ArrayList<DoubleArray>()
+    private fun addBuf(a: Double, b: Double) {
+        if (b - a < 0.5) return
+        var s = a; var e = b
+        val it = bufSegs.iterator()
+        while (it.hasNext()) { val x = it.next(); if (x[1] >= s - 1.0 && x[0] <= e + 1.0) { s = minOf(s, x[0]); e = maxOf(e, x[1]); it.remove() } }
+        bufSegs.add(doubleArrayOf(s, e))
+    }
     lateinit var fsEl: TextView
     lateinit var fsDu: TextView
     lateinit var fsPlayB: TextView
@@ -779,7 +788,7 @@ class PlayerActivity : Activity(), Host {
             if (ends[i] <= starts[i]) { out[i] = "مدتها صفر أو سالبة (الاختفاء قبل أو مع الظهور)"; continue }
             val snd = q.isSound
             val map = if (snd) sdMap else spMap; val st = if (snd) sdStarts else spStarts; val en = if (snd) sdEnds else spEnds
-            val maxN = if (snd) 2 else 3
+            val maxN = if (snd) 2 else 1
             var seen = false; var t = starts[i]
             while (t <= ends[i]) {
                 if (PlayerLogic.activeIndices(st, en, t, 0L, 400L, maxN).any { map[it] == i }) { seen = true; break }
@@ -964,9 +973,9 @@ class PlayerActivity : Activity(), Host {
         leftCol.addView(probDrawer, 0, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(4) })
 
         // زرار التشغيل الأوسط (بيظهر وقت الإيقاف) + شارة النسبة (شاشة كاملة) + فلاش السيك/الصوت/السطوع
-        centerPlay = IconTextView(this).apply {
+        centerPlay = FadePop(this).apply {
             text = "▶"; textSize = 24f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); visibility = View.GONE
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x29FFFFFF) }
+            background = glassCircleBg(resources.displayMetrics.density)
             setOnClickListener { togglePlay() }
         }
         videoBox.addView(centerPlay, FrameLayout.LayoutParams(ui.dp(64), ui.dp(64), Gravity.CENTER))
@@ -1037,7 +1046,7 @@ class PlayerActivity : Activity(), Host {
         fun cycleSpeed() {
             speed = PlayerLogic.nextSpeed(speed); player.setPlaybackSpeed(speed)
             Cfg.p.edit().putString("speed", speed.toString()).apply()
-            fsSpeedB?.text = "⚙️ " + PlayerLogic.speedLabel(speed)
+            fsSpeedB?.text = "⏩ " + PlayerLogic.speedLabel(speed)
             giShow("⏱ " + PlayerLogic.speedLabel(speed), Gravity.CENTER)
         }
         fun toggleCc() {
@@ -1103,7 +1112,7 @@ class PlayerActivity : Activity(), Host {
             val n = es[(es.indexOfFirst { it.id == ca } + 1) % es.size]
             Cfg.put("sub_anim", n.id); restyle(); v.text = "✨ " + n.label
         })
-        val spB = pk("⚙️ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
+        val spB = pk("⏩ " + PlayerLogic.speedLabel(speed)) { cycleSpeed() }
         fsSpeedB = spB; gText.addView(spB)
         run {
             val cs = curStyle()
@@ -1130,7 +1139,7 @@ class PlayerActivity : Activity(), Host {
         val ccB = mini("CC") { toggleCc() }.apply { textSize = 11f; typeface = android.graphics.Typeface.DEFAULT_BOLD }
         ccFsB = ccB
         fun loopBg() = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (Cfg.str("loop", "0") == "1") 0xFF1F5FBF.toInt() else 0xE00F0F12.toInt()); setStroke(ui.dp(1), 0x1FFFFFFF) }
-        val loopB = mini("🔁") { v -> Cfg.put("loop", if (Cfg.str("loop", "0") == "1") "0" else "1"); v.background = loopBg(); giShow(if (Cfg.str("loop", "0") == "1") "🔁 تكرار الفيديو: شغّال" else "🔁 تكرار الفيديو: مقفول", Gravity.CENTER) }.apply { background = loopBg() }
+        val loopB = mini("🔂") { v -> Cfg.put("loop", if (Cfg.str("loop", "0") == "1") "0" else "1"); v.background = loopBg(); giShow(if (Cfg.str("loop", "0") == "1") "🔂 تكرار الفيديو: شغّال" else "🔂 تكرار الفيديو: مقفول", Gravity.CENTER) }.apply { background = loopBg() }
         val dualB = mini("💬") { v -> cycleDual(v) }.apply { background = dualCircleBg() }   // وضع الترجمة (فردي / أصلي / مزدوج) — أيقونة بس من غير كلام
         ccToggleFn = { toggleCc() }
         if (noSub) { ccOn = false; ccB.alpha = 0.4f; ctl.cc.alpha = 0.4f }
@@ -1181,7 +1190,7 @@ class PlayerActivity : Activity(), Host {
         setQualLabel(qOpts.getOrNull(qCur)?.h ?: 0)
         val sentB = mini("📝") { sentDlg.show() }   // الجمل
         val charsB = mini("🧑") { showChars() }   // (v151) الشخصيات وجنسها — نافذة فوق الفيديو من غير ما تضغط شاشته
-        val logB = mini("📋") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
+        val logB = mini("📜") { toggleLog() }   // (v90) اللوج — مكان 🔄 جنب الجمل
         // التوقيت: زرار واحد ⏱ (في الشريط السفلي) بيفتح قايمة صغيرة: تقديم −0.1 / القيمة (ضغطة = رجوع للصفر) / تأخير +0.1 — زي MX Player
         // لوحة ⏱: تزامن الترجمة (تقديم −0.1 / القيمة / تأخير +0.1) — حجم الخط بالقرص (pinch)
         val gSub = gCol()
@@ -1306,7 +1315,7 @@ class PlayerActivity : Activity(), Host {
         val toolRow = FrameLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR }
         val toolR = LinearLayout(this).apply { layoutDirection = View.LAYOUT_DIRECTION_LTR; gravity = Gravity.CENTER_VERTICAL }
         fun barPill(b: TextView): TextView = b.apply { layoutParams = LinearLayout.LayoutParams(-2, ui.dp(30)).apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) }; minimumWidth = ui.dp(30); setPadding(ui.dp(8), 0, ui.dp(8), 0); textSize = 12f }
-        val aiB = barPill(tip(grp("✨", gAi, true), "لهجة (عائلي/صريح)"))
+        val aiB = barPill(tip(grp("🗣", gAi, true), "لهجة (عائلي/صريح)"))
         val syncB = barPill(tip(grp("⏱", gSub, true), "تزامن الترجمة (تقديم / تأخير)"))   // (v91) مكان Aa — حجم الخط بقى بالقرص (pinch) على الشاشة
         toolR.addView(syncB)
         val toolBtns = listOf<TextView>(syncB, tip(logB, "اللوج"), tip(sentB, "الجمل"), tip(ccB, "إظهار/إخفاء الترجمة"), tip(loopB, "تكرار الفيديو"), tip(dualB, "وضع الترجمة"), tip(charsB, "الشخصيات"))
@@ -1453,7 +1462,10 @@ class PlayerActivity : Activity(), Host {
         fsBar.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) placeFloatFn() }
         applyChromeFn = {
             val on = fullMode && chromeShown && !pipNow()
+            val wasOn = chromeFrame.visibility == View.VISIBLE
             chromeFrame.visibility = if (on) View.VISIBLE else View.GONE; if (!on) { dismissPop(); tbCollapseFn() }
+            if (on && !wasOn) { chromeFrame.alpha = 0f; chromeFrame.translationY = ui.dp(14).toFloat(); chromeFrame.animate().alpha(1f).translationY(0f).setDuration(220).start() }
+            else if (!on) { chromeFrame.animate().cancel(); chromeFrame.alpha = 1f; chromeFrame.translationY = 0f }
             centerPlay.visibility = if (on || pipNow() || uiLocked) View.GONE else if (buffering) View.VISIBLE else if (player.isPlaying) View.GONE else View.VISIBLE   // الشريط ظاهر = فيه زرار تشغيل تحت، فمنشيلش الأوسط فوق الترجمة
             val cv = (!fullMode || chromeShown) && !pipNow()
             floatBar.visibility = if (!pipNow()) View.VISIBLE else View.GONE
@@ -1737,9 +1749,12 @@ class PlayerActivity : Activity(), Host {
                     val sr = engine.subs; val pn = engine.pendingCount()
                     if (sr !== segSubsRef || pn != segPendN) { segSubsRef = sr; segPendN = pn; segCov = engine.coverageSegs(); segPend = engine.pendingSegs() }
                 }
-                pr.durSec = durMs / 1000.0; pr.cov = segCov; pr.pend = segPend
+                val onlineSrc = url != null || uri?.scheme?.startsWith("http") == true
+                if (onlineSrc && durMs > 0) { try { addBuf(cur / 1000.0, player.bufferedPosition / 1000.0) } catch (_: Throwable) {} }
+                val refSegs = engine.refiningSegs
+                pr.durSec = durMs / 1000.0; pr.cov = segCov; pr.pend = segPend; pr.refine = refSegs; pr.buf = if (onlineSrc) ArrayList(bufSegs) else emptyList()
                 pr.invalidate()
-                if (miniBar.visibility == View.VISIBLE) { miniBar.played = frac; miniBar.durSec = durMs / 1000.0; miniBar.cov = segCov; miniBar.pend = segPend; miniBar.invalidate() }
+                if (miniBar.visibility == View.VISIBLE) { miniBar.played = frac; miniBar.durSec = durMs / 1000.0; miniBar.cov = segCov; miniBar.pend = segPend; miniBar.refine = refSegs; miniBar.buf = pr.buf; miniBar.invalidate() }
                 val tEl = PlayerLogic.clock(cur); val tDu = PlayerLogic.clock(durMs)
                 if (fullMode) { fsEl.text = tEl; fsDu.text = tDu } else { ctl.tEl.text = tEl; ctl.tDur.text = tDu }
                 val now = System.currentTimeMillis()
@@ -1747,7 +1762,7 @@ class PlayerActivity : Activity(), Host {
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
                 visOv.showBoxes(visual.boxesAt(visNow))
-                val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs).map { spMap[it] }
+                val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs, 400L, 1).map { spMap[it] }   // (v158) كل متحدث بيظهر لوحده (الأحدث بس)
                 val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
                 // مراقبة العرض: لو جملة عدّى وقتها وأنا شغّال عادي ومظهرتش في act → اتسجلت في اللوج بتوقيتها ونصها
                 run {
@@ -1890,7 +1905,7 @@ class PlayerActivity : Activity(), Host {
                 }
             }
             override fun onIsPlayingChanged(p: Boolean) {
-                val t = if (p) "⏸" else "▶"; if (!buffering) { ctl.play.text = t; fsPlayB.text = t }; centerPlay.visibility = if (pipNow() || (fullMode && chromeShown)) View.GONE else if (buffering) View.VISIBLE else if (p) View.GONE else View.VISIBLE
+                val t = if (p) "⏸" else "▶"; if (!buffering) { ctl.play.text = t; fsPlayB.text = t; if (::centerPlay.isInitialized) centerPlay.text = t }; centerPlay.visibility = if (pipNow() || (fullMode && chromeShown)) View.GONE else if (buffering) View.VISIBLE else if (p) View.GONE else View.VISIBLE
                 // تشخيص الشاشة السودا: صوت شغّال ومفيش ولا فريم فيديو اتعرض بعد ٥ ثواني
                 if (p && !firstFrame) h.postDelayed({ if (!firstFrame && !isFinishing) log("⚠️ مفيش فريم فيديو اتعرض بعد ٥ ثواني — غالبًا كودك/بروفايل الفيديو مش مدعوم على الجهاز (مثلًا HEVC 10-bit)") }, 5000)
             }

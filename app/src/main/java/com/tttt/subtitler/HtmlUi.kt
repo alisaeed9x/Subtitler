@@ -49,6 +49,10 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
     var cov: List<DoubleArray> = emptyList()
     /** مجالات الجمل اللي لسه هتتغير (لهجة / إعادة صياغة / ضمائر) — شريط تالت فوق، بيختفي لما كلها تتغير */
     var pend: List<DoubleArray> = emptyList()
+    /** (v160) الجمل اللي بتتنقّح دلوقتي — أزرق على نفس الخط العلوي */
+    var refine: List<DoubleArray> = emptyList()
+    /** (v160) الأجزاء اللي اتحمّلت من الفيديو الأونلاين — على نفس الخط العلوي (سماوي) */
+    var buf: List<DoubleArray> = emptyList()
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val d = ctx.resources.displayMetrics.density
 
@@ -74,7 +78,9 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
         p.style = Paint.Style.FILL; p.shader = null
         if (thin) {   // (v107) الارتفاع نسبة من الفيديو (2.5%): 3 خطوط متساوية
             val hh = height / 3f
+            if (buf.isNotEmpty()) strip(c, w, 0f, hh, buf, 0xFF22D3EE.toInt(), null)
             if (pend.isNotEmpty()) strip(c, w, 0f, hh, pend, 0xFFF59E0B.toInt(), null)
+            if (refine.isNotEmpty()) strip(c, w, 0f, hh, refine, 0xFF3B82F6.toInt(), null)
             p.color = 0x44FFFFFF; c.drawRect(0f, hh, w, 2f * hh, p)
             p.color = 0xFF3B82F6.toInt(); c.drawRect(0f, hh, w * played.coerceIn(0f, 1f), 2f * hh, p)
             strip(c, w, 2f * hh, hh, cov, 0xFF22C55E.toInt(), 0x33FFFFFF)
@@ -84,7 +90,9 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
             val cy = height / 2f - 3f * d
             val tr = 2f * d
             // الشريط التالت (فوق): الجمل اللي لسه هتتغير — بيظهر بس لما فيه تغيير شغال
-            if (pend.isNotEmpty()) strip(c, w, 3f * d, 3f * d, pend, 0xFFF59E0B.toInt(), 0x33F59E0B)
+            if (buf.isNotEmpty()) strip(c, w, 3f * d, 3f * d, buf, 0xFF22D3EE.toInt(), 0x3322D3EE)
+            if (pend.isNotEmpty()) strip(c, w, 3f * d, 3f * d, pend, 0xFFF59E0B.toInt(), if (buf.isEmpty()) 0x33F59E0B else null)
+            if (refine.isNotEmpty()) strip(c, w, 3f * d, 3f * d, refine, 0xFF3B82F6.toInt(), null)
             p.color = th.border
             c.drawRoundRect(RectF(0f, cy - tr, w, cy + tr), 3f * d, 3f * d, p)
             val px = w * played.coerceIn(0f, 1f)
@@ -104,7 +112,9 @@ class DualProgress(ctx: Context, val th: Theme) : View(ctx) {
             return
         }
         val cy = height / 2f; val th6 = 3f * d
-        if (pend.isNotEmpty()) strip(c, w, 2f * d, 3f * d, pend, 0xFFF59E0B.toInt(), 0x33F59E0B)
+        if (buf.isNotEmpty()) strip(c, w, 2f * d, 3f * d, buf, 0xFF22D3EE.toInt(), 0x3322D3EE)
+        if (pend.isNotEmpty()) strip(c, w, 2f * d, 3f * d, pend, 0xFFF59E0B.toInt(), if (buf.isEmpty()) 0x33F59E0B else null)
+        if (refine.isNotEmpty()) strip(c, w, 2f * d, 3f * d, refine, 0xFF3B82F6.toInt(), null)
         p.style = Paint.Style.FILL
         p.color = 0x2EFFFFFF
         c.drawRoundRect(RectF(0f, cy - th6, w, cy + th6), th6, th6, p)
@@ -339,10 +349,28 @@ fun Ui.fsBtn(t: String, f: (TextView) -> Unit): TextView = IconTextView(ctx).app
 }
 
 /** .fullscreen-btn: دايرة 34dp داكنة (أسفل يسار الفيديو) */
+/** (v161) خلفية زجاجية للأزرار الدايرية: تدرّج شفاف من فوق لتحت + حد أبيض خفيف */
+fun glassCircleBg(d: Float): GradientDrawable = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xCC30303A.toInt(), 0xD90C0C10.toInt())).apply {
+    shape = GradientDrawable.OVAL; setStroke(maxOf(1, d.toInt()), 0x38FFFFFF)
+}
+
+/** (v161) أيقونة بتظهر بأنيميشن (تكبير + فيد) وتختفي فورًا — لزرار التشغيل الأوسط */
+class FadePop(ctx: Context) : IconTextView(ctx) {
+    override fun setVisibility(visibility: Int) {
+        val was = getVisibility()
+        super.setVisibility(visibility)
+        if (visibility == View.VISIBLE && was != View.VISIBLE) {
+            alpha = 0f; scaleX = 0.6f; scaleY = 0.6f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240).setInterpolator(android.view.animation.OvershootInterpolator(1.7f)).start()
+        } else if (visibility != View.VISIBLE) { animate().cancel(); alpha = 1f; scaleX = 1f; scaleY = 1f }
+    }
+}
+
 fun Ui.fsCircle(t: String, f: () -> Unit): TextView = IconTextView(ctx).apply {
     text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); includeFontPadding = false
-    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE00F0F12.toInt()); setStroke(dp(1), 0x1FFFFFFF) }
+    background = glassCircleBg(ctx.resources.displayMetrics.density)
     setOnClickListener { f() }
+    Glass.pressable(this)
 }
 
 /** شريط التقدم + الوقت + سابق/تالي + الكبسولة (.controls): [تشغيل] [سرعة] [🔊 سلايدر] [CC] [📤] [▯] */

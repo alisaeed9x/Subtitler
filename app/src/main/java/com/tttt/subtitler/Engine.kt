@@ -78,6 +78,11 @@ class Engine(
     @Volatile var onlyChunks: IntRange? = null
     /** لو اتحدد: المحرك يبدأ من المقطع ده بدل مكان التشغيل لحد ما المشاهدة توصله */
     @Volatile private var forcedCursor = -1
+    @Volatile private var forcedSticky = false   // (v158) إعادة من باتش سابق: المؤشر يفضل عليه حتى لو مكان التشغيل بعده
+    @Volatile private var fullRefineStarted = false
+    /** (v160) مجالات الجمل اللي بتتنقّح دلوقتي (خط أزرق في شريط التقدم) */
+    @Volatile var refiningSegs: List<DoubleArray> = emptyList()
+    @Volatile private var fullRefineDone = false
     @Volatile private var finished = false
     @Volatile private var gapScanClean = false
     @Volatile var stoppedFlag = false
@@ -490,17 +495,18 @@ class Engine(
         val last = if (to < 0) (if (d > 0) chunkCount() else from + 1000) else to
         for (i in from..last) { failed.remove(i); gapPass.remove(i); holeTried.remove(i); claimed.remove(i); rehomeQ.remove(i) }
         pool.clear(); lastGapTry = 0L; gapScanClean = false
+        fullRefineStarted = false; fullRefineDone = false
         host.changed(); persist()
     }
     /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
-    fun redoFrom(i: Int, keep: Boolean = true) { redo(i, -1, keep); onlyChunks = null; forcedCursor = i; paused = false }
+    fun redoFrom(i: Int, keep: Boolean = true) { redo(i, -1, keep); onlyChunks = null; forcedSticky = true; forcedCursor = i; paused = false }
     /** باتش ده لوحده وخلاص */
     fun redoOnly(i: Int, keep: Boolean = true) { redo(i, i, keep); forceVad.add(i); onlyChunks = i..i; paused = false }
     /** من الأول خالص */
-    fun redoAll(keep: Boolean = true) { redo(0, -1, keep); onlyChunks = null; forcedCursor = 0; paused = false }
+    fun redoAll(keep: Boolean = true) { redo(0, -1, keep); onlyChunks = null; forcedSticky = true; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
     /** كمّل الترجمة من المكان ده (من غير مسح حاجة): بيقفز بالمؤشر لباتش الوقت ده ويلغي الإيقاف */
-    fun translateFrom(sec: Double) { onlyChunks = null; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
+    fun translateFrom(sec: Double) { onlyChunks = null; forcedSticky = false; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
     fun stop() { isClosed = true; running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     /** (v122) إعدادات اتغيّرت من شاشة الإعدادات (لهجة / أسلوب / موديل / شخصيات…): تتطبّق على الباتشات والتحويلات الجاية من غير إعادة تشغيل المحرك */
     fun applyConf(c: Conf) { if (c.model != conf.model) { modelOv = null; speedDone.set(true) }; conf = c; dialConf.clear() }
@@ -600,7 +606,9 @@ class Engine(
                     var k = fc
                     while (!(d > 0 && cStart(k) >= d) && (isDone(k, d) || (failed[k] ?: 0) >= MAX_FAILS)) k++
                     forcedCursor = k
-                    if (c >= k || (d > 0 && cStart(k) >= d)) forcedCursor = -1 else c = k
+                    if (d > 0 && cStart(k) >= d) forcedCursor = -1
+                    else if (forcedSticky) { c = k; if (k > (host.position() / ch).toInt()) forcedCursor = -1 }
+                    else if (c >= k) forcedCursor = -1 else c = k
                 }
                 val only = onlyChunks
                 val lo = only?.first ?: c
@@ -622,6 +630,12 @@ class Engine(
                 if (inflight.isEmpty() && repairForeignTick()) continue
                 if (gapTick(headless || keepGoing)) continue
                 if (inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && finalRefineTick()) { nap(300); continue }   // (v140) تنقيح نهائي قبل ما نقول «خلصت»
+                // (v158) كل المقاطع خلصت: تنقيح كامل واحد بالفيديو كله (بعد التنقيح الجزئي مقطع مقطع)
+                if (inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && conf.partialRefine && d > 0 && cStart(firstUndone(d)) >= d && !fullRefineStarted && subs.size >= 12 && toolBusy == null) {
+                    fullRefineStarted = true; host.log("✍ تنقيح كامل نهائي (الفيديو كله في طلب واحد)…")
+                    refineWholeNow({ host.status(it) }, { fullRefineDone = true }); nap(300); continue
+                }
+                if (fullRefineStarted && !fullRefineDone && toolBusy != null) { nap(300); continue }
                 if (headless && inflight.isEmpty() && gapBusy.get() == 0 && holeBusy.get() == 0 && (gapScanClean || !conf.gapFill) && !hasRepairable() && d > 0 && cStart(firstUndone(d)) >= d) {
                     finished = true; host.status("✅ خلصت الترجمة"); break
                 }
@@ -1057,7 +1071,7 @@ class Engine(
     }
 
     private fun helperKey(i: Int = 0): String? {
-        val pref = if (conf.backup.isNotEmpty()) conf.backup else conf.keys
+        val pref = (conf.refine + conf.backup).distinct().ifEmpty { conf.keys }
         val ok = pref.filter { pool.ok(it) }
         if (ok.isNotEmpty()) return ok[Math.floorMod(i, ok.size)]
         return pool.helper()
@@ -1289,6 +1303,8 @@ class Engine(
 
     /** (v154) مفاتيح التنقيح الجزئي: الاحتياطي (وأي مفتاح إضافي اتحط على «احتياطي») الأول، وبعدين مفاتيح الصور — بس لو الوضع البصري مش شغّال دلوقتي. مفاتيح الترجمة الأساسية ماتتلمسش أبدًا. */
     private fun partialKeys(): List<String> {
+        val rf = conf.refine.filter { it.length > 10 && pool.ok(it) }
+        if (rf.isNotEmpty()) return rf   // (v158) مفاتيح التنقيح المخصوصة الأول
         val l = ArrayList<String>()
         l.addAll(conf.backup.filter { it.length > 10 && pool.ok(it) })
         if (!VisualMode.anyActive()) l.addAll(conf.visKeys.filter { it.length > 10 && pool.ok(it) })
@@ -1301,15 +1317,19 @@ class Engine(
         for (tries in 0 until 3) {
             val ks = partialKeys()
             if (ks.isEmpty()) throw last ?: Exception("مفيش مفتاح احتياطي/صور فاضي للتنقيح الجزئي")
-            val key = ks[Math.floorMod(i + tries, ks.size)]
-            try { partialKeyTail = pool.tail(key); return Api.generate(curModel(), key, prompt, null, maxTokens, temp, true, false) }
+            val key = ks.sortedBy { pool.loadOf(it) * 100 + Math.floorMod(ks.indexOf(it) - (i + tries), ks.size) }.first()
+            try {
+                partialKeyTail = pool.tail(key)
+                pool.refineBegin(key)   // (v160) المفتاح يتحجز: مفيش باتش ترجمة جديد يتبعت عليه، والباتش الشغّال يخلص الأول
+                var w = 0; while (pool.loadOf(key) > 0 && w < 90_000 && running) { nap(300); w += 300 }
+                return Api.generate(curModel(), key, prompt, null, maxTokens, temp, true, false) }
             catch (e: ApiErr) {
                 last = e
                 if (e.code >= 500) nap(2000L * (tries + 1))
                 else if (e.code == 429) pool.block(key, 60_000)
                 else if (e.code == 401 || e.code == 403) pool.block(key, 3_600_000)
                 else throw e
-            }
+            } finally { pool.refineEnd(key) }
         }
         throw last ?: Exception("فشل التنقيح الجزئي")
     }
@@ -1318,7 +1338,7 @@ class Engine(
         if (!conf.partialRefine) return
         val keysOk = partialKeys().isNotEmpty()
         if (!keysOk) {
-            if (!partialWarned && chunksDone >= 2) { partialWarned = true; host.log("✍ التنقيح الجزئي واقف: مفيش مفتاح احتياطي (أو مفتاح صور والوضع البصري مش شغّال) — هيتنقّح في الآخر بالمفاتيح العادية") }
+            if (!partialWarned && chunksDone >= 2) { partialWarned = true; host.log("✍ التنقيح الجزئي واقف: محتاج 3 مفاتيح على الأقل عشان البرنامج يخصّص مفتاح للتنقيح — هيتنقّح في الآخر بالمفاتيح العادية") }
             return
         }
         synchronized(lock) {
@@ -1389,7 +1409,9 @@ class Engine(
                 "- ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس. التصحيح لازم يبقى لمعنى أدق أو أوضح من السياق.\n" +
                 "- ممنوع تضيف أو تحذف أو تدمج جمل، والتوقيت مش بتاعك.\n" +
                 "رجّع JSON فقط: {\"corrections\":[{\"i\":12,\"why\":\"السبب في كلمتين تلاتة\",\"translated\":\"النص المصحح الكامل للجملة\"}]} — الجمل السليمة ماتتحطش. لو كله سليم: {\"corrections\":[]}"
-            val r = try { if (isFinal) bgCall(prompt, 8192, 0.1, true, win) else partialCall(prompt, 8192, 0.1, win) } catch (e: Exception) { okAll = false; throw e }
+            refiningSegs = listOf(doubleArrayOf(part.first().start, part.last().end))
+            val r = try { if (isFinal) bgCall(prompt, 8192, 0.1, true, win) else partialCall(prompt, 8192, 0.1, win) } catch (e: Exception) { okAll = false; refiningSegs = emptyList(); throw e }
+            refiningSegs = emptyList()
             val ca = Parse.json(r.text)?.optJSONArray("corrections")
             if (ca != null && ca.length() > 0) {
                 var n = 0
@@ -1536,7 +1558,7 @@ class Engine(
                 val snap = subs.filter { !it.isSound && it.original.isNotBlank() && it.translated.isNotBlank() && !it.translated.startsWith("«") }.sortedBy { it.start }
                 if (snap.size < 3) report("مفيش جمل مترجمة كفاية للتنقيح")
                 else {
-                    saveVersion("قبل التنقيح بالسياق")
+                    saveVersion("قبل التنقيح بالسياق"); refiningSegs = listOf(doubleArrayOf(snap.first().start, snap.last().end))
                     val roster = pb.rosterText(effectiveChars(), effectiveGloss())
                     val parts = snap.chunked(3000)
                     for ((pi, part) in parts.withIndex()) {
@@ -1552,7 +1574,7 @@ class Engine(
                             "3) جملة مقطوعة بين مقطعين وترجمتها مش متصلة بجارتها، أو ترجمة بتتناقض مع اللي حواليها.\n" +
                             "القواعد: حافظ على لهجة ${conf.lang} وأسلوب ${conf.style}؛ الجملة قصيرة قد الأصلية تقريبًا؛ ماتغيّرش جملة سليمة ولا تحسّن أسلوب بس؛ ممنوع تضيف أو تحذف أو تدمج جمل.\n" +
                             "رجّع JSON فقط بالجمل اللي اتغيّرت: {\"corrections\":[{\"i\":12,\"translated\":\"النص المصحح الكامل\"}]} — لو كله سليم: {\"corrections\":[]}"
-                        var key: String = conf.backup.firstOrNull { pool.ok(it) } ?: pool.pickIdle(-1000, null, perKey) ?: helperKey() ?: throw Exception("مفيش مفتاح")
+                        var key: String = (conf.refine + conf.backup).firstOrNull { pool.ok(it) } ?: pool.pickIdle(-1000, null, perKey) ?: helperKey() ?: throw Exception("مفيش مفتاح")
                         pool.unreserve(-1000)
                         var r: Api.Result? = null; var tries = 0
                         while (r == null) {
@@ -1590,7 +1612,7 @@ class Engine(
                 }
             } catch (e: Exception) {
                 host.log("⚠ التنقيح بالسياق فشل: " + (e.message ?: e.toString()).take(120)); report("التنقيح فشل: " + (e.message ?: "").take(80))
-            } finally { toolBusy = null }
+            } finally { toolBusy = null; refiningSegs = emptyList() }
             done(fixed)
         }.apply { isDaemon = true }.start()
     }

@@ -48,11 +48,13 @@ class Conf(
     /** (v146) اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح، كل مفتاح بموديل مختلف، والأسرع يتثبّت للباقي */
     val speedTest: Boolean = true,
     /** (v154) تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع سياق قبلها) تتبعت للتنقيح على مفتاح مخصوص (احتياطي، أو مفاتيح الصور لو الوضع البصري مش شغال) */
-    val partialRefine: Boolean = true
+    val partialRefine: Boolean = true,
+    /** (v158) مفاتيح التنقيح (البرنامج بيوزّع المفاتيح لوحده: ترجمة / تنقيح / احتياطي) */
+    val refine: List<String> = emptyList()
 ) {
     /** نسخة من الإعدادات بلهجة تانية (الباتشات الجديدة بتتبعت باللهجة المختارة مباشرة بدل فصحى ثم تحويل) */
     fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, vad, crossReview, autoChars,
-        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine)
+        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine, refine)
 }
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
@@ -119,6 +121,13 @@ object Cfg {
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
         try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
+        // (v158) مرة واحدة: كل المفاتيح (أساسي/إضافي/احتياطي) تتجمّع في قايمة واحدة والبرنامج بيوزّعها لوحده
+        if (!p.getBoolean("keys_unified_v158", false)) {
+            val all = allMainKeys()
+            val e = p.edit().putBoolean("keys_unified_v158", true)
+            if (all.isNotEmpty()) e.putString("keys", all.joinToString("\n")).putString("extra", "").putString("backup", "").putString("keymodes", "[]")
+            e.apply()
+        }
         // (v141) مرة واحدة: الاسم المتحرك gemini-flash-lite-latest بقى موديل ثابت (3.1)
         if (!p.getBoolean("model_pin_v141", false)) {
             val e = p.edit().putBoolean("model_pin_v141", true)
@@ -155,18 +164,31 @@ object Cfg {
     }
 
     /** كل مفاتيح الأساسي + الإضافية بترتيبها (أوضاع المفاتيح بتقابل الترتيب ده) */
-    fun allMainKeys() = (keys("keys") + keys("extra")).distinct()
+    fun allMainKeys() = (keys("keys") + keys("extra") + keys("backup")).distinct()
+
+    /** (v158) توزيع المفاتيح تلقائيًا: (ترجمة، تنقيح، احتياطي). المنقّح بيشتغل كمان كاحتياطي لو مفاتيح الترجمة اتعطّلت */
+    fun roleCounts(n: Int): Triple<Int, Int, Int> {
+        if (n <= 2) return Triple(n, 0, 0)
+        val ref = when { n >= 12 -> 3; n >= 7 -> 2; else -> 1 }
+        val res = when { n >= 10 -> 2; n >= 6 -> 1; else -> 0 }
+        return Triple(n - ref - res, ref, res)
+    }
+    /** (ترجمة، تنقيح، احتياطي) بنفس ترتيب المفاتيح في الإعدادات */
+    fun roles(): Triple<List<String>, List<String>, List<String>> {
+        val all = allMainKeys(); val (nt, nr, _) = roleCounts(all.size)
+        return Triple(all.take(nt), all.drop(nt).take(nr), all.drop(nt + nr))
+    }
 
     fun snapshot(): Conf {
-        val (main, bk) = KeyModes.split(allMainKeys(), KeyModes.parse(str("keymodes")))
+        val (main, rf, bk) = roles()
         return Conf(
-            main, (keys("backup") + bk).distinct(), str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
+            main, bk, str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
             str("lang", "فصحى"), str("style", "حرفي"),
             int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
             1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("strim", true), bool("gapfill", true),
-            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true)
+            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true), rf
         )
     }
 }
@@ -208,7 +230,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
             "- 🔴🔴 علامات الترقيم هي أماكن القطع: ممنوع يبقى جوه حقل translated الواحد أكتر من جملة مفصولة بنقطة (.) أو ؟ أو ! أو …، وممنوع جزئين مفصولين بفاصلة (،) كل واحد ليه توقيت كلام مختلف. كل جملة بتنتهي بنقطة/؟/! = subtitle مستقل بتوقيته الفعلي (حتى لو المتحدث التاني هو اللي كمّلها بعد الأول مباشرة). وكل جزء بين فاصلتين = subtitle مستقل بتوقيت start/end الحقيقي بتاعه، بشرط يبقى كلمتين فأكتر (الكلمة الواحدة زي \"أيوه،\" بتتلزق في اللي بعدها). مثال غلط: {\"start\":3.0,\"end\":8.0,\"translated\":\"يعني حبر فقعات. آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. الصح: subtitle أول {\"start\":3.0,\"end\":4.6,\"translated\":\"يعني حبر فقعات.\"} وsubtitle تاني {\"start\":5.1,\"end\":8.0,\"translated\":\"آلة الطباعة دي أكتر حاجة بتطبعها هي العلامة المميزة.\"}. كل subtitle يختفي لما صوت صاحبه يخلص ويظهر اللي بعده لما صوت صاحبه يبدأ.\n" +
             "- 🔴 لو الكلام متصل من غير وقفة خالص، قسّم عند أقرب نهاية فكرة أو فاصلة. كل subtitle لازم يكون جملة أو عبارة مفهومة ومكتملة المعنى (ماتقطعش في نص عبارة ولا تسيب جملة ناقصة ولا تحذف أي كلمة من الكلام المسموع).\n" +
-            "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرضهم كل واحد في سطر تحت التاني بلون مختلف.\n"
+            "- 🔴 لو اتنين (أو أكتر) بيتكلموا في نفس الوقت: لكل متحدث subtitle منفصل بتوقيته الفعلي، overlap=true، وspeaker_tag رقم مختلف لكل واحد (1 للأوضح/الأعلى). ممنوع دمج كلامهم في subtitle واحد. التطبيق هيعرض كل واحد منهم لوحده في وقته (مش مع التاني في نفس الوقت).\n"
 
         /** بلوكات إضافية على كل القوالب: تغطية كاملة، صوت خافت، فصل متحدثين، جودة ترجمة */
         val EXTRA_BLOCK = "\n" +
@@ -334,18 +356,25 @@ class Pool(private val c: Conf) {
     val mains: List<String> = c.keys.dropLast(watchN)
     val watchers: List<String> = c.keys.takeLast(watchN)
     /** أقصى عدد طلبات ترجمة متوازية */
-    fun capacity(perKey: Int): Int = maxOf(1, (if (mains.isNotEmpty()) mains.size else c.backup.size) * perKey.coerceIn(1, 4))
+    /** (v158) الاحتياطي = المفاتيح الاحتياطية + المنقّحين + مفاتيح الصور لو الوضع البصري مش شغّال */
+    private fun bk(): List<String> = (c.backup + c.refine + (if (VisualMode.anyActive()) emptyList() else c.visKeys.filter { it.length > 10 })).distinct()
+    /** (v158) مفتاح التنقيح بيترجم زي الأساسي، ولما التنقيح يجي دوره بيتشال من الترجمة لحد ما يخلص وبعدين يرجع يترجم */
+    private val refBusy = HashSet<String>()
+    @Synchronized fun loadOf(k: String): Int = load[k] ?: 0
+    @Synchronized fun refineBegin(k: String) { refBusy.add(k) }
+    @Synchronized fun refineEnd(k: String) { refBusy.remove(k) }
+    fun capacity(perKey: Int): Int = maxOf(1, (if (mains.isNotEmpty()) (mains + c.refine).distinct().size else bk().size) * perKey.coerceIn(1, 4))
     @Synchronized fun ok(k: String) = (until[k] ?: 0L) < System.currentTimeMillis()
     @Synchronized fun block(k: String, ms: Long) { until[k] = System.currentTimeMillis() + ms }
     @Synchronized fun good(k: String) { until.remove(k); streak = 0 }
     @Synchronized fun clear() { until.clear() }
     fun count() = all().size
-    fun all(): List<String> = (c.keys + c.backup).distinct()
+    fun all(): List<String> = (c.keys + bk()).distinct()
     @Synchronized fun pick(avoid: String?, rr: Int): String? {
         val act = mains.filter { it != avoid && ok(it) }
         if (act.isNotEmpty()) return act[Math.floorMod(rr, act.size)]
         watchers.firstOrNull { it != avoid && ok(it) }?.let { return it }
-        return c.backup.firstOrNull { it != avoid && ok(it) }
+        return bk().firstOrNull { it != avoid && ok(it) }
     }
     /** طلبات شغالة دلوقتي على كل مفتاح + متوسط زمن الرد (ms): بنوزّع الباتشات على المفتاح الفاضي/الأسرع بدل التبادل الأعمى (التبادل كان بيحبس الباتشات الزوجية على المفتاح البطيء) */
     private val load = HashMap<String, Int>()
@@ -357,8 +386,8 @@ class Pool(private val c: Conf) {
     /** أقرب مفتاح فاضي فعلًا (مفيش عليه باتش شغال ولا محجوز لحد perKey) — بيحجزه للباتش i. null = كل المفاتيح مشغولة أو معطلة. مفتاح avoid مستبعد. */
     @Synchronized fun pickIdle(i: Int, avoid: String?, perKey: Int): String? {
         rsv.remove(i)
-        fun free(l: List<String>) = l.filter { it != avoid && ok(it) && used(it) < perKey }
-        val g = free(mains).ifEmpty { free(watchers) }.ifEmpty { free(c.backup) }
+        fun free(l: List<String>) = l.filter { it != avoid && ok(it) && it !in refBusy && used(it) < perKey }
+        val g = free(mains).ifEmpty { free(watchers) }.ifEmpty { free(bk()) }
         if (g.isEmpty()) return null
         val k = g.sortedWith(compareBy<String>({ used(it) }, { lat[it] ?: 0.0 })).first()
         rsv[i] = k; return k
@@ -378,19 +407,19 @@ class Pool(private val c: Conf) {
             return free.sortedWith(compareBy<String>({ lat[it] ?: 0.0 }, { Math.floorMod(act.indexOf(it) - rr, act.size) })).first()
         }
         watchers.firstOrNull { it != avoid && ok(it) }?.let { return it }
-        return c.backup.firstOrNull { it != avoid && ok(it) }
+        return bk().firstOrNull { it != avoid && ok(it) && it !in refBusy } ?: bk().firstOrNull { it != avoid && ok(it) }
     }
     /** كام مفتاح صالح دلوقتي (عشان نعرف نبعت نسخة تانية من باتش اتأخر على مفتاح مختلف) */
     @Synchronized fun usableCount(): Int = all().count { ok(it) }
-    @Synchronized fun pickBackup(avoid: String?): String? = c.backup.firstOrNull { it != avoid && ok(it) }
+    @Synchronized fun pickBackup(avoid: String?): String? = bk().firstOrNull { it != avoid && ok(it) }
     /** مفتاح لسدّ فجوة: المراقبين، بعدين الاحتياطي، بعدين الأساسي — من غير المفاتيح المشغولة */
     @Synchronized fun gapKey(busy: Set<String>, rr: Int): String? {
-        val pref = (watchers + c.backup + mains).distinct().filter { it !in busy && ok(it) }
-        return if (pref.isEmpty()) null else pref[Math.floorMod(rr, minOf(pref.size, maxOf(1, watchers.size + c.backup.size)))]
+        val pref = (watchers + bk() + mains).distinct().filter { it !in busy && ok(it) }
+        return if (pref.isEmpty()) null else pref[Math.floorMod(rr, minOf(pref.size, maxOf(1, watchers.size + bk().size)))]
     }
     /** مفتاح للمهام الجانبية (تحليل/مراجعة): الاحتياطي الأول، وإلا أول أساسي. */
     @Synchronized fun helper(): String? =
-        c.backup.firstOrNull { ok(it) } ?: c.keys.firstOrNull { ok(it) } ?: all().firstOrNull()
+        (c.refine + bk()).distinct().firstOrNull { ok(it) } ?: c.keys.firstOrNull { ok(it) } ?: all().firstOrNull()
     @Synchronized fun streakUp(): Int { streak++; return streak }
     fun tail(k: String) = "…" + k.takeLast(4)
 }

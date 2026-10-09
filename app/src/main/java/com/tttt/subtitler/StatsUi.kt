@@ -38,8 +38,8 @@ class StatsUi(private val act: Activity, private val ui: Ui, private val th: The
 
         // كل مفتاح
         col.addView(head("🔑 الطلبات لكل مفتاح (النهارده · آخر 7 أيام)"))
-        val main = Cfg.allMainKeys(); val bk = Cfg.keys("backup")
-        val all = (main.map { it to "أساسي" } + bk.filter { it !in main }.map { it to "احتياطي" })
+        val (rTr, rRf, rRs) = Cfg.roles()
+        val all = (rTr.map { it to "ترجمة" } + rRf.map { it to "تنقيح" } + rRs.map { it to "احتياطي" })
         if (all.isEmpty()) col.addView(line("مفيش مفاتيح متسجلة."))
         all.forEach { (k, role) -> col.addView(line("…${k.takeLast(4)}  ($role):  ${d1.keys[k.takeLast(4)] ?: 0}  ·  ${d7.keys[k.takeLast(4)] ?: 0}")) }
 

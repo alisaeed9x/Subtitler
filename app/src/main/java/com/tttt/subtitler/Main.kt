@@ -80,9 +80,9 @@ class MainActivity : Activity() {
         val ui = Ui(this, th)
         applyBars(th)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, ui.dp(32), 0, ui.dp(110)); layoutDirection = View.LAYOUT_DIRECTION_RTL; clipChildren = false; clipToPadding = false }
-        val keys = ui.input("مفاتيح Gemini الأساسية (مفتاح في كل سطر)", Cfg.str("keys"), 3)
-        val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", Cfg.str("backup"), 2)
-        val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", Cfg.str("extra"), 2)
+        val keys = ui.input("مفاتيح Gemini (مفتاح في كل سطر)", Cfg.allMainKeys().joinToString("\n"), 3)
+        val backup = ui.input("مفاتيح احتياطية (مفتاح في كل سطر)", "", 2)
+        val extra = ui.input("مفاتيح إضافية (بتتضاف للأساسية — مفتاح في كل سطر)", "", 2)
         val vkeys = ui.input("مفاتيح الوضع البصري فقط (مفتاح في كل سطر)", Cfg.str("viskeys"), 2)
         // مفاتيح: كل مفتاح في خانة لوحده + زرار ＋ لإضافة أي عدد (الـ EditText الأصلي بيفضل هو مصدر الحقيقة ومش ظاهر)
         val keyLoaders = ArrayList<() -> Unit>()
@@ -213,7 +213,7 @@ class MainActivity : Activity() {
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
             "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
-            "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفتاح مخصوص (الاحتياطي، أو مفاتيح الصور لو الوضع البصري مش شغّال) من غير ما ياخد من مفاتيح الترجمة",
+            "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفاتيح تنقيح مخصوصة (البرنامج بيخصّصها لوحده من قايمة المفاتيح، ومفتاح الصور احتياطي لها) من غير ما ياخد من مفاتيح الترجمة؛ وفي الآخر بيحصل تنقيح كامل واحد",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
@@ -372,8 +372,7 @@ class MainActivity : Activity() {
         val modelChipTv = ui.pillChip("") { }
         fun refreshChip() {
             val ks = (keyList(keys.text.toString()) + keyList(extra.text.toString())).distinct()
-            val m0 = KeyModes.modeOf(modes, 0)
-            keyChipTv.text = (if (ks.isEmpty()) "✗ " else "✓ ") + "🔀 " + (if (m0 == "backup") "احتياطي" else "الاتنين")
+            keyChipTv.text = (if (ks.isEmpty()) "✗ " else "✓ ") + "🔀 " + ks.size
             keyTailTv.text = if (ks.isEmpty()) "مفيش مفتاح" else "AQ.A…" + ks[0].takeLast(5)
             val mid = model.text.toString().trim()
             val q = Models.quotaOf(mid).coerceAtLeast(1)
@@ -429,12 +428,10 @@ class MainActivity : Activity() {
                     }
                 },
                 ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() },
-                ui.section("🔑 الأساسية", true, keysUi),
-                ui.section("🛟 الاحتياطية", false, backupUi),
-                ui.section("➕ الإضافية", false, extraUi),
-                ui.section("🔀 أوضاع المفاتيح", false, modesBox, modesBtn),
+                ui.section("🔑 كل المفاتيح", true,
+                    ui.text("حط كل مفاتيحك هنا في قايمة واحدة — البرنامج بيوزّعها لوحده: مفاتيح للترجمة (أغلبها)، ومفتاح أو اتنين للتنقيح الجزئي أثناء الترجمة، ومفتاح احتياطي لو مفتاح اتعطّل (من 6 مفاتيح). التنقيح الجزئي بيبدأ من 3 مفاتيح.", 12f, th.muted), keysUi),
                 ui.section("👁 مفتاح الوضع البصري فقط", false,
-                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة (أساسي/احتياطي/إضافي). لو سبتها فاضية الوضع البصري مش هيشتغل. والترجمة العادية ماتستخدمهاش.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini · الاحتياطي · الإضافي · الأوضاع"),
+                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini (توزيع تلقائي) · مفتاح الصور"),
             TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
                 ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
@@ -582,7 +579,7 @@ class MainActivity : Activity() {
         // لو مفيش مفتاح Gemini: القايمة بتظهر مباشرة أول البرنامج، وبعدها الفحص
         val coldStart = b == null
         if (coldStart) showSplash()
-        frame.post { permFlow { ensureKeys { keys.setText(Cfg.str("keys")); keyLoadersRef.forEach { it() }; refreshChip(); doScan() } } }
+        frame.post { permFlow { ensureKeys { keys.setText(Cfg.allMainKeys().joinToString("\n")); keyLoadersRef.forEach { it() }; refreshChip(); doScan() } } }
         if (intent?.action == Intent.ACTION_SEND) {
             val t = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
             Regex("https?://\\S+").find(t)?.let { link.setText(it.value); openLink(it.value) }
