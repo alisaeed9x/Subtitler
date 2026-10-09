@@ -61,7 +61,7 @@ class Conf(
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
     val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest", "prefine",
-        "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_punct")
+        "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_two_lines", "sub_punct")
     val INTS = setOf("chunk", "ahead", "hls_ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
     fun bool(v: Any?, d: Boolean): Boolean = when (v) {

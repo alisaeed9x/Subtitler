@@ -603,7 +603,7 @@ class MainActivity : Activity() {
         fun st() = SubStyle.load { k, d -> Cfg.str(k, d) }
         fun showDemo() {
             val p = st()
-            prev.show(if (p.splitOn) PlayerLogic.splitParts(demo.translated, p.splitThresh).firstOrNull()?.let { demo.copy(translated = it) } ?: demo else demo)
+            prev.show(demo)
         }
         fun put(k: String, v: String) { Cfg.put(k, v); prev.style = st(); prev.show(null); showDemo() }
         fun slider(label: String, k: String, d: Int, lo: Int, hi: Int, unit: String): LinearLayout {
@@ -641,7 +641,7 @@ class MainActivity : Activity() {
                 sw("لون نص موحّد", "sub_uni_on", false),
                 ui.chips(SubStyle.unifiedPalette, { st().uniColor }) { put("sub_uni_color", it) }),
             ui.section("✂️ تقسيم الجمل", false,
-            sw("تقسيم الجمل الطويلة لأجزاء (مطفي = الجملة تظهر كاملة من أول الكلام لآخره)", "sub_split_on", false)),
+            sw("الجملة الطويلة على سطرين فوق بعض (عند الفاصلة/النقطة، أو بالنص لو عدّت 70% من عرض الفيديو)", "sub_two_lines", true)),
             ui.section("🌫 الخلفية", false,
                 sw("إخفاء الخلفية", "sub_nobg", false),
                 slider("غمقان الخلفية (0 = شفافة)", "sub_bgopa", 45, 0, 100, "%"),

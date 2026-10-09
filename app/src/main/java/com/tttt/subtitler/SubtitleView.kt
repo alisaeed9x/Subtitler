@@ -160,7 +160,8 @@ class SubtitleView(ctx: Context) : View(ctx) {
         val ss = style; val col = ss.colorFor(s)
         tp.apply { textSize = px; typeface = typefaceFor(); color = col; letterSpacing = 0.02f; setShadowLayer(6f, 0f, 1f, 0xAA000000.toInt()) }
         tp2.apply { textSize = (px * 0.75f).coerceAtLeast(11 * d); typeface = Typeface.create("sans-serif", Typeface.NORMAL); color = 0xBBFFFFFF.toInt(); setShadowLayer(4f, 0f, 1f, 0xAA000000.toInt()) }
-        val txt = txt0
+        // (v169) سطرين فوق بعض: عند الفاصلة/النقطة، أو بالنص لو النص أعرض من 70% من عرض الفيديو
+        val txt = if (!multi && style.splitOn) PlayerLogic.twoLines(txt0, w * 0.70f) { tp.measureText(it) } else txt0
         val sp = SpannableString(txt)
         if (!style.plain) {
             var i = 0

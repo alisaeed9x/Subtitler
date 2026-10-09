@@ -1804,13 +1804,6 @@ class PlayerActivity : Activity(), Host {
                 // جملة طويلة واحدة: بتتقسم لأجزاء بتظهر بالتتابع على مدة الجملة (التوقيت الأصلي ثابت)
                 var parts: List<String> = emptyList(); var part = 0
                 val ssn = sub.style
-                if (ssn.splitOn && ccOn && gs.size == 1) {
-                    var byChars = true
-                    parts = PlayerLogic.splitPunct(gs[0].translated)
-                    if (parts.size <= 1) { parts = PlayerLogic.splitParts(gs[0].translated, ssn.splitThresh); byChars = false }
-                    if (parts.size > 1) parts = PlayerLogic.adaptParts(parts, ends[idx] - starts[idx], byChars)
-                    if (parts.size > 1) part = PlayerLogic.partIndex(starts[idx], ends[idx], cur - offsetMs, parts, byChars)
-                }
                 val key = act.joinToString(",") + ":" + part
                 if (idx != curIdx || key != curKey) {
                     curIdx = idx; curKey = key

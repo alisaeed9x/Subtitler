@@ -47,6 +47,33 @@ object PlayerLogic {
         val n = (w.size + thresh - 1) / thresh; val per = (w.size + n - 1) / n
         return w.chunked(per).map { it.joinToString(" ") }
     }
+    /** (v169) سطرين فوق بعض (مش أجزاء بالتتابع):
+     *  - لو فيه فاصلة/نقطة/؟/!/… → التقسيم عند علامة الترقيم الأقرب للنص (الأول فوق والتاني تحت).
+     *  - لو مفيش علامة وعرض النص أكبر من limitPx (70% من عرض الفيديو) → بالنص بالظبط بالكلمات (10 و10 مش 18 و2).
+     *  - غير كده الجملة سطر واحد. measure = عرض النص بالبكسل بنفس الخط. */
+    private val PUNCT_END = Regex("[.!?؟…،,؛]$")
+    fun twoLines(text: String, limitPx: Float, measure: (String) -> Float): String {
+        if (text.contains('\n')) return text
+        val w = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (w.size < 2) return text
+        // أحسن نقطة تقسيم عند علامة ترقيم: الأقرب لنص الكلمات (بالحروف) — كل سطر لازم فيه كلمة على الأقل
+        val len = w.map { it.length + 1 }; val total = len.sum()
+        var best = -1; var bestD = Int.MAX_VALUE; var acc = 0
+        for (i in 0 until w.size - 1) {
+            acc += len[i]
+            if (i >= 1 && w.size - i - 1 >= 2 && PUNCT_END.containsMatchIn(w[i])) {   // كل سطر كلمتين على الأقل
+                val dd = Math.abs(total / 2 - acc); if (dd < bestD) { bestD = dd; best = i } }
+        }
+        if (best >= 0) return w.subList(0, best + 1).joinToString(" ") + "\n" + w.subList(best + 1, w.size).joinToString(" ")
+        if (measure(w.joinToString(" ")) <= limitPx) return text
+        // مفيش علامة: بالنص بالكلمات (لو الكلمات الطويلة بتخلّي الفرق كبير نختار أقرب نقطة للتوازن بالعرض)
+        var cut = (w.size + 1) / 2; var bd = Float.MAX_VALUE
+        for (k in maxOf(1, w.size / 2 - 1)..minOf(w.size - 1, (w.size + 1) / 2 + 1)) {
+            val d = Math.abs(measure(w.subList(0, k).joinToString(" ")) - measure(w.subList(k, w.size).joinToString(" ")))
+            if (d < bd) { bd = d; cut = k }
+        }
+        return w.subList(0, cut).joinToString(" ") + "\n" + w.subList(cut, w.size).joinToString(" ")
+    }
     /** تقسيم الجملة عند علامات الترقيم (نقطة ؟ ! … فاصلة). الجزء اللي أقل من minWords كلمات بيتلزق في اللي جنبه. جملة بسطر جديد = جزء واحد */
     fun splitPunct(text: String, minWords: Int = 2): List<String> {
         if (text.contains('\n')) return listOf(text)
