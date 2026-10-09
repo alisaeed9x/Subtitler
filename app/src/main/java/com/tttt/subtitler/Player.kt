@@ -678,7 +678,10 @@ class PlayerActivity : Activity(), Host {
         Thread { SrtWriter.save(app, u, subsNow, off)?.let { p -> runOnUiThread { log("💾 اتحفظ SRT: $p"); if (!srtToastShown) { srtToastShown = true; say("💾 اتحفظ SRT جنب الفيديو") } } } }.start()
     }
 
-    // ===== (v134) تضخيم الصوت (LoudnessEnhancer على جلسة صوت المشغّل) — 0..100% = لحد +15dB =====
+    // ===== (v167) السلايدر الموحّد للصوت: 0..100% صوت عادي، 100..200% تضخيم (أحمر) — LoudnessEnhancer على جلسة صوت المشغّل (الجزء الزيادة 0..100 = لحد +15dB) =====
+    fun volTotal(): Int = 100 + (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100)
+    fun setBoostPct(b: Int) { Cfg.put("vol_boost", b.coerceIn(0, 100).toString()); applyBoost() }
+    fun boostDbText(b: Int) = "+" + "%.1f".format(b * 0.15) + " dB"
     private var loud: android.media.audiofx.LoudnessEnhancer? = null
     fun applyBoost() {
         val pct = (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100)
@@ -991,7 +994,7 @@ class PlayerActivity : Activity(), Host {
             setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10)); background = ui.box(0x99000000.toInt(), Color.TRANSPARENT, 24); visibility = View.GONE
         }
         videoBox.addView(gi, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-        val volInd = VertInd(this, "🔊"); val briInd = VertInd(this, "☀️")
+        val volInd = VertInd(this, "🔊", 2f); val briInd = VertInd(this, "☀️")
         videoBox.addView(volInd, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(24), 0) })
         videoBox.addView(briInd, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(24), 0, 0, 0) })
         val indHide = Runnable { volInd.visibility = View.GONE; briInd.visibility = View.GONE }
@@ -1250,28 +1253,7 @@ class PlayerActivity : Activity(), Host {
             "engine" to "⚙ الترجمة والمحرك", "keys" to "🔑 المفاتيح", "bg" to "🌙 الترجمة في الخلفية", "sec" to "🔒 الأمان", "theme" to "🎨 المظهر"))
             gSet.addView(pd(tl) { openSettings(tid) })
         gSet.addView(pd("📥 تحميل النص الأصلي (SRT)") { exportOriginalSrt() })
-        // (v134) تضخيم الصوت: سلايدر 0..100% (لحد +15dB) — للفيديوهات اللي صوتها واطي
-        val gBoost = gCol()
-        val boostTv = ui.text("", 12f, 0xFFE8EAED.toInt()).apply { gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(6), ui.dp(8), 0) }
-        fun boostLabel(p: Int) = if (p == 0) "🔊 تضخيم الصوت: مطفي" else "🔊 تضخيم الصوت: ${p}%  (≈ +${"%.1f".format(p * 0.15)} dB)"
-        val bp0 = (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100)
-        gBoost.addView(pk("‹ رجوع") { dismissPop(); togglePop(menuB, gTool, false) })
-        boostTv.text = boostLabel(bp0)
-        gBoost.addView(boostTv, LinearLayout.LayoutParams(ui.dp(240), -2))
-        gBoost.addView(android.widget.SeekBar(this).apply {
-            max = 100; progress = bp0; layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8))
-            val tint = android.content.res.ColorStateList.valueOf(th.primary); progressTintList = tint; thumbTintList = tint
-            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
-                    if (!fromUser) return
-                    Cfg.put("vol_boost", p.toString()); boostTv.text = boostLabel(p); applyBoost()
-                }
-                override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
-                override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
-            })
-        }, LinearLayout.LayoutParams(ui.dp(240), -2))
-        gTool.addView(pk("🔊 تضخيم الصوت ›") { dismissPop(); togglePop(menuB, gBoost, false) })
+        // (v167) زرار «تضخيم الصوت» اتشال — التضخيم بقى جزء أحمر في سلايدر الصوت نفسه (بعد 100%)
         gTool.addView(pk("⚙️ الإعدادات ›") { dismissPop(); togglePop(menuB, gSet, false) })
         // (v135) 🧰 أدوات الفيديو (زرار في الشريط العلوي): قص · صوت · GIF · ضغط · ترجمة ثابتة — كل واحدة بتتحط في توبيب «المهام» وبتتحفظ لوحدها لما تخلص
         val gTools = gCol()
@@ -1505,7 +1487,7 @@ class PlayerActivity : Activity(), Host {
 
         // ---- لمس الفيديو: لمسة = إظهار/إخفاء الشريط (أو تشغيل/إيقاف في الوضع الرأسي)، لمستين = ±10ث، سحب رأسي = صوت (يمين) / سطوع (شمال) ----
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        var volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        var volF = (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0).coerceIn(0, 100).let { b -> if (b > 0) 1f + b / 100f else am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }   // (v167) 0..1 صوت النظام، 1..2 تضخيم
         var briF = window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it }
         var scrollLogged = false
         var hScrub = false; var scrubBase = 0L; var scrubTarget = 0L; var fast2x = false
@@ -1553,9 +1535,13 @@ class PlayerActivity : Activity(), Host {
                 val d = dy / videoBox.height.coerceAtLeast(1) * 1.3f
                 if (!scrollLogged) { scrollLogged = true; log(if (e1.x > videoBox.width / 2f) "↕ سحب: الصوت" else "↕ سحب: السطوع") }
                 if (e1.x > videoBox.width / 2f) {
-                    volF = (volF + d).coerceIn(0f, 1f)
+                    volF = (volF + d).coerceIn(0f, 2f)
                     val mx = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                    am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(volF * mx), 0)
+                    am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(minOf(volF, 1f) * mx), 0)
+                    val bNow = Math.round((volF - 1f).coerceAtLeast(0f) * 100)
+                    if (bNow != (Cfg.str("vol_boost", "0").toIntOrNull() ?: 0)) setBoostPct(bNow)
+                    if (bNow > 0) player.volume = 1f
+                    ctl.vol.progress = Math.round(volF * 100)
                     indShow(volInd, volF)
                 } else {
                     briF = (briF + d).coerceIn(0.02f, 1f)
@@ -1636,10 +1622,16 @@ class PlayerActivity : Activity(), Host {
         ctl.prev.setOnClickListener { val t = player.currentPosition - offsetMs; val i = starts.indexOfLast { it < t - 1500 }; player.seekTo(if (i >= 0) starts[i] + offsetMs else 0L) }
         ctl.next.setOnClickListener { val t = player.currentPosition - offsetMs; val i = starts.indexOfFirst { it > t + 200 }; if (i >= 0) player.seekTo(starts[i] + offsetMs) }
         ctl.vol.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { if (u) player.volume = p / 100f }
+            override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
+                if (!u) return
+                if (p <= 100) { player.volume = p / 100f; if ((Cfg.str("vol_boost", "0").toIntOrNull() ?: 0) != 0) setBoostPct(0) }
+                else { player.volume = 1f; setBoostPct(p - 100) }
+                giShow(if (p <= 100) "🔊 $p%" else "🔊 $p%  تضخيم ${boostDbText(p - 100)}", Gravity.CENTER)
+            }
             override fun onStartTrackingTouch(s: SeekBar?) {}
             override fun onStopTrackingTouch(s: SeekBar?) {}
         })
+        ctl.vol.max = 200; ctl.vol.progress = volTotal()
         fun seekFrac(f: Float) { if (durMs > 0) player.seekTo((f * durMs).toLong()) }
         // سحب شريط التقدم: الفيديو بيتحرك معاك لحظيًا + بيكتب الوقت والفرق، ويثبت لما ترفع صباعك
         var barStart = 0L

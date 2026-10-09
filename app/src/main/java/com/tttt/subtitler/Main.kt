@@ -401,6 +401,15 @@ class MainActivity : Activity() {
         }
         refreshLock()
         fun fl(vararg k: String): Array<View> = k.map { key -> flagViews[flags.keys.indexOf(key)] }.toTypedArray()
+        // (v167) بريسيت جودة الصوت المُرسَل للـ AI: سريع (AAC 32kbps) / نورمال (WAV خام)
+        val audioPresetTitle = ui.text("جودة الصوت المُرسَل للـ AI", 13f, th.muted)
+        val audioPresetDesc = ui.text("", 12f, th.muted)
+        val apFast = "⚡ سريع"; val apNormal = "🎚 نورمال"
+        fun apDesc() { audioPresetDesc.text = if (AudioEnc.preset() == AudioEnc.NORMAL) "WAV خام 16kHz من غير ضغط (≈32KB في الثانية) — أعلى دقة، لكن الرفع أبطأ (حوالي 8 أضعاف الحجم)." else "ضغط AAC بمعدل 32kbps (≈4KB في الثانية) — أصغر حوالي 8 مرات، والرفع أسرع. مناسب لمعظم الأفلام." }
+        val audioPresetChips = ui.chips(listOf(apFast, apNormal), { if (AudioEnc.preset() == AudioEnc.NORMAL) apNormal else apFast }) {
+            Cfg.put(AudioEnc.PRESET_KEY, if (it == apNormal) AudioEnc.NORMAL else AudioEnc.FAST); apDesc()
+        }
+        apDesc()
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
             TabDef("fonts", "🔤 الخطوط", sp.fonts, true, "نوع الخط ونمطه وحجم الترجمة"),
             TabDef("anim", "✨ الأنيميشن", sp.anim, true, "حركة ظهور الترجمة وسرعتها"),
@@ -414,7 +423,7 @@ class MainActivity : Activity() {
                 ui.section("🏎 اختبار سرعة رد الـ AI", false,
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
-                ui.section("🔊 الصوت والتوقيت", false, *fl("soundtags", "vad", "strim", "hitiming")),
+                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(

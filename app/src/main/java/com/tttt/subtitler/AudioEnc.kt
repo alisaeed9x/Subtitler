@@ -14,13 +14,22 @@ import java.util.WeakHashMap
 object AudioEnc {
     class Packed(val bytes: ByteArray, val mime: String, val srcSize: Int)
 
-    /** معدل البت: 32kbps لكلام mono 16kHz شفاف عمليًا؛ ارفعه لـ 48000 لو عايز أمان أكتر على حساب الحجم */
+    /**
+     * (v167) بريسيت الصوت (من الإعدادات ← الترجمة والمحرك ← الصوت والتوقيت):
+     *  • سريع (الافتراضي): AAC بمعدل 32kbps — أصغر ~8 مرات، الرفع أسرع.
+     *  • نورمال: WAV خام 16kHz من غير ضغط (≈32KB/ث) — أعلى جودة، والرفع أبطأ.
+     */
+    const val PRESET_KEY = "audio_preset"
+    const val FAST = "fast"
+    const val NORMAL = "normal"
     const val BITRATE = 32000
+    fun preset(): String = if (Cfg.str(PRESET_KEY, FAST) == NORMAL) NORMAL else FAST
 
     private val cache: MutableMap<ByteArray, Packed> = Collections.synchronizedMap(WeakHashMap<ByteArray, Packed>())
     @Volatile private var fails = 0
 
     fun pack(wav: ByteArray): Packed {
+        if (preset() == NORMAL) return Packed(wav, "audio/wav", wav.size)   // نورمال: WAV خام
         cache[wav]?.let { return it }
         var p: Packed? = null
         if (fails < 3 && isWav(wav)) {

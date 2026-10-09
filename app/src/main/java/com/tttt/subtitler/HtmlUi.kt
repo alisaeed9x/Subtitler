@@ -398,11 +398,9 @@ fun Ui.controls(): Ctl {
         layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply { setMargins(dp(2), 0, dp(4), 0) }
     }
     val speed = ic("⏩")
-    val vol = SeekBar(ctx).apply {
-        max = 100; progress = 100; layoutDirection = View.LAYOUT_DIRECTION_LTR
+    val vol = DualVolBar(ctx, th.accent, th.border).apply {
+        max = 200; progress = 100; layoutDirection = View.LAYOUT_DIRECTION_LTR   // (v167) 0..100 عادي، 100..200 تضخيم أحمر
         setPadding(dp(8), 0, dp(8), 0)
-        progressTintList = ColorStateList.valueOf(th.accent); progressBackgroundTintList = ColorStateList.valueOf(th.border)
-        thumbTintList = ColorStateList.valueOf(Color.WHITE)
     }
     val cc = ic("CC").apply { textSize = 14f; setTypeface(typeface, android.graphics.Typeface.BOLD) }
     val exp = ic("📤"); val rot = ic("▯")
@@ -445,10 +443,11 @@ fun Ui.memRow(): MemRow {
 }
 
 /** مؤشر رأسي للصوت/السطوع (أيقونة + شريط + نسبة) زي fs-gesture-indicator */
-class VertInd(ctx: Context, icon: String) : LinearLayout(ctx) {
+class VertInd(ctx: Context, icon: String, private val range: Float = 1f) : LinearLayout(ctx) {
     private val d = ctx.resources.displayMetrics.density
     private val trackH = (90 * d).toInt()
     private val fill = View(ctx)
+    private val fillRed = View(ctx)
     private val lb = IconTextView(ctx)
     init {
         orientation = VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; visibility = View.GONE
@@ -458,12 +457,38 @@ class VertInd(ctx: Context, icon: String) : LinearLayout(ctx) {
         val track = android.widget.FrameLayout(ctx).apply { background = GradientDrawable().apply { setColor(0x40FFFFFF); cornerRadius = 4 * d } }
         fill.background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 4 * d }
         track.addView(fill, android.widget.FrameLayout.LayoutParams(-1, 0, Gravity.BOTTOM))
+        fillRed.background = GradientDrawable().apply { setColor(0xFFFF3B30.toInt()); cornerRadius = 4 * d }
+        track.addView(fillRed, android.widget.FrameLayout.LayoutParams(-1, 0, Gravity.BOTTOM))
         addView(track, LayoutParams((5 * d).toInt(), trackH).apply { setMargins(0, (6 * d).toInt(), 0, (6 * d).toInt()) })
         lb.textSize = 11f; lb.setTextColor(Color.WHITE); lb.typeface = android.graphics.Typeface.DEFAULT_BOLD; addView(lb)
     }
     fun set(f: Float) {
-        val v = f.coerceIn(0f, 1f)
-        val lp = fill.layoutParams; lp.height = (trackH * v).toInt(); fill.layoutParams = lp
+        // (v167) range=1: عادي (السطوع)؛ range=2 (الصوت): 0..1 أبيض، 1..2 تضخيم أحمر — الشريط كله = 200%
+        val v = f.coerceIn(0f, range)
+        val white = minOf(v, 1f); val red = (v - 1f).coerceAtLeast(0f)
+        val lp = fill.layoutParams; lp.height = (trackH * white / range).toInt(); fill.layoutParams = lp
+        val lr = fillRed.layoutParams as android.widget.FrameLayout.LayoutParams
+        lr.height = (trackH * red / range).toInt(); lr.bottomMargin = (trackH / range).toInt(); fillRed.layoutParams = lr
+        lb.setTextColor(if (red > 0f) 0xFFFF5252.toInt() else Color.WHITE)
         lb.text = Math.round(v * 100).toString() + "%"; visibility = View.VISIBLE
+    }
+}
+
+
+/** (v167) سلايدر صوت بقسمين: 0..100 بلون الثيم، 100..200 أحمر (تضخيم). علامة صغيرة عند 100%. */
+class DualVolBar(ctx: Context, private val normal: Int, private val trackBg: Int) : SeekBar(ctx) {
+    private val d = ctx.resources.displayMetrics.density
+    private val pt = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val red = 0xFFFF3B30.toInt()
+    // بنرسم كل حاجة (المسار + الإبهام) بنفسنا؛ الـ super بيتحسب منه اللمس بس
+    override fun onDraw(c: android.graphics.Canvas) {
+        val l = paddingLeft.toFloat(); val r = (width - paddingRight).toFloat(); val cy = height / 2f; val th = 4 * d
+        val w = r - l; val mx = max.coerceAtLeast(1).toFloat(); val x = l + w * progress / mx; val mid = l + w * 100f / mx
+        pt.style = android.graphics.Paint.Style.FILL
+        pt.color = trackBg; c.drawRoundRect(l, cy - th / 2, r, cy + th / 2, th, th, pt)
+        pt.color = normal; c.drawRoundRect(l, cy - th / 2, minOf(x, mid), cy + th / 2, th, th, pt)
+        if (progress > 100) { pt.color = red; c.drawRoundRect(mid, cy - th / 2, x, cy + th / 2, th, th, pt) }
+        pt.color = 0xCCFFFFFF.toInt(); c.drawRect(mid - 0.5f * d, cy - th, mid + 0.5f * d, cy + th, pt)   // علامة 100%
+        pt.color = if (progress > 100) red else Color.WHITE; c.drawCircle(x, cy, 8 * d, pt)
     }
 }
