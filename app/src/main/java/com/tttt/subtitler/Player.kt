@@ -437,7 +437,9 @@ class PlayerActivity : Activity(), Host {
                 else { open = !open; h.removeCallbacks(closeR); if (open) h.postDelayed(closeR, 5000); updateTr() }
             }
             val tg = b("⏸ إيقاف", 0xFF424B57.toInt()) { if (::engine.isInitialized && engine.userPaused) beginTranslate() else pauseTranslate(); h.removeCallbacks(closeR); h.postDelayed(closeR, 5000) }
-            val rd = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { h.removeCallbacks(closeR); h.postDelayed(closeR, 8000); redoDialog() }
+            var rdRef: TextView? = null
+            val rd = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { h.removeCallbacks(closeR); h.postDelayed(closeR, 8000); rdRef?.let { redoDialog(it) } }
+            rdRef = rd
             row.addView(chipB, lp(-2)); row.addView(tg, lp(-2)); row.addView(rd, lp(-2)); row.addView(lgB, lp(-2))
             if (webVid) { row.addView(qBtn(), lp(-2)); row.addView(dlB, lp(-2)) }
             trUpdaters.add {
@@ -445,7 +447,7 @@ class PlayerActivity : Activity(), Host {
                 val started = engineStarted
                 if (!started) open = false
                 tg.visibility = if (started && open) View.VISIBLE else View.GONE
-                rd.visibility = if (started && open) View.VISIBLE else View.GONE
+                rd.visibility = View.VISIBLE
                 lgB.visibility = if (!started || open) View.VISIBLE else View.GONE
                 if (!started) { chipB.text = "▶ ترجمة"; chipB.background = ui.box(0xFFE53935.toInt(), 0x33FFFFFF, 12) }
                 else {
@@ -458,16 +460,17 @@ class PlayerActivity : Activity(), Host {
         } else {
             val ps = b("⏸ إيقاف مؤقت", 0xFF424B57.toInt()) { pauseTranslate() }
             val rs = b("▶ إلغاء الإيقاف", 0xFF2E7D32.toInt()) { beginTranslate() }
-            val rd2 = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { redoDialog() }
-            row.addView(tr, lp(-1)); row.addView(ps, lp(0).apply { width = 0; weight = 1f })
+            var rd2Ref: TextView? = null
+            val rd2 = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { rd2Ref?.let { redoDialog(it) } }
+            rd2Ref = rd2
+            row.addView(tr, lp(0).apply { width = 0; weight = 2f }); row.addView(ps, lp(0).apply { width = 0; weight = 1f })
             row.addView(rs, lp(0).apply { width = 0; weight = 1f })
             row.addView(rd2, lp(0).apply { width = 0; weight = 1f })
             row.addView(lgB, lp(0).apply { width = 0; weight = 1.3f })
             if (webVid) { row.addView(qBtn(), lp(0).apply { width = 0; weight = 1.1f }); row.addView(dlB, lp(0).apply { width = 0; weight = 0.6f }) }
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
-                rd2.visibility = if (engineStarted) View.VISIBLE else View.GONE
-                tr.visibility = if (engineStarted) View.GONE else View.VISIBLE
+                                tr.visibility = if (engineStarted) View.GONE else View.VISIBLE
                 ps.visibility = if (engineStarted) View.VISIBLE else View.GONE
                 rs.visibility = if (engineStarted) View.VISIBLE else View.GONE
                 ps.alpha = if (paused) 0.4f else 1f; rs.alpha = if (paused) 1f else 0.4f
@@ -583,26 +586,39 @@ class PlayerActivity : Activity(), Host {
             runOnUiThread { beginTranslate() }
         }.apply { isDaemon = true }.start()
     }
-    /** زرار «🔁 إعادة» في شريحة الترجمة: من الأول / من الباتش ده وبعده / الباتش ده بس / باتش معين — مع اختيار نحتفظ بالقديمة (🗂) ولا نمسحها */
-    fun redoDialog() {
+    private var redoPop: android.widget.PopupWindow? = null
+    private var redoKeep = true
+    /** زرار «🔁 إعادة»: قايمة منسدلة صغيرة تحت/فوق الزرار (زي قايمة اللغة): من الأول / من الباتش ده وبعده / الباتش ده بس / باتش معين — مع اختيار نحتفظ بالقديمة (🗂) ولا نمسحها */
+    fun redoDialog(anchor: View) {
+        redoPop?.let { if (it.isShowing) { it.dismiss(); redoPop = null; return } }
         if (!::engine.isInitialized) return
         val curC = try { engine.chunkOfSec(player.currentPosition / 1000.0) } catch (_: Exception) { 0 }
-        var keep = true
-        val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
-        box.addView(ui.text("🔁 إعادة الترجمة", 17f, th.primary, true))
-        val keepTv = ui.button("💾 احتفظ بالترجمة القديمة في 🗂 ترجمات: شغّال") { }
-        keepTv.setOnClickListener { keep = !keep; keepTv.text = if (keep) "💾 احتفظ بالترجمة القديمة في 🗂 ترجمات: شغّال" else "🗑 امسح القديمة من غير ما تحتفظ بيها: شغّال" }
-        box.addView(keepTv)
-        box.addView(ui.button("🔁 من الأول خالص", true) { d.dismiss(); val k = keep; player.seekTo(0); redoGo("🔄 بترجم من الأول…") { engine.redoAll(k) } })
-        box.addView(ui.button("▶ من الباتش ده وبعده (باتش ${curC + 1})") { d.dismiss(); val k = keep; redoGo("🔄 بترجم من باتش ${curC + 1} وبعده…") { engine.redoFrom(curC, k) } })
-        box.addView(ui.button("☝ الباتش ده بس (باتش ${curC + 1})") { d.dismiss(); val k = keep; redoGo("🔄 بترجم باتش ${curC + 1} لوحده…") { engine.redoOnly(curC, k) } })
-        box.addView(ui.button("📋 اختار باتش معين…") { d.dismiss(); batchDialog() })
-        box.addView(ui.button("إلغاء") { d.dismiss() })
-        d.setContentView(android.widget.ScrollView(this).apply { addView(box) })
-        d.window?.apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT) }
-        ui.fullPage(d)
-        d.show()
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(0xF2141418.toInt(), 0x33FFFFFF, 12)
+        }
+        fun item(t: String, f: (TextView) -> Unit) = ui.fsBtn(t, f).apply { layoutParams = LinearLayout.LayoutParams(-1, ui.dp(40)).apply { setMargins(ui.dp(3), ui.dp(2), ui.dp(3), ui.dp(2)) } }
+        fun keepText() = if (redoKeep) "💾 احتفظ بالقديمة في 🗂: شغّال" else "🗑 امسح القديمة: شغّال"
+        col.addView(item(keepText()) { v -> redoKeep = !redoKeep; v.text = keepText() })
+        col.addView(item("🔁 من الأول خالص") { _ -> redoPop?.dismiss(); val k = redoKeep; player.seekTo(0); redoGo("🔄 بترجم من الأول…") { engine.redoAll(k) } })
+        col.addView(item("▶ من الباتش ده وبعده (باتش ${curC + 1})") { _ -> redoPop?.dismiss(); val k = redoKeep; redoGo("🔄 بترجم من باتش ${curC + 1} وبعده…") { engine.redoFrom(curC, k) } })
+        col.addView(item("☝ الباتش ده بس (باتش ${curC + 1})") { _ -> redoPop?.dismiss(); val k = redoKeep; redoGo("🔄 بترجم باتش ${curC + 1} لوحده…") { engine.redoOnly(curC, k) } })
+        col.addView(item("📋 اختار باتش معين…") { _ -> redoPop?.dismiss(); batchDialog() })
+        val scroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(col) }
+        val popW = minOf(resources.displayMetrics.widthPixels - ui.dp(24), ui.dp(280))
+        col.measure(View.MeasureSpec.makeMeasureSpec(popW, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        val screenH = resources.displayMetrics.heightPixels
+        val up = loc[1] > screenH / 2
+        val avail = (if (up) loc[1] - ui.dp(12) else screenH - loc[1] - anchor.height - ui.dp(12)).coerceAtLeast(ui.dp(120))
+        val popH = minOf(col.measuredHeight, avail)
+        val pw = android.widget.PopupWindow(scroll, popW, popH, true)
+        pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+        pw.isOutsideTouchable = true
+        pw.setOnDismissListener { if (redoPop === pw) redoPop = null; showChrome() }
+        if (up) pw.showAsDropDown(anchor, 0, -(anchor.height + popH + ui.dp(2))) else pw.showAsDropDown(anchor, 0, ui.dp(2))
+        redoPop = pw
+        h.removeCallbacks(hideChrome); showChrome(); h.removeCallbacks(hideChrome)
     }
 
     /** يوقف المشغّل خالص، يسلّم الترجمة لخدمة الخلفية (إشعار بالتقدم والوقت المتبقي) ويطلع بره التطبيق من غير ما يقفله */

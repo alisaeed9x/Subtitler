@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  * والبنك ده بيتحوّل لنص بيتحط في prompt كل مقطع جديد. كده كل «API» بيستلم من اللي قبله: الصوت V2 ده ذكر بالغ غليظ اسمه كذا.
  * ملاحظة: دي بصمة خفيفة (مش شبكة عصبية)، دقتها كويسة في الجنس/الطبقة والفروق الواضحة بين الأصوات، وجيميناي بيكمّلها بوصف الصوت.
  */
-class VPrint(val v: FloatArray, val f0: Double, val frames: Int)
+class VPrint(val v: FloatArray, val f0: Double, val frames: Int) { var emb: FloatArray? = null }   // emb: بصمة عصبية (لو موديل VoiceNet متاح)
 
 object VoiceDsp {
     const val RATE = 16000
@@ -48,7 +48,7 @@ object VoiceDsp {
     }
     private val dct: Array<DoubleArray> = Array(NC) { j -> DoubleArray(NB) { b -> cos(PI * (j + 1) * (b + 0.5) / NB) } }
 
-    private fun fft(re: DoubleArray, im: DoubleArray) {
+    internal fun fft(re: DoubleArray, im: DoubleArray) {
         val n = re.size
         var j = 0
         for (i in 1 until n) {
@@ -179,6 +179,7 @@ class VoiceProf(val id: String, val cent: FloatArray) {
     var name = ""
     var age = ""
     var style = ""
+    var emb: FloatArray? = null   // متوسط البصمة العصبية (اختياري)
     fun gender(): String = if (gf > gm) "female" else "male"
     /** جنس موثوق: 3 جمل على الأقل وفرق أصوات واضح */
     fun genderSure(): Boolean = n >= 3 && abs(gm - gf) >= 3.0
@@ -202,11 +203,28 @@ class VoiceBank(var tMatch: Double = T_MATCH, var tLoose: Double = T_LOOSE) {
     fun clear() = synchronized(lock) { voices.clear(); nextNo = 1 }
     fun find(id: String): VoiceProf? = synchronized(lock) { voices.firstOrNull { it.id == id } }
 
+    /** لو للبصمتين نسخة عصبية: نقارن بيها (أدق بين صوتين قريبين)، وإلا بالبصمة الخفيفة */
+    private fun distOf(p: VoiceProf, fp: VPrint): Double {
+        val a = p.emb; val b = fp.emb
+        val light = VoiceDsp.dist(p.cent, fp.v)
+        if (a == null || b == null || a.size != b.size) return light
+        return when (VoiceNet.mode()) {
+            "light" -> light
+            "neural" -> VoiceNet.dist(a, b)
+            else -> 0.5 * light + 0.5 * VoiceNet.dist(a, b)   // الاتنين معًا
+        }
+    }
+    /** بوابة الطبقة: بتتلغي في وضع «عصبي فقط» (لما للبصمتين نسخة عصبية) عشان الاختبار يبقى للموديل لوحده */
+    private fun pitchOk(p: VoiceProf, fp: VPrint): Boolean {
+        if (VoiceNet.mode() == "neural" && p.emb != null && fp.emb != null) return true
+        return VoiceDsp.pitchGap(p.cent, fp.v) <= PITCH_GATE
+    }
+
     private fun nearest(fp: VPrint): Pair<VoiceProf, Double>? {
         var best: VoiceProf? = null; var bd = Double.MAX_VALUE
         for (p in voices) {
-            if (VoiceDsp.pitchGap(p.cent, fp.v) > PITCH_GATE) continue
-            val d = VoiceDsp.dist(p.cent, fp.v)
+            if (!pitchOk(p, fp)) continue
+            val d = distOf(p, fp)
             if (d < bd) { bd = d; best = p }
         }
         return if (best == null) null else Pair(best, bd)
@@ -215,6 +233,11 @@ class VoiceBank(var tMatch: Double = T_MATCH, var tLoose: Double = T_LOOSE) {
     private fun update(p: VoiceProf, fp: VPrint, gemGender: String) {
         val lr = max(0.08, 1.0 / (p.n + 1))
         for (i in 0 until VoiceDsp.DIM) p.cent[i] = (p.cent[i] * (1 - lr) + fp.v[i] * lr).toFloat()
+        fp.emb?.let { e ->
+            val o = p.emb
+            if (o == null || o.size != e.size) p.emb = e.copyOf()
+            else { val ne = FloatArray(e.size) { (o[it] * (1 - lr) + e[it] * lr).toFloat() }; p.emb = VoiceNet.norm(ne) }
+        }
         p.n++; p.frames += fp.frames; p.f0 = exp(p.cent[0].toDouble())
         val g = VoiceDsp.f0Gender(fp.f0)
         if (g > 0) p.gm += 2.0 else if (g < 0) p.gf += 2.0
@@ -228,7 +251,7 @@ class VoiceBank(var tMatch: Double = T_MATCH, var tLoose: Double = T_LOOSE) {
         val nb = nearest(fp)
         if (nb != null && nb.second <= tMatch) { update(nb.first, fp, gemGender); return Pair(nb.first.id, false) }
         val gp = if (gemId.isNotEmpty()) voices.firstOrNull { it.id == gemId } else null
-        if (gp != null && VoiceDsp.pitchGap(gp.cent, fp.v) <= PITCH_GATE && VoiceDsp.dist(gp.cent, fp.v) <= tLoose) { update(gp, fp, gemGender); return Pair(gp.id, false) }
+        if (gp != null && pitchOk(gp, fp) && distOf(gp, fp) <= tLoose) { update(gp, fp, gemGender); return Pair(gp.id, false) }
         if (nb != null && voices.size >= MAX) { update(nb.first, fp, gemGender); return Pair(nb.first.id, false) }
         val p = VoiceProf("V" + nextNo++, fp.v.copyOf())
         voices.add(p); update(p, fp, gemGender)
@@ -280,7 +303,7 @@ class VoiceBank(var tMatch: Double = T_MATCH, var tLoose: Double = T_LOOSE) {
     fun toJson(): String = synchronized(lock) {
         val arr = JSONArray()
         for (p in voices) arr.put(JSONObject().put("id", p.id).put("n", p.n).put("fr", p.frames).put("gm", p.gm).put("gf", p.gf)
-            .put("nm", p.name).put("ag", p.age).put("st", p.style).put("c", JSONArray(p.cent.map { it.toDouble() })))
+            .put("nm", p.name).put("ag", p.age).put("st", p.style).put("c", JSONArray(p.cent.map { it.toDouble() })).also { o -> p.emb?.let { e -> o.put("e", JSONArray(e.map { x -> x.toDouble() })) } })
         JSONObject().put("next", nextNo).put("v", arr).toString()
     }
 
@@ -299,6 +322,7 @@ class VoiceBank(var tMatch: Double = T_MATCH, var tLoose: Double = T_LOOSE) {
                 val p = VoiceProf(o.optString("id"), FloatArray(VoiceDsp.DIM) { ca.optDouble(it).toFloat() })
                 p.n = o.optInt("n"); p.frames = o.optInt("fr"); p.gm = o.optDouble("gm"); p.gf = o.optDouble("gf")
                 p.name = o.optString("nm"); p.age = o.optString("ag"); p.style = o.optString("st"); p.f0 = exp(p.cent[0].toDouble())
+                o.optJSONArray("e")?.let { ea -> if (ea.length() > 0) p.emb = FloatArray(ea.length()) { ea.optDouble(it).toFloat() } }
                 if (p.id.isNotEmpty()) voices.add(p)
             }
             nextNo = max(j.optInt("next", 1), (voices.mapNotNull { it.id.removePrefix("V").toIntOrNull() }.maxOrNull() ?: 0) + 1)
@@ -322,12 +346,14 @@ object VoiceTrack {
         // الجمل الأطول الأول: بصمتها أوضح فتبني الخريطة label→id قبل الجمل القصيرة
         val order = fresh.indices.sortedByDescending { fresh[it].end - fresh[it].start }
         val ids = arrayOfNulls<String>(fresh.size)
+        val netOn = VoiceNet.useNet()
         for (ix in order) {
             val s = fresh[ix]
             if (s.isSound) continue
             val lbl = s.voice.trim()
             val fp = VoiceDsp.print(pcm, w.gain, s.start - w.startSec - 0.05, s.end - w.startSec + 0.05)
             if (fp != null) {
+                if (netOn) fp.emb = VoiceNet.embed(pcm, s.start - w.startSec - 0.05, s.end - w.startSec + 0.05)
                 val gemId = if (lbl.startsWith("V")) lbl else (labelToId[lbl] ?: "")
                 val r = bank.assign(fp, gemId, s.gender)
                 ids[ix] = r.first

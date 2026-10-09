@@ -501,7 +501,7 @@ class Fx(
         val r = if (mode > 0) scene?.rangeAt(posSec) else null
         curSkip = r
         if (r != null && mode == 2) {
-            if (playing() && now - lastSkip > 1200L) { lastSkip = now; seek(r.e + 0.3); say("⏭ اتخطّى مشهد ${r.label()}") }
+            if (playing() && now - lastSkip > 1200L) { lastSkip = now; seek(r.e + 0.3) }
             if (skipBtn.visibility != View.GONE) skipBtn.visibility = View.GONE
         } else if (r != null && mode == 1) {
             val t = "⏭ تخطي مشهد ${r.label()}"

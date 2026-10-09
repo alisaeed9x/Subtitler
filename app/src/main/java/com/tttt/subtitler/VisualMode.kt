@@ -78,7 +78,17 @@ class VisualMode(
             finally { try { onDone() } catch (_: Exception) {} }
         }.also { it.isDaemon = true; it.start() }
     }
+    /** (v174) من غير مفاتيح: ML Kit على الجهاز — لو الإعداد «على الجهاز» مفعّل أو مفيش مفتاح للوضع البصري */
+    private fun offline() = OfflineVis.enabled() || keyList().isEmpty()
     private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
+        if (offline()) {
+            val boxes = try { OfflineVis.detect(bmp, mode == "hardsub", say) } finally { bmp.recycle() }
+            val t = nowSec()
+            frames.removeIf { Math.abs(it.t - t) < 0.5 || it.dur == SNAP_DUR }
+            frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
+            say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
+            changed(); return
+        }
         val keys = keyList()
         if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
         val jpeg = toJpeg(bmp); bmp.recycle()
@@ -116,7 +126,8 @@ class VisualMode(
 
     private fun loop() {
         val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
-        val keys = keyList(); if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
+        val keys = keyList(); val off = offline()
+        if (keys.isEmpty() && !off) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
         var next = Math.floor(position())
         var ki = 0
         try {
@@ -126,6 +137,16 @@ class VisualMode(
                 if (next > pos + AHEAD) { Thread.sleep(500); continue }
                 val bmp = try { r.getFrameAtTime((next * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 if (bmp == null) { next += STEP; Thread.sleep(200); continue }
+                if (off) {
+                    status = "👁 يحلل ${"%.0f".format(next)}ث…"
+                    val boxes = try { OfflineVis.detect(bmp, mode == "hardsub", say) }
+                        catch (e: InterruptedException) { throw e }
+                        catch (e: Exception) { say("👁 خطأ: " + (e.message ?: "").take(110)); Thread.sleep(1500); emptyList() }
+                        finally { bmp.recycle() }
+                    frames.add(VisFrame(next, boxes)); sent++
+                    status = "👁 $sent فريم | ${boxes.size} نص"
+                    changed(); next += STEP; continue
+                }
                 val jpeg = toJpeg(bmp); bmp.recycle()
                 status = "👁 يحلل ${"%.0f".format(next)}ث…"
                 try {

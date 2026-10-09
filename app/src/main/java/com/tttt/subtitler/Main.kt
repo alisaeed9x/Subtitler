@@ -410,6 +410,14 @@ class MainActivity : Activity() {
             Cfg.put(AudioEnc.PRESET_KEY, if (it == apNormal) AudioEnc.NORMAL else AudioEnc.FAST); apDesc()
         }
         apDesc()
+        val vmLight = "🪶 خفيفة فقط"; val vmNeural = "🧠 عصبي فقط"; val vmCombo = "🤝 الاتنين معًا"
+        val voiceModeChips = ui.chips(listOf(vmLight, vmNeural, vmCombo), { when (VoiceNet.mode()) { "light" -> vmLight; "neural" -> vmNeural; else -> vmCombo } }) {
+            Cfg.p.edit().putString("voice_mode", when (it) { vmLight -> "light"; vmNeural -> "neural"; else -> "combo" }).apply()
+        }
+        val visCloud = "☁ Gemini (بمفتاح)"; val visLocal = "📴 على الجهاز (ML Kit — من غير مفاتيح)"
+        val visEngineChips = ui.chips(listOf(visCloud, visLocal), { if (OfflineVis.enabled()) visLocal else visCloud }) {
+            Cfg.p.edit().putBoolean("vis_offline", it == visLocal).apply()
+        }
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
             TabDef("fonts", "🔤 الخطوط", sp.fonts, true, "نوع الخط ونمطه وحجم الترجمة"),
             TabDef("anim", "✨ الأنيميشن", sp.anim, true, "حركة ظهور الترجمة وسرعتها"),
@@ -425,6 +433,10 @@ class MainActivity : Activity() {
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest")),
+                ui.section("👁 محرك الوضع البصري", false, visEngineChips,
+                    ui.text("على الجهاز: بيقرا النص الظاهر (إنجليزي / ياباني / كوري) ويترجمه للعربي من غير أي مفتاح. أول مرة بينزّل موديل الترجمة (~30MB لكل لغة) وبعدها أوفلاين. لو مفيش مفتاح للوضع البصري بيشتغل على الجهاز تلقائي.", 12f, th.muted)),
+                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips,
+                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted)),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
                 ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
@@ -456,7 +468,12 @@ class MainActivity : Activity() {
                 ui.button("🔑 تعيين / تغيير النمط") { lk.change { refreshLock() } }, bioBtn,
                 ui.button("🗑 إزالة القفل") { lk.remove { refreshLock() } },
                 ui.text("البصمة بتتحقق من بصمات جهازك المسجّلة في إعدادات الأندرويد (التطبيق مابيخزّنش بصمتك). لو نسيت النمط: «نسيت النمط؟» بيطلب قفل شاشة الجهاز.", 12f, th.muted)), false, "نمط وبصمة للمجلد المخفي"),
-            TabDef("theme", "🎨 المظهر", listOf<View>(themeChips), false, "ثيم البرنامج")
+            TabDef("theme", "🎨 المظهر", listOf<View>(themeChips), false, "ثيم البرنامج"),
+            TabDef("credits", "🙏 شكر وتقدير", listOf<View>(
+                ui.text("موديل بصمة الصوت (التعرف على المتكلم) المستخدم في التطبيق:", 13f, th.text, true),
+                ui.text("WeSpeaker · voxceleb_resnet34_LM (ResNet34 متدرّب على VoxCeleb) — من مشروع WeSpeaker مفتوح المصدر. الشكر لفريق WeSpeaker ولمنشور الموديل على Hugging Face. رخصة الموديل وشروطه حسب صفحته الأصلية.", 12f, th.muted),
+                ui.button("🔗 صفحة الموديل") { try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM"))) } catch (_: Exception) {} },
+                ui.text("تشغيل الموديل على الجهاز: ONNX Runtime (Microsoft).", 12f, th.muted)), false, "مصادر الموديلات والمكتبات المستخدمة")
         ), sp.holder) { save(); refreshChip(); if (fromPlayer) finish() }
         // رابط مباشر + المحفوظة (نافذة سفلية): حقل الرابط بيتحط هنا
         link.hint = "الصق أي لينك: فيديو مباشر / يوتيوب / صفحة فيها فيديو"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR

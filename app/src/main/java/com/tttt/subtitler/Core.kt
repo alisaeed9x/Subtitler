@@ -123,6 +123,7 @@ object Cfg {
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
         try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
+        try { VoiceNet.init(c.applicationContext) } catch (_: Throwable) {}
         try { Extras.load() } catch (_: Throwable) {}
         // (v158) مرة واحدة: كل المفاتيح (أساسي/إضافي/احتياطي) تتجمّع في قايمة واحدة والبرنامج بيوزّعها لوحده
         if (!p.getBoolean("keys_unified_v158", false)) {
