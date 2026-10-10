@@ -38,6 +38,41 @@ object MusicEngine {
     private var resumeOnFocus = false
     val listeners = CopyOnWriteArrayList<() -> Unit>()
 
+    // (v193) وضع التكرار: 0 بدون تكرار · 1 تكرار الكل · 2 تكرار أغنية واحدة · 3 عشوائي
+    @Volatile var mode = 0; private set
+    private val history = ArrayList<Int>()
+    private val rnd = java.util.Random()
+    fun cycleMode(): Int { setMode((mode + 1) % 4); return mode }
+    fun setMode(m: Int) { mode = m.coerceIn(0, 3); try { Cfg.put("music_mode", mode.toString()) } catch (_: Throwable) {}; changed() }
+
+    // (v193) الصوت: 0..100 صوت عادي · 100..200 تضخيم (LoudnessEnhancer لحد +15dB) — نفس فكرة مشغّل الفيديو
+    @Volatile var volPct = 100; private set
+    private var loud: android.media.audiofx.LoudnessEnhancer? = null
+    fun loadPrefs() {
+        try {
+            mode = (Cfg.str("music_mode", "0").toIntOrNull() ?: 0).coerceIn(0, 3)
+            volPct = (Cfg.str("music_vol", "100").toIntOrNull() ?: 100).coerceIn(0, 200)
+        } catch (_: Throwable) {}
+    }
+    fun setVol(p: Int) {
+        volPct = p.coerceIn(0, 200)
+        try { Cfg.put("music_vol", volPct.toString()) } catch (_: Throwable) {}
+        applyVol()
+    }
+    fun boostDbText(): String = if (volPct <= 100) "" else "+" + "%.1f".format((volPct - 100) * 0.15) + " dB"
+    private fun applyVol() {
+        val m = mp ?: return
+        try { val v = (minOf(volPct, 100) / 100f); m.setVolume(v, v) } catch (_: Throwable) {}
+        try {
+            val b = (volPct - 100).coerceAtLeast(0)
+            if (b > 0) {
+                if (loud == null) loud = android.media.audiofx.LoudnessEnhancer(m.audioSessionId)
+                loud?.setTargetGain(b * 15)   // مللي-ديسيبل: 100 → +15dB
+                loud?.enabled = true
+            } else { loud?.enabled = false }
+        } catch (e: Throwable) { LogStore.err("music-boost", e) }
+    }
+
     val current: Track? get() = queue.getOrNull(idx)
     val sessionId: Int get() = try { mp?.audioSessionId ?: 0 } catch (_: Throwable) { 0 }
     val isPlaying: Boolean get() = try { mp?.isPlaying == true } catch (_: Throwable) { false }
@@ -69,9 +104,11 @@ object MusicEngine {
         focusReq = null
     }
 
-    fun play(ctx: Context, q: List<Track>, i: Int) {
+    fun play(ctx: Context, q: List<Track>, i: Int, fromHistory: Boolean = false) {
         if (i !in q.indices) return
         app = ctx.applicationContext
+        if (!fromHistory && queue === q && idx in q.indices && idx != i) { history.add(idx); if (history.size > 50) history.removeAt(0) }
+        if (queue !== q) history.clear()
         queue = q; idx = i; ready = false; wantPlay = true
         release()
         MusicService.start(ctx.applicationContext)
@@ -82,19 +119,42 @@ object MusicEngine {
                 setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 setWakeMode(ctx.applicationContext, android.os.PowerManager.PARTIAL_WAKE_LOCK)
                 setDataSource(ctx.applicationContext, Uri.parse(t.uri))
-                setOnPreparedListener { ready = true; if (wantPlay) try { it.start() } catch (_: Throwable) {}; changed() }
-                setOnCompletionListener { step(1) }
-                setOnErrorListener { _, _, _ -> ready = false; main.post { step(1) }; true }
+                setOnPreparedListener { ready = true; applyVol(); if (wantPlay) try { it.start() } catch (_: Throwable) {}; changed() }
+                setOnCompletionListener { onEnded() }
+                setOnErrorListener { _, _, _ -> ready = false; main.post { if (queue.size > 1) step(1) }; true }
                 prepareAsync()
             }
         } catch (e: Exception) { LogStore.err("music-play", e) }
         changed()
     }
+    private fun randomOther(): Int {
+        if (queue.size <= 1) return 0
+        var n = rnd.nextInt(queue.size)
+        if (n == idx) n = (n + 1) % queue.size
+        return n
+    }
+    /** التالي/السابق بالزرار — بيلف دايمًا (حتى لو التكرار مقفول) */
     fun step(d: Int) {
         if (queue.isEmpty()) return
         val a = app ?: return
+        if (d < 0 && posMs > 3000) { seekTo(0); return }   // السابق بعد 3 ثواني = من أول الأغنية
+        if (mode == 3) {
+            if (d < 0 && history.isNotEmpty()) { play(a, queue, history.removeAt(history.size - 1), true); return }
+            play(a, queue, randomOther()); return
+        }
         val n = idx + d
-        if (n in queue.indices) play(a, queue, n) else if (d > 0) play(a, queue, 0)   // آخر أغنية → يلف على الأولى
+        if (n in queue.indices) play(a, queue, n) else play(a, queue, if (d > 0) 0 else queue.size - 1)
+    }
+    /** الأغنية خلصت لوحدها */
+    private fun onEnded() {
+        val a = app ?: return
+        if (queue.isEmpty()) return
+        when (mode) {
+            2 -> { try { mp?.seekTo(0); mp?.start() } catch (_: Throwable) {}; changed() }
+            3 -> play(a, queue, randomOther())
+            1 -> play(a, queue, if (idx + 1 in queue.indices) idx + 1 else 0)
+            else -> if (idx + 1 in queue.indices) play(a, queue, idx + 1) else { wantPlay = false; try { mp?.pause(); mp?.seekTo(0) } catch (_: Throwable) {}; changed() }
+        }
     }
     fun toggle() { if (isPlaying) pause() else resume() }
     fun resume() {
@@ -106,7 +166,7 @@ object MusicEngine {
     }
     fun pause() { wantPlay = false; try { if (mp?.isPlaying == true) mp?.pause() } catch (_: Throwable) {}; changed() }
     fun seekTo(ms: Int) { if (ready) try { mp?.seekTo(ms) } catch (_: Throwable) {}; changed() }
-    private fun release() { try { mp?.release() } catch (_: Throwable) {}; mp = null; ready = false }
+    private fun release() { try { loud?.release() } catch (_: Throwable) {}; loud = null; try { mp?.release() } catch (_: Throwable) {}; mp = null; ready = false }
     /** إيقاف نهائي (زرار ✕ في الإشعار) */
     fun stopAll() {
         wantPlay = false; release(); dropFocus(); queue = emptyList(); idx = -1

@@ -1005,6 +1005,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (!fromPlayer && curTab == 1 && ytUi?.back() == true) return   // (v118) رجوع جوه يوتيوب الأول
+        if (!fromPlayer && curTab == 1 && musicUi?.onBack() == true) return   // (v193) يقفل مشغّل الأسطوانة/الفولدر الأول
         if (!fromPlayer && curTab != 0) { showTabFn(0); return }
         if (!fromPlayer && libUi?.back() == true) return
         super.onBackPressed()

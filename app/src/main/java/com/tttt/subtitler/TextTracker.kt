@@ -7,7 +7,7 @@ package com.tttt.subtitler
  */
 class Det(val text: String, val lang: String, val x: Float, val y: Float, val w: Float, val h: Float)
 
-class Track(val id: Int, val text: String, val lang: String, val start: Double) {
+class TextTrack(val id: Int, val text: String, val lang: String, val start: Double) {
     @Volatile var x = 0f
     @Volatile var y = 0f
     @Volatile var w = 0f
@@ -19,7 +19,7 @@ class Track(val id: Int, val text: String, val lang: String, val start: Double) 
 }
 
 class TextTracker(private val step: Double) {
-    val tracks = java.util.concurrent.CopyOnWriteArrayList<Track>()
+    val tracks = java.util.concurrent.CopyOnWriteArrayList<TextTrack>()
     private var seq = 0
 
     companion object {
@@ -49,13 +49,13 @@ class TextTracker(private val step: Double) {
      * بيرجّع الظهورات الجديدة عشان تتبعت للترجمة.
      * البداية = نص المسافة بين آخر لقطة ماكانش فيها واللقطة اللي ظهر فيها (خطأ أقصاه step/2).
      */
-    fun feed(t: Double, dets: List<Det>, prevT: Double): List<Track> {
+    fun feed(t: Double, dets: List<Det>, prevT: Double): List<TextTrack> {
         val half = step / 2.0
         if (prevT.isNaN()) for (k in tracks) if (k.end.isNaN()) k.end = k.last + half
         val used = HashSet<Int>()
-        val fresh = ArrayList<Track>()
+        val fresh = ArrayList<TextTrack>()
         for (d in dets) {
-            var best: Track? = null; var bs = 0.0
+            var best: TextTrack? = null; var bs = 0.0
             for (k in tracks) {
                 if (!k.end.isNaN() || k.id in used) continue
                 if (Math.abs(k.x - d.x) > (k.w + d.w) / 2f + 0.05f) continue
@@ -67,7 +67,7 @@ class TextTracker(private val step: Double) {
                 used.add(best.id); best.last = t; best.miss = 0
                 best.x = d.x; best.y = d.y; best.w = d.w; best.h = d.h
             } else {
-                val k = Track(++seq, d.text, d.lang, if (prevT.isNaN()) t else (prevT + t) / 2.0)
+                val k = TextTrack(++seq, d.text, d.lang, if (prevT.isNaN()) t else (prevT + t) / 2.0)
                 k.x = d.x; k.y = d.y; k.w = d.w; k.h = d.h; k.last = t
                 tracks.add(k); used.add(k.id); fresh.add(k)
             }
@@ -78,9 +78,9 @@ class TextTracker(private val step: Double) {
     }
 
     /** الظهورات اللي شغّالة عند الثانية دي */
-    fun activeAt(sec: Double): List<Track> {
+    fun activeAt(sec: Double): List<TextTrack> {
         val half = step / 2.0
-        val out = ArrayList<Track>()
+        val out = ArrayList<TextTrack>()
         for (k in tracks) {
             val e = if (k.end.isNaN()) k.last + half else k.end
             if (sec >= k.start - 0.05 && sec <= e + 0.05) out.add(k)

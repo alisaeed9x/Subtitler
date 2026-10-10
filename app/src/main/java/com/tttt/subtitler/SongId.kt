@@ -27,6 +27,52 @@ object SongId {
         val p = v.split('\u0001'); return p[0] to p.getOrElse(1) { "" }
     }
     fun saveOverride(id: Long, m: SongMatch) = Cfg.put("mname_$id", m.title + "\u0001" + m.artist)
+    fun clearOverride(id: Long) = Cfg.put("mname_$id", "")
+
+    /**
+     * (v193) التعرف التلقائي: لو فيه توكن AudD بنجرّبه الأول؛ ولو مفيش توكن (أو ما اتعرفتش، أو اليوزر قال إن الاسم غلط)
+     * بنبعت المقطع لجيميناي يقول اسم الأغنية والفنان. [avoid] = أسماء اتقال إنها غلط ("العنوان — الفنان").
+     */
+    fun auto(ctx: Context, t: Track, startSec: Double, avoid: List<String>, onDone: (SongMatch?, String) -> Unit) {
+        if (token().isEmpty() || avoid.isNotEmpty()) { gemini(ctx, t, startSec, avoid, onDone); return }
+        recognize(ctx, t, startSec) { m, msg -> if (m != null) onDone(m, msg) else gemini(ctx, t, startSec, avoid) { m2, msg2 -> onDone(m2, if (m2 == null) msg2.ifBlank { msg } else "") } }
+    }
+
+    private const val GEM_CLIP = 25.0
+    fun gemini(ctx: Context, t: Track, startSec: Double, avoid: List<String>, onDone: (SongMatch?, String) -> Unit) {
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                val keys = Cfg.allMainKeys()
+                if (keys.isEmpty()) { onDone(null, "مفيش توكن AudD ولا مفتاح Gemini — ضيف واحد منهم"); return@Thread }
+                val model = Cfg.str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT }
+                val src = AudioSources.make(app, Uri.parse(t.uri), null, emptyMap(), 1) { }
+                val total = src.durationSec().takeIf { it > 0 } ?: (t.durMs / 1000.0)
+                val a = startSec.coerceIn(0.0, (total - GEM_CLIP).coerceAtLeast(0.0))
+                val w = try { src.wav(a, minOf(a + GEM_CLIP, total.coerceAtLeast(a + 1))) } catch (_: Throwable) { null }
+                try { src.close() } catch (_: Throwable) {}
+                if (w == null || w.silent) { onDone(null, "المقطع ده صامت — شغّل الأغنية لحد جزء فيه صوت وجرّب تاني"); return@Thread }
+                val pr = buildString {
+                    append("Identify the song in this audio clip. Use what you hear (voice, melody, sung words, language) and your knowledge. ")
+                    append("The file is named \"${t.title}\" / artist tag \"${t.artist}\" (may be missing or wrong — treat as a weak hint only). ")
+                    if (avoid.isNotEmpty()) append("These answers were already reported WRONG, do not repeat them: " + avoid.joinToString("; ") + ". ")
+                    append("If you are not reasonably sure, return empty strings — never invent a song. ")
+                    append("Return JSON only: {\"title\":\"\",\"artist\":\"\",\"album\":\"\"}")
+                }
+                var res: JSONObject? = null; var err = ""
+                for (k in 0 until keys.size.coerceAtMost(4)) {
+                    try {
+                        val r = Api.generate(model, keys[k % keys.size], pr, w.bytes, 1024, 0.2, true)
+                        res = JSONObject(r.text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()); break
+                    } catch (e: Throwable) { err = e.message ?: "" }
+                }
+                if (res == null) { onDone(null, "جيميناي ما ردّش: $err"); return@Thread }
+                val title = res.optString("title").trim(); val artist = res.optString("artist").trim()
+                if (title.isEmpty()) onDone(null, "جيميناي مش متأكد من الأغنية دي — جرّب مقطع تاني من وسط الأغنية")
+                else onDone(SongMatch(title, artist, res.optString("album").trim()), "")
+            } catch (e: Throwable) { LogStore.err("songid-gemini", e); onDone(null, "فشل: " + (e.message ?: "")) }
+        }.apply { isDaemon = true }.start()
+    }
 
     /** على خيط خلفية. startSec = من أنهي ثانية ناخد المقطع. onDone(نتيجة أو null، رسالة خطأ/عدم تطابق) */
     fun recognize(ctx: Context, t: Track, startSec: Double, onDone: (SongMatch?, String) -> Unit) {
