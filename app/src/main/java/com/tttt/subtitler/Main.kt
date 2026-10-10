@@ -201,13 +201,20 @@ class MainActivity : Activity() {
             }.start()
         }
         var chunkSec = Cfg.int("chunk", 60).coerceIn(10, 600)
-        val chunk = ui.slider("طول المقطع", chunkSec, 10, 600, " ثانية") { chunkSec = it }
+        // (v184) طول المقطع بقى أزرار ثابتة (30 / 60 / 90 / 120) بدل السلايدر — قيمة قديمة مش في الأزرار بتظهر على أقرب زرار ومابتتغيّرش إلا لو دوست
+        val chunkOpts = listOf(30, 60, 90, 120)
+        fun chunkLbl(v: Int) = "$v ثانية"
+        val chunk = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(ui.text("طول المقطع", 14f, th.text, true))
+            addView(ui.chips(chunkOpts.map { chunkLbl(it) }, { chunkLbl(chunkOpts.minByOrNull { Math.abs(it - chunkSec) }!!) }) { pick -> chunkSec = chunkOpts.first { chunkLbl(it) == pick } })
+        }
         val ahead = ui.input("عدد المقاطع اللي بتترجم قدّام مكان التشغيل", Cfg.str("ahead", "3"))
         val hlsAhead = ui.input("روابط m3u8: عدد الباتشات اللي بتتحمّل مقدّمًا قدّام الترجمة (الباقي مابيتحمّلش لحد ما توصله)", Cfg.str("hls_ahead", "3"))
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true, "verify" to false)
+        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true, "verify" to false, "talign" to true)
         val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
@@ -216,6 +223,7 @@ class MainActivity : Activity() {
             "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
             "verify" to "🔁 وضع التأكيد: كل باتش يتبعت لمفتاحين بالتوازي (مفتاح أساسي + مفتاح تاني) والنتيجتين بتتدمج: الجملة اللي في الاتنين بتتاخد مرة واحدة، واللي في واحدة بس بتتضاف — فمفيش كلام ينضاع لو نسخة فاتها. بيستهلك ضعف الطلبات (كوتة أسرع) ومحتاج مفتاحين شغالين على الأقل",
             "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفاتيح تنقيح مخصوصة (البرنامج بيخصّصها لوحده من قايمة المفاتيح، ومفتاح الصور احتياطي لها) من غير ما ياخد من مفاتيح الترجمة؛ وفي الآخر بيحصل تنقيح كامل واحد",
+            "talign" to "🎯 مواءمة التوقيت بالصوت: لو توقيت جمل المقطع متزحلق عن الكلام الفعلي (الجملة الظاهرة سابقة أو متأخرة) بيتظبط من الصوت نفسه — مابيلمسش المقطع السليم",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
@@ -449,7 +457,7 @@ class MainActivity : Activity() {
                 ui.section("🏎 اختبار سرعة رد الـ AI", false,
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
-                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
+                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
                 ui.section("👁 محرك الوضع البصري", false, visAutoChips, visFpsChips,
                     ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» في تبويب المفاتيح): بيبعت نوافذ فريمات 10 ثواني (كل فريم معاه وقته، والنوافذ بتتداخل ثانيتين)، وجيميناي بيرجّع لكل نص مكانه ووقت ظهوره ووقت اختفائه، فالترجمة بتظهر من الظهور للاختفاء بالظبط. لو النص بيتحرك بيستنى لحد ما يثبت. كثافة الفريمات فوق (الافتراضي فريم واحد في الثانية = 10 صور في كل نافذة، و3 فريم/ث = 30 صورة). بين كل نافذة والتانية فيه راحة تلقائية (4ث وبتزيد لحد 20ث لو جيميناي رفض بخطأ 429)، وكل مفتاح بياخد راحة لوحده. بيتطبق من أول تشغيل جديد للوضع البصري.", 12f, th.muted)),

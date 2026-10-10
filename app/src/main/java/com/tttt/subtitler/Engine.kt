@@ -1050,6 +1050,16 @@ class Engine(
         val spansAbs = Speech.activeSpans(w.bytes, w.gain)?.let { Speech.absolute(it, w.startSec) }
         val direct = dialOf[i]?.let { it == convDialect } ?: false
         var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i, conv = direct) }
+        // (v183) مواءمة التوقيت: لو توقيت الجمل كلها متزحلق (إزاحة/تمدّد) عن الصوت الفعلي بنرجّعه — الجملة الظاهرة كانت بتسبق أو بتتأخر عن المتكلم
+        if (spansAbs != null && spansAbs.isNotEmpty() && Cfg.bool("talign", true)) {
+            try {
+                Speech.align(tagged, spansAbs, w.startSec, w.startSec + w.durSec)?.let { al ->
+                    val L = java.util.Locale.US
+                    host.log("🎯 المقطع ${i + 1}: توقيت الجمل اتظبط على الصوت (إزاحة ${"%+.2f".format(L, al.shift)}ث · مقياس ${"%.2f".format(L, al.scale)} · تطابق ${"%.2f".format(L, al.before)} ← ${"%.2f".format(L, al.after)})")
+                    tagged = al.subs
+                }
+            } catch (_: Throwable) {}
+        }
         // (v177) لو الكاشف ماطلّعش ولا مجال صوت والمقطع مش صامت (صوت واطي جدًا) ماينفعش نشيل جمل على أساسه
         if (spansAbs != null && (spansAbs.isNotEmpty() || w.silent)) {
             val n0 = tagged.size

@@ -26,7 +26,9 @@ class VisualMode(
     private val position: () -> Double,
     private val retriever: () -> MediaMetadataRetriever?,
     private val say: (String) -> Unit,
-    private val changed: () -> Unit
+    private val changed: () -> Unit,
+    /** (v182) لقط فريم من شاشة المشغّل نفسها (PixelCopy) — للمصادر اللي MediaMetadataRetriever مابيقراهاش (m3u8) */
+    private val grab: (() -> Bitmap?)? = null
 ) {
     companion object {
         private val active = java.util.concurrent.atomic.AtomicInteger(0)
@@ -96,6 +98,9 @@ class VisualMode(
     private val frames = java.util.concurrent.CopyOnWriteArrayList<VisFrame>()
     private var th: Thread? = null
     var sent = 0; private set
+    /** (v182) عدد جمل الوضع البصري (نصوص النوافذ + نتايج اللقطات اليدوية) — للعدّاد فوق الفيديو */
+    val count: Int get() = items.size + frames.sumOf { it.boxes.size }
+    private var grabFails = 0
 
     /** (v181) نص ظاهر بوقت ظهور واختفاء (من نوافذ الفريمات) */
     private class TItem(val box: VisBox, var start: Double, var end: Double)
@@ -144,7 +149,13 @@ class VisualMode(
 
     fun start() {
         stop(); running = true
-        th = Thread { active.incrementAndGet(); try { loop() } catch (e: Exception) { status = "⚠ " + (e.message ?: "").take(80); say(status) } finally { running = false; active.decrementAndGet() } }.also { it.isDaemon = true; it.start() }
+        val t = Thread {
+            active.incrementAndGet()
+            try { loop(); if (running) say("👁 الحلقة خلصت") }
+            catch (e: Throwable) { status = "⚠ " + e.javaClass.simpleName + ": " + (e.message ?: "").take(80); say(status) }   // (v182) السبب بيتسجّل في اللوج دايمًا
+            finally { if (th === Thread.currentThread()) running = false; active.decrementAndGet() }
+        }
+        t.isDaemon = true; th = t; t.start()
     }
     fun stop() { running = false; th?.interrupt(); th = null }
 
@@ -152,32 +163,48 @@ class VisualMode(
     private fun keyList(): List<String> = conf.visKeys.filter { it.length > 10 }.distinct()
 
     private fun loop() {
-        val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
+        val r = retriever()
+        val live = r == null   // (v182) m3u8 / مصدر مش مقروء: بنلقط الفريمات من الشاشة وقت التشغيل
+        if (live && grab == null) { status = "المصدر ده مش مدعوم للوضع البصري"; say(status); return }
         val keys = keyList()
-        if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); try { r.release() } catch (_: Exception) {}; return }
-        val durSec = try { (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0 } catch (_: Exception) { 0.0 }
+        if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); try { r?.release() } catch (_: Exception) {}; return }
+        if (live) say("👁 المصدر m3u8 — بلقط الفريمات من الشاشة وقت التشغيل (النتيجة بتتأخر ~${WIN_SEC.toInt()}ث عن التشغيل)")
+        val liveBuf = ArrayList<Pair<Double, ByteArray>>()
+        val durSec = if (r == null) 0.0 else try { (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0 } catch (_: Exception) { 0.0 }
         val fps = fps(); val step = 1.0 / fps
         var w0 = Math.floor(position())
+        // (v182) تقديم النافذة: في الوضع العادي w0 بيتزحزح، وفي الالتقاط الحي بنشيل الفريمات القديمة ونسيب آخر OVERLAP ثانية
+        fun advance() {
+            if (!live) { w0 += WIN_SEC - OVERLAP; return }
+            val last = liveBuf.lastOrNull()?.first ?: return
+            liveBuf.removeAll { it.first < last - OVERLAP }
+        }
         var ki = 0; var fails = 0
         // (v181) راحة بين الطلبات عشان خطأ 429: فاصل أدنى بعد كل نافذة، وبيزيد لو جيميناي رفض وبيرجع يقل، وكل مفتاح اتوقف عنده بياخد راحة لوحده
         var restMs = REST_MIN
         val cool = HashMap<String, Long>()
         try {
             while (running) {
-                val pos = position()
-                // اليوزر قفز (قدّام أو ورا) أو إحنا متأخرين عن التشغيل: نبدأ من مكان التشغيل
-                if (pos > w0 + WIN_SEC - 1.0 || pos < w0 - AHEAD - 1.0) w0 = Math.floor(pos)
-                if (durSec > 0 && w0 >= durSec - 0.5) { status = "👁 النوافذ خلصت لحد آخر الفيديو"; Thread.sleep(1000); continue }
-                if (w0 > pos + AHEAD) { Thread.sleep(500); continue }
-                val wEnd = if (durSec > 0) minOf(w0 + WIN_SEC, durSec) else w0 + WIN_SEC
+                var wEnd: Double
                 val fr = ArrayList<Pair<Double, ByteArray>>()
-                var t = w0
-                while (t < wEnd - 0.01 && running) {
-                    val bmp = try { r.getFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
-                    if (bmp != null) { fr.add(Pair(t, toJpeg(bmp, 640, 68))); bmp.recycle() }
-                    t += step
+                if (live) {
+                    if (!collectLive(step, liveBuf)) break
+                    fr.addAll(liveBuf); w0 = fr.first().first; wEnd = fr.last().first + step
+                } else {
+                    val pos = position()
+                    // اليوزر قفز (قدّام أو ورا) أو إحنا متأخرين عن التشغيل: نبدأ من مكان التشغيل
+                    if (pos > w0 + WIN_SEC - 1.0 || pos < w0 - AHEAD - 1.0) w0 = Math.floor(pos)
+                    if (durSec > 0 && w0 >= durSec - 0.5) { status = "👁 النوافذ خلصت لحد آخر الفيديو"; Thread.sleep(1000); continue }
+                    if (w0 > pos + AHEAD) { Thread.sleep(500); continue }
+                    wEnd = if (durSec > 0) minOf(w0 + WIN_SEC, durSec) else w0 + WIN_SEC
+                    var t = w0
+                    while (t < wEnd - 0.01 && running) {
+                        val bmp = try { r!!.getFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
+                        if (bmp != null) { fr.add(Pair(t, toJpeg(bmp, 640, 68))); bmp.recycle() }
+                        t += step
+                    }
                 }
-                if (fr.size < 2) { w0 += WIN_SEC - OVERLAP; Thread.sleep(200); continue }
+                if (fr.size < 2) { advance(); Thread.sleep(200); continue }
                 status = "👁 يحلل ${"%.0f".format(w0)}–${"%.0f".format(wEnd)}ث (${fr.size} فريم)…"; say(status)
                 // نختار مفتاح مش في راحة؛ لو كلهم في راحة نستنى أقربهم
                 var key = ""
@@ -195,7 +222,7 @@ class VisualMode(
                     val parsed = parseTimed(res.text, w0, wEnd, step)
                     if (parsed == null) {
                         fails++; say("👁 الرد مش واضح — بحاول تاني")
-                        if (fails >= 3) { fails = 0; w0 += WIN_SEC - OVERLAP }
+                        if (fails >= 3) { fails = 0; advance() }
                         Thread.sleep(500); continue
                     }
                     fails = 0
@@ -204,7 +231,7 @@ class VisualMode(
                     sent++
                     status = "👁 $sent نافذة | ${items.size} نص"
                     changed()
-                    w0 += WIN_SEC - OVERLAP
+                    advance()
                     Thread.sleep(restMs); restMs = maxOf(REST_MIN, restMs * 8 / 10)
                 } catch (e: ApiErr) {
                     if (e.code == 429) {
@@ -215,13 +242,36 @@ class VisualMode(
                         status = "⏸ 429 على …${key.takeLast(4)} — راحة ${ms / 1000}ث"; say(status); ki++
                     }
                     else if (e.code == 403) { ki++; if (ki > keys.size * 2) { say("المفاتيح كلها مرفوضة (${e.message?.take(80)})"); return } }
-                    else { say("👁 خطأ ${e.code}: " + (e.message ?: "").take(110)); ki++; fails++; if (fails >= 3) { fails = 0; w0 += WIN_SEC - OVERLAP }; Thread.sleep(1000) }
+                    else { say("👁 خطأ ${e.code}: " + (e.message ?: "").take(110)); ki++; fails++; if (fails >= 3) { fails = 0; advance() }; Thread.sleep(1000) }
                 } catch (e: java.io.IOException) {
                     say("👁 مشكلة اتصال — بحاول تاني"); Thread.sleep(1500)
+                } catch (e: InterruptedException) { throw e
+                } catch (e: Exception) {
+                    // (v182) أي خطأ تاني (JSON/ذاكرة…) مايوقفش الوضع: نسجّله ونكمّل
+                    say("👁 خطأ " + e.javaClass.simpleName + ": " + (e.message ?: "").take(80)); fails++; if (fails >= 3) { fails = 0; advance() }; Thread.sleep(1500)
                 }
             }
         } catch (_: InterruptedException) {
-        } finally { try { r.release() } catch (_: Exception) {} }
+        } finally { try { r?.release() } catch (_: Exception) {} }
+    }
+
+    /** (v182) تجميع فريمات نافذة من الشاشة أثناء التشغيل: فريم كل step ثانية من وقت الفيديو الفعلي. true = النافذة جاهزة، false = وقف/فشل اللقط */
+    private fun collectLive(step: Double, buf: ArrayList<Pair<Double, ByteArray>>): Boolean {
+        while (running) {
+            val pos = position()
+            val lastT = buf.lastOrNull()?.first
+            // قفز/رجوع: الفريمات القديمة مالهاش لازمة
+            if (lastT != null && (pos < lastT - 0.5 || pos > lastT + step * 3 + 1.0)) buf.clear()
+            if (buf.size >= 2 && buf.last().first - buf.first().first >= WIN_SEC - step) return true
+            val lt = buf.lastOrNull()?.first
+            if (lt == null || pos >= lt + step - 0.05) {
+                val bmp = try { grab?.invoke() } catch (_: Throwable) { null }
+                if (bmp != null) { grabFails = 0; buf.add(Pair(pos, toJpeg(bmp, 640, 68))); bmp.recycle() }
+                else if (++grabFails >= 8) { status = "⚠ مش قادر ألقط فريمات من الشاشة (الفيديو محمي أو السطح مش جاهز)"; say(status); return false }
+            }
+            Thread.sleep(150)
+        }
+        return false
     }
 
     /** (v181) بيضيف نتايج نافذة: نفس النص (أو فيه الآخر) والفترتين متلامستين = نفس الظهور فنمدّد المدة بدل ما نكرره */

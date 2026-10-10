@@ -87,6 +87,53 @@ object Speech {
         return out
     }
 
+    // ===== (v183) مواءمة توقيت جمل المقطع كله مع الصوت الفعلي =====
+    // الموديل ساعات بيزحلق توقيت الجمل (كلها بإزاحة ثابتة أو بتمدّد/انكماش على طول المقطع) فالجملة الظاهرة بتبقى سابقة أو متأخرة عن المتكلم بجملتين أو تلاتة.
+    // بنقارن «بصمة» الكلام/السكتات اللي في توقيت الجمل بالبصمة الحقيقية من الصوت (نافذة 0.25ث)، وندوّر على أحسن إزاحة (±8ث) ومقياس (0.90..1.10)؛
+    // ومابنطبّقش إلا لو التطابق اتحسّن بفرق واضح — يعني المقطع السليم مابيتلمسش.
+    class Align(val subs: List<Sub>, val shift: Double, val scale: Double, val before: Double, val after: Double)
+    private const val AR = 0.25
+    private val SCALES = doubleArrayOf(0.90, 0.92, 0.94, 0.96, 0.98, 1.0, 1.02, 1.04, 1.06, 1.08, 1.10)
+
+    private fun raster(iv: List<DoubleArray>, w0: Double, n: Int): ByteArray {
+        val m = ByteArray(n)
+        for (x in iv) {
+            val i0 = Math.max(0, Math.floor((x[0] - w0) / AR).toInt()); val i1 = Math.min(n, Math.ceil((x[1] - w0) / AR).toInt())
+            var k = i0
+            while (k < i1) { m[k] = 1; k++ }
+        }
+        return m
+    }
+    private fun corr(a: ByteArray, s: ByteArray): Double {
+        val n = a.size
+        var sa = 0; var ss = 0; var sas = 0
+        for (k in 0 until n) { val x = a[k].toInt(); val y = s[k].toInt(); sa += x; ss += y; sas += x * y }
+        val va = sa - sa.toDouble() * sa / n; val vs = ss - ss.toDouble() * ss / n
+        if (va < 1e-9 || vs < 1e-9) return -1.0
+        return (sas - sa.toDouble() * ss / n) / Math.sqrt(va * vs)
+    }
+    fun align(subs: List<Sub>, spansAbs: List<DoubleArray>, w0: Double, w1: Double): Align? {
+        val sp = subs.filter { !it.isSound }
+        if (sp.size < 6 || w1 - w0 < 20.0 || spansAbs.isEmpty()) return null
+        val n = Math.ceil((w1 - w0) / AR).toInt(); if (n < 40) return null
+        val a = raster(spansAbs, w0, n)
+        val base = sp.map { doubleArrayOf(it.start, it.end) }
+        val c0 = corr(a, raster(base, w0, n))
+        var bc = c0; var bd = 0.0; var bs = 1.0
+        for (sc in SCALES) for (k in -32..32) {
+            val d = k * 0.25
+            val c = corr(a, raster(base.map { doubleArrayOf(w0 + sc * (it[0] - w0) + d, w0 + sc * (it[1] - w0) + d) }, w0, n))
+            if (c > bc + 1e-9) { bc = c; bd = d; bs = sc }
+        }
+        if (bc - c0 < 0.12 || bc < 0.35) return null
+        if (Math.abs(bd) < 0.5 && Math.abs(bs - 1.0) < 0.02) return null
+        val out = subs.map {
+            val s2 = Math.max(w0, w0 + bs * (it.start - w0) + bd); val e2 = Math.min(w1, w0 + bs * (it.end - w0) + bd)
+            if (e2 - s2 >= 0.2) it.copy(start = s2, end = e2) else it
+        }
+        return Align(out, bd, bs, c0, bc)
+    }
+
     /** يضبط بداية/نهاية الجملة على الصوت الفعلي. null = الجملة فوق صمت تام (تتشال). */
     fun fit(s: Sub, spansAbs: List<DoubleArray>): Sub? {
         val ov = spansAbs.filter { it.size == 2 && it[1] > s.start && it[0] < s.end }
