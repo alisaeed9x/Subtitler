@@ -37,6 +37,8 @@ class VisualMode(
         const val WIN_SEC = 10.0        // (v181) طول نافذة الفريمات المبعوتة لجيميناي
         const val OVERLAP = 2.0         // (v181) التداخل بين نافذة والتانية
         /** (v181) كثافة الفريمات: 1 أو 2 أو 3 في الثانية (جيميناي بيحلل الفيديو بفريم تقريبًا في الثانية فأكتر من 3 مالوش لازمة) */
+        /** (v181) تشغيل تلقائي مع فتح أي فيديو (لو فيه مفتاح للوضع البصري) — الافتراضي شغّال */
+        fun auto(): Boolean = try { Cfg.bool("vis_auto", true) } catch (_: Throwable) { true }
         fun fps(): Int = try { Cfg.int("vis_fps", 1).coerceIn(1, 3) } catch (_: Throwable) { 1 }
         const val WAIT_429 = 30_000L
         const val REST_MIN = 4_000L     // (v181) أقل راحة بين نافذة والتانية
@@ -176,7 +178,7 @@ class VisualMode(
                     t += step
                 }
                 if (fr.size < 2) { w0 += WIN_SEC - OVERLAP; Thread.sleep(200); continue }
-                status = "👁 يحلل ${"%.0f".format(w0)}–${"%.0f".format(wEnd)}ث (${fr.size} فريم)…"
+                status = "👁 يحلل ${"%.0f".format(w0)}–${"%.0f".format(wEnd)}ث (${fr.size} فريم)…"; say(status)
                 // نختار مفتاح مش في راحة؛ لو كلهم في راحة نستنى أقربهم
                 var key = ""
                 while (running) {
@@ -198,6 +200,7 @@ class VisualMode(
                     }
                     fails = 0
                     addTimed(parsed)
+                    say("👁 نافذة ${"%.0f".format(w0)}–${"%.0f".format(wEnd)}ث: ${parsed.size} نص")
                     sent++
                     status = "👁 $sent نافذة | ${items.size} نص"
                     changed()

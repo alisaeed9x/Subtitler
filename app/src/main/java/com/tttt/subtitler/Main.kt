@@ -420,6 +420,8 @@ class MainActivity : Activity() {
         val visFpsChips = ui.chips(listOf(vf1, vf2, vf3), { when (VisualMode.fps()) { 1 -> vf1; 3 -> vf3; else -> vf2 } }) {
             Cfg.put("vis_fps", when (it) { vf1 -> "1"; vf3 -> "3"; else -> "2" })
         }
+        val vaOn = "⚡ تلقائي مع كل فيديو"; val vaOff = "✋ يدوي (من زرار 👁)"
+        val visAutoChips = ui.chips(listOf(vaOn, vaOff), { if (VisualMode.auto()) vaOn else vaOff }) { Cfg.put("vis_auto", if (it == vaOn) "1" else "0") }
         val neuralStatus = ui.text(NeuralEngine.status(this), 12f, th.muted)
         val actNeural = this
         fun neuralTick() { neuralStatus.text = NeuralEngine.status(actNeural); if (neuralStatus.isAttachedToWindow) neuralStatus.postDelayed({ neuralTick() }, 1500L) }
@@ -449,7 +451,7 @@ class MainActivity : Activity() {
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
-                ui.section("👁 محرك الوضع البصري", false, visFpsChips,
+                ui.section("👁 محرك الوضع البصري", false, visAutoChips, visFpsChips,
                     ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» في تبويب المفاتيح): بيبعت نوافذ فريمات 10 ثواني (كل فريم معاه وقته، والنوافذ بتتداخل ثانيتين)، وجيميناي بيرجّع لكل نص مكانه ووقت ظهوره ووقت اختفائه، فالترجمة بتظهر من الظهور للاختفاء بالظبط. لو النص بيتحرك بيستنى لحد ما يثبت. كثافة الفريمات فوق (الافتراضي فريم واحد في الثانية = 10 صور في كل نافذة، و3 فريم/ث = 30 صورة). بين كل نافذة والتانية فيه راحة تلقائية (4ث وبتزيد لحد 20ث لو جيميناي رفض بخطأ 429)، وكل مفتاح بياخد راحة لوحده. بيتطبق من أول تشغيل جديد للوضع البصري.", 12f, th.muted)),
                 ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
                     ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted)),

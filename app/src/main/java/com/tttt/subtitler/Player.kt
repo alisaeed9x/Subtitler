@@ -969,7 +969,7 @@ class PlayerActivity : Activity(), Host {
         // (v100) اللوج العايم اتلغى: حالة الباتشات بقت جوه صفحة اللوجز (logCol)
         videoBox.addView(leftCol, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(26), 0, 0) })
         // 👁 بصري: دايرة عايمة فوق دايرة ✦
-        floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualSnap() }.apply {
+        floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualToggle() }.apply {
             textSize = 24f; alpha = REST_A; setOnLongClickListener { visualDialog(); true }
         }
         videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.END or Gravity.TOP).apply { setMargins(0, ui.dp(120), ui.dp(8), 0) })   // (v95) المكان بيتحسب في placeFloatFn
@@ -2044,8 +2044,20 @@ class PlayerActivity : Activity(), Host {
             listOf(clean(t), clean(folder)).filter { it.isNotBlank() }.distinct().joinToString(" | ")
         }
         Live.engine = engine
-        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m -> if (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم")) runOnUiThread { Notice.show(this, (m).toString(), 2300L) } }, { })
+        visual = VisualMode(conf, { player.currentPosition / 1000.0 }, { makeRetriever() }, { m ->
+            val important = (m.startsWith("ضيف مفتاح") || m.contains("مش مدعوم") || m.startsWith("المفاتيح")) && !(visAutoRun && !m.startsWith("المفاتيح"))
+            val now = System.currentTimeMillis()
+            if (important || ((m.startsWith("👁") || m.startsWith("⏸") || m.startsWith("😴") || m.startsWith("⚠")) && now - visSayAt > 2500)) {
+                if (!important) visSayAt = now
+                runOnUiThread { Notice.show(this, m, 2300L) }
+            }
+        }, { })
         fx?.start(vid)
+        // (v181) الوضع البصري تلقائي: بيشتغل لوحده مع فتح الفيديو لو فيه مفتاح للوضع البصري (ضغطة 👁 بتقفله/تشغّله، ومن الإعدادات تقدر تقفل التلقائي)
+        if (VisualMode.auto() && conf.visKeys.any { it.length > 10 } && !incognito) {
+            visAutoRun = true
+            h.postDelayed({ if (!isFinishing && !isDestroyed && !visual.running) { visual.mode = "scene"; visual.clear(); visual.start() } }, 2500)
+        }
         status = "⏳ بحمّل بيانات الفيديو…"
         val vidNow = vid
         Thread {
@@ -2820,13 +2832,25 @@ class PlayerActivity : Activity(), Host {
         } catch (_: Exception) { fallback() }
     }
     private var visBusy = false
+    private var visSayAt = 0L
+    private var visAutoRun = false
+    /** (v181) ضغطة واحدة على 👁 = تشغيل/إيقاف الوضع البصري المتواصل (كان لازم ضغطة مطوّلة ← تشغيل). اللقطة الواحدة من القايمة (ضغطة مطوّلة). */
+    fun visualToggle() {
+        if (visual.running) {
+            visual.stop(); visOv.showBoxes(emptyList()); visAutoRun = false
+            Notice.show(this, "👁 الوضع البصري اتقفل", 2000L)
+        } else {
+            visAutoRun = false; visual.mode = "scene"; visual.clear(); visual.start()
+            Notice.show(this, "👁 الوضع البصري شغّال — بيحلل نوافذ الفيديو قدّام التشغيل، أول نتيجة بتاخد كام ثانية", 3200L)
+        }
+    }
     private var visTok = 0
 
     fun visualDialog() {
         val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
         box.addView(ui.text("👁 الوضع البصري", 17f, th.primary, true))
-        box.addView(ui.text("☁ Gemini: بياخد نوافذ فريمات (10 ثواني) قدّام مكان التشغيل ويعرف وقت ظهور واختفاء كل نص، وبيعرض الترجمة في مكانها من الظهور للاختفاء.\nمحتاج فيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
+        box.addView(ui.text("☁ Gemini: بياخد نوافذ فريمات (10 ثواني) قدّام مكان التشغيل ويعرف وقت ظهور واختفاء كل نص، وبيعرض الترجمة في مكانها من الظهور للاختفاء.\nبيشتغل تلقائي مع فتح الفيديو (لو فيه مفتاح للوضع البصري). ضغطة واحدة على 👁 = إيقاف/تشغيل، وضغطة مطوّلة = القايمة دي.\nمحتاج فيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
         visual.mode = "scene"
         val st = ui.text(if (visual.running) "الحالة: شغّال — " + visual.status else "الحالة: واقف", 13f, th.text)
         box.addView(st)
@@ -2836,6 +2860,7 @@ class PlayerActivity : Activity(), Host {
             }
             d.dismiss()
         })
+        box.addView(ui.button("📸 لقطة واحدة دلوقتي") { d.dismiss(); visualSnap() })
         box.addView(ui.button("🗑 مسح النتائج") { visual.clear(); visOv.showBoxes(emptyList()); d.dismiss() })
         d.setContentView(android.widget.ScrollView(this).apply { addView(box) })
         d.window?.apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT) }
