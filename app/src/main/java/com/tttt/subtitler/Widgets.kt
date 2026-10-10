@@ -59,6 +59,8 @@ object WidgetHub {
         if (tIds.isNotEmpty()) renderTasks(c, mgr, tIds)
         val lIds = mgr.getAppWidgetIds(ComponentName(c, LiveWidget::class.java))
         if (lIds.isNotEmpty()) renderLive(c, mgr, lIds)
+        val sIds = mgr.getAppWidgetIds(ComponentName(c, SongWidget::class.java))
+        if (sIds.isNotEmpty()) renderSong(c, mgr, sIds)
     }
 
     // ===== المهام =====
@@ -149,6 +151,22 @@ object WidgetHub {
         mgr.updateAppWidget(ids, rv)
     }
 
+    // ===== (v197) التعرف على الأغنية =====
+    private fun renderSong(c: Context, mgr: AppWidgetManager, ids: IntArray) {
+        val on = SongCatchService.running
+        val rv = RemoteViews(c.packageName, rid(c, "layout", "widget_song"))
+        val iRoot = rid(c, "id", "w_s_root")
+        rv.setTextViewText(rid(c, "id", "w_s_title"), if (on) "🎧 بسمع الأغاني…" else "🎧 تعرّف على الأغنية")
+        rv.setTextViewText(rid(c, "id", "w_s_sub"), if (on) "دوس لإيقافه" else "دوس عشان أسمع وأجيبلك لينك")
+        rv.setInt(iRoot, "setBackgroundResource", rid(c, "drawable", if (on) "widget_bg_on" else "widget_bg"))
+        val pi = if (on)
+            PendingIntent.getService(c, 13, Intent(c, SongCatchService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        else
+            PendingIntent.getActivity(c, 14, Intent(c, SongRequestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        rv.setOnClickPendingIntent(iRoot, pi)
+        mgr.updateAppWidget(ids, rv)
+    }
+
     // ===== الترجمة الحية =====
     private fun renderLive(c: Context, mgr: AppWidgetManager, ids: IntArray) {
         val on = LiveCaptionService.running
@@ -184,5 +202,10 @@ class TasksWidget : AppWidgetProvider() {
 
 /** ويدجت الترجمة الحية */
 class LiveWidget : AppWidgetProvider() {
+    override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) { WidgetHub.updateNow(context) }
+}
+
+/** (v197) ويدجت التعرف على الأغنية */
+class SongWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) { WidgetHub.updateNow(context) }
 }

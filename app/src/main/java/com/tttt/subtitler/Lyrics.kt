@@ -227,7 +227,7 @@ object LyricsEngine {
         }
         val tot = (t.durMs / 1000.0).coerceAtLeast(30.0)
         val step = (tot * 0.85) / lines.size; val off = tot * 0.07
-        val res = LyricsResult(name, by, lines.mapIndexed { i, x -> LyricLine(off + i * step, off + (i + 1) * step, x) }, true, 1, 1, emptySet(), "التوقيت تقريبي (الكلمات كاملة من جيميناي بالاسم) — دوس على سطر للقفز")
+        val res = LyricsResult(name, by, lines.mapIndexed { i, x -> LyricLine(off + i * step, off + (i + 1) * step, x) }, true, 1, 1, emptySet(), "")
         save(app, t, M_FULL, res)
         onDone(res, "")
     }

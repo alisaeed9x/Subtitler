@@ -36,6 +36,16 @@
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_live_info"/>
         </receiver>
+        <activity android:name=".SongRequestActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <service android:name=".SongCatchService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
+        <service android:name=".SongNotifListener" android:exported="true" android:label="مترجم الفيديو — قراءة اسم الأغنية"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
+        </service>
+        <receiver android:name=".SongWidget" android:exported="true" android:label="🎧 تعرّف على الأغنية">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_song_info"/>
+        </receiver>
         <receiver android:name=".TasksWidget" android:exported="true" android:label="📋 مهام الخلفية">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_tasks_info"/>

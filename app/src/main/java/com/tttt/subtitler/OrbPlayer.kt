@@ -35,6 +35,8 @@ class OrbView(ctx: Context) : View(ctx) {
     private var downR = 0f
     var progress = 0f
         set(v) { if (!dragSeek) { field = v.coerceIn(0f, 1f); invalidate() } }
+    private var dragProg = 0f          // (v196) مكان الإصبع على القوس وقت السحب — progress نفسه بيتجاهل التحديث من بره وقت السحب
+    private fun shownProg() = if (dragSeek) dragProg else progress
 
     private var artPrev: Bitmap? = null; private var artCur: Bitmap? = null; private var artNext: Bitmap? = null
     private var pPrev: Bitmap? = null; private var pCur: Bitmap? = null; private var pNext: Bitmap? = null
@@ -124,7 +126,8 @@ class OrbView(ctx: Context) : View(ctx) {
         if (b != null && b.width > 0) {
             val sh = shaderFor(b)
             val sc = (r * 2f) / minOf(b.width, b.height)
-            mx.reset(); mx.postTranslate(-b.width / 2f, -b.height / 2f); mx.postScale(sc, sc); mx.postTranslate(x, y)
+            val fp = FaceFocus.focus(b)      // (v196) مركز القص = وش المغني (مش نص الصورة)
+            mx.reset(); mx.postTranslate(-fp.x, -fp.y); mx.postScale(sc, sc); mx.postTranslate(x, y)
             sh.setLocalMatrix(mx); p.shader = sh
             c.drawCircle(x, y, r, p)
         } else {
@@ -186,7 +189,7 @@ class OrbView(ctx: Context) : View(ctx) {
         val box = arcBox; box.set(cx - rt, cy - rt, cx + rt, cy + rt)
         p.reset(); p.isAntiAlias = true; p.style = Paint.Style.STROKE; p.strokeWidth = 1.4f * d; p.color = 0x40FFFFFF; p.strokeCap = Paint.Cap.ROUND
         c.drawArc(box, startAng, total(), false, p)
-        val sweep = total() * progress
+        val sweep = total() * shownProg()
         if (sweep > 0.3f) {
             p.strokeWidth = 8f * d; p.color = (accent and 0x00FFFFFF) or 0x22000000; c.drawArc(box, startAng, sweep, false, p)    // هالة
             p.strokeWidth = 3.2f * d; p.color = accent; c.drawArc(box, startAng, sweep, false, p)
@@ -200,7 +203,7 @@ class OrbView(ctx: Context) : View(ctx) {
         // الوقت في الفتحة
         p.reset(); p.isAntiAlias = true; p.color = Color.WHITE; p.textSize = 15f * d; p.textAlign = Paint.Align.CENTER
         p.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-        val label = if (dragSeek) seekLabel(progress).ifEmpty { timeText } else timeText
+        val label = if (dragSeek) seekLabel(dragProg).ifEmpty { timeText } else timeText
         c.drawText(label, cx, cy + rt - (p.ascent() + p.descent()) / 2f, p)
     }
 
@@ -228,12 +231,12 @@ class OrbView(ctx: Context) : View(ctx) {
                 val r = Math.hypot((e.x - cx).toDouble(), (e.y - cy).toDouble()).toFloat()
                 downR = r
                 parent?.requestDisallowInterceptTouchEvent(true)
-                if (Math.abs(r - rt) <= 30 * d && r <= ro) { dragSeek = true; lastP = progress; progress = angleToProgress(e.x, e.y); lastP = progress; invalidate() }
+                if (Math.abs(r - rt) <= 30 * d && r <= ro) { dragSeek = true; lastP = progress; dragProg = angleToProgress(e.x, e.y); lastP = dragProg; invalidate() }
                 else { dragPan = true; anim?.cancel(); animating = false; vt?.recycle(); vt = VelocityTracker.obtain(); vt?.addMovement(e) }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (dragSeek) { progress = angleToProgress(e.x, e.y); lastP = progress; invalidate(); return true }
+                if (dragSeek) { dragProg = angleToProgress(e.x, e.y); lastP = dragProg; invalidate(); return true }
                 if (dragPan) {
                     vt?.addMovement(e)
                     val dx = e.x - downX
@@ -243,7 +246,7 @@ class OrbView(ctx: Context) : View(ctx) {
                 }
             }
             MotionEvent.ACTION_UP -> {
-                if (dragSeek) { dragSeek = false; onSeek(progress); invalidate(); return true }
+                if (dragSeek) { dragSeek = false; progress = dragProg; onSeek(dragProg); invalidate(); return true }
                 if (dragPan) {
                     dragPan = false
                     vt?.addMovement(e); vt?.computeCurrentVelocity(1000)
@@ -376,5 +379,46 @@ object ArtColor {
             hsv[1] = (hsv[1] * 1.15f).coerceIn(0.25f, 0.85f); hsv[2] = hsv[2].coerceIn(0.55f, 0.85f)
             Color.HSVToColor(hsv)
         } catch (_: Throwable) { null }
+    }
+}
+
+/**
+ * (v196) مركز القص للغلاف الدايري: لو فيه وش (android.media.FaceDetector) نقص حواليه، وإلا للصور الطويلة (بورتريه) نميل للجزء الفوقاني
+ * (غالبًا الوش هناك) بدل نص الصورة اللي بيطلّع الجسم من غير وش. بيتحسب مرة لكل صورة (شغّله من خيط خلفية بـ compute).
+ */
+object FaceFocus {
+    private val cache = java.util.WeakHashMap<Bitmap, PointF>()
+    /** المركز (بكسلات الصورة الأصلية) متظبّط عشان مربع القص يفضل جوه الصورة */
+    fun focus(b: Bitmap): PointF {
+        val raw = synchronized(cache) { cache[b] }
+        val w = b.width.toFloat(); val h = b.height.toFloat(); val half = minOf(w, h) / 2f
+        val fx = (raw?.x ?: w / 2f).coerceIn(half, w - half)
+        val fy = (raw?.y ?: h / 2f).coerceIn(half, h - half)
+        return PointF(fx, fy)
+    }
+    fun compute(b: Bitmap) {
+        if (b.width <= 0 || b.height <= 0) return
+        synchronized(cache) { if (cache.containsKey(b)) return }
+        var pt: PointF? = null
+        try {
+            val sc = 320f / maxOf(b.width, b.height).toFloat()
+            var sw = maxOf(64, (b.width * sc).toInt()); val sh = maxOf(64, (b.height * sc).toInt())
+            if (sw % 2 != 0) sw++                                    // FaceDetector بيطلب عرض زوجي
+            val small = Bitmap.createScaledBitmap(b, sw, sh, true).copy(Bitmap.Config.RGB_565, false)
+            val faces = arrayOfNulls<android.media.FaceDetector.Face>(4)
+            val n = android.media.FaceDetector(small.width, small.height, 4).findFaces(small, faces)
+            var best = 0f; val mid = PointF()
+            for (i in 0 until n) {
+                val f = faces[i] ?: continue
+                if (f.confidence() < 0.4f) continue
+                val sz = f.eyesDistance()
+                if (sz > best) { best = sz; f.getMidPoint(mid) }
+            }
+            if (best > 0f) pt = PointF(mid.x / small.width * b.width, mid.y / small.height * b.height)
+            if (small !== b) small.recycle()
+        } catch (_: Throwable) {}
+        // مفيش وش اتلقى: الصور الطويلة الوش عادةً في تلثها الفوقاني
+        if (pt == null && b.height > b.width * 1.15f) pt = PointF(b.width / 2f, b.height * 0.30f)
+        synchronized(cache) { cache[b] = pt ?: PointF(b.width / 2f, b.height / 2f) }
     }
 }

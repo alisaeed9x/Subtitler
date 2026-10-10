@@ -126,4 +126,59 @@ object SongId {
         if (r == null) { onDone(null, "ما اتعرفتش — جرّب مقطع تاني من وسط الأغنية"); return }
         onDone(SongMatch(r.optString("title"), r.optString("artist"), r.optString("album")), "")
     }
+
+    // ===== (v197) التعرف من مقطع WAV جاهز (صوت الجهاز الملتقط من تطبيق تاني) =====
+    fun autoClip(wav: ByteArray, avoid: List<String>, onDone: (SongMatch?, String) -> Unit) {
+        if (token().isEmpty() || avoid.isNotEmpty()) { geminiClip(wav, avoid, onDone); return }
+        recognizeClip(wav) { m, msg -> if (m != null) onDone(m, "") else geminiClip(wav, avoid) { m2, msg2 -> onDone(m2, if (m2 == null) msg2.ifBlank { msg } else "") } }
+    }
+
+    fun recognizeClip(wav: ByteArray, onDone: (SongMatch?, String) -> Unit) {
+        val tk = token()
+        if (tk.isEmpty()) { onDone(null, "محتاج توكن AudD"); return }
+        Thread {
+            try {
+                val pk = AudioEnc.pack(wav)
+                val ext = if (pk.mime.contains("wav")) "wav" else "m4a"
+                val body = multipart(tk, pk.bytes, "clip.$ext", pk.mime)
+                val c = URL(ENDPOINT).openConnection() as HttpURLConnection
+                try {
+                    c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 45000
+                    c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$B")
+                    c.outputStream.use { it.write(body) }
+                    val code = c.responseCode
+                    val txt = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+                    parse(txt, code, onDone)
+                } finally { c.disconnect() }
+            } catch (e: Throwable) { LogStore.err("songid-clip", e); onDone(null, "فشل الاتصال: " + (e.message ?: "")) }
+        }.apply { isDaemon = true }.start()
+    }
+
+    fun geminiClip(wav: ByteArray, avoid: List<String>, onDone: (SongMatch?, String) -> Unit) {
+        Thread {
+            try {
+                val keys = Cfg.allMainKeys()
+                if (keys.isEmpty()) { onDone(null, "مفيش توكن AudD ولا مفتاح Gemini"); return@Thread }
+                val model = Cfg.str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT }
+                val pr = buildString {
+                    append("This audio was captured from a phone's playback (another app is playing it). Identify the song. Use the voice, melody, sung words, language and your knowledge. ")
+                    append("Ignore speech/ads/sound effects that are not part of a song. ")
+                    if (avoid.isNotEmpty()) append("These answers were already reported WRONG, do not repeat them: " + avoid.joinToString("; ") + ". ")
+                    append("If you are not reasonably sure, return empty strings — never invent a song. ")
+                    append("Return JSON only: {\"title\":\"\",\"artist\":\"\",\"album\":\"\"}")
+                }
+                var res: JSONObject? = null; var err = ""
+                for (k in 0 until keys.size.coerceAtMost(3)) {
+                    try {
+                        val r = Api.generate(model, keys[k % keys.size], pr, wav, 1024, 0.2, true)
+                        res = JSONObject(r.text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()); break
+                    } catch (e: Throwable) { err = e.message ?: "" }
+                }
+                if (res == null) { onDone(null, "جيميناي ما ردّش: $err"); return@Thread }
+                val title = res.optString("title").trim(); val artist = res.optString("artist").trim()
+                if (title.isEmpty()) onDone(null, "مش متأكد من الأغنية دي (هجرّب بمقطع تاني)")
+                else onDone(SongMatch(title, artist, res.optString("album").trim()), "")
+            } catch (e: Throwable) { LogStore.err("songid-geminiclip", e); onDone(null, "فشل: " + (e.message ?: "")) }
+        }.apply { isDaemon = true }.start()
+    }
 }
