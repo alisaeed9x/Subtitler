@@ -1,0 +1,153 @@
+package com.tttt.subtitler
+
+/**
+ * قياس الصوت الحقيقي ومقارنته بالجمل اللي الموديل رجّعها.
+ * الموديل بيقدّر التوقيت وبيفوّت أجزاء، فهنا بنراجع عليه من الصوت نفسه:
+ *  - ثغرات: كلام/غنا مسموع من غير ولا جملة فوقه
+ *  - جملة أطول من اللازم بكتير (بتفضل ظاهرة والمغني سكت)
+ *  - جملة فوق صمت تام
+ * كله بيشتغل على WAV 16-bit mono، وأي بيانات مش WAV بترجع null/من غير تغيير.
+ */
+object Speech {
+    const val WIN_SEC = 0.25
+    const val THRESH = 0.012
+    /** (v177) أرضية الضوضاء (مستوى أصلي) وأقصى نسبة من مستوى كلام المقطع بيتحسب بيها الحد */
+    const val FLOOR = 0.003
+    const val REL = 0.15
+    /** (v177) أبعد مسافة (ثواني) بين جملة وأقرب صوت فعلي تتشال بعدها. كانت 1ث وتوقيت الموديل بيغلط أكتر من كده كتير */
+    const val DROP_FAR_SEC = 3.0
+    private const val JOIN_SEC = 0.5
+
+    private fun isWav(b: ByteArray) = b.size > 46 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte()
+    private fun rateOf(b: ByteArray) = (b[24].toInt() and 255) or ((b[25].toInt() and 255) shl 8) or ((b[26].toInt() and 255) shl 16) or ((b[27].toInt() and 255) shl 24)
+
+    /** مجالات الصوت العالي (ثواني نسبية لبداية الـ WAV). null لو مش WAV صالح. */
+    fun activeSpans(wav: ByteArray, gain: Double = 1.0): List<DoubleArray>? {
+        try {
+            if (!isWav(wav)) return null
+            val rate = rateOf(wav); if (rate <= 0) return null
+            val n = (wav.size - 44) / 2
+            val win = maxOf(1, (WIN_SEC * rate).toInt())
+            // (v143) الصوت بيتضخّم لحد 6x قبل الإرسال؛ لازم الحد يتقاس على المستوى الأصلي وإلا ضوضاء الغرفة تتحسب كلام
+            val g = maxOf(1.0, gain)
+            // (v177) أول مرور: مستوى كل نافذة. بعدين الحد بيتظبط على مستوى كلام المقطع نفسه: لو الصوت واطي أصلًا (اتضخّم)
+            // الحد الثابت 0.012 كان بيعتبر الكلام الواطي «صمت» فالجمل بتتشال. دلوقتي الحد = أقل من (الثابت، 15% من مستوى الكلام)
+            // ومش بينزل عن أرضية 0.003 بتاعة الضوضاء.
+            val nwin = (n + win - 1) / win
+            val lv = DoubleArray(nwin)
+            run {
+                var i0 = 0; var w0 = 0
+                while (i0 < n) {
+                    val e0 = minOf(n, i0 + win)
+                    var sq0 = 0.0
+                    for (k in i0 until e0) {
+                        val p0 = 44 + k * 2
+                        val v0 = ((wav[p0 + 1].toInt() shl 8) or (wav[p0].toInt() and 0xFF)).toShort().toInt() / 32768.0
+                        sq0 += v0 * v0
+                    }
+                    lv[w0] = Math.sqrt(sq0 / (e0 - i0))
+                    i0 = e0; w0++
+                }
+            }
+            val p90 = if (nwin > 0) lv.sortedArray()[(nwin * 0.90).toInt().coerceIn(0, nwin - 1)] else 0.0
+            val thr = maxOf(FLOOR * g, minOf(THRESH * g, REL * p90))
+            val out = ArrayList<DoubleArray>()
+            var curS = -1.0; var lastEnd = -1.0
+            for (w in 0 until nwin) {
+                val i = w * win; val e = minOf(n, i + win)
+                val t0 = i.toDouble() / rate; val t1 = e.toDouble() / rate
+                if (lv[w] > thr) {
+                    if (curS < 0) curS = t0 else if (t0 - lastEnd > JOIN_SEC) { out.add(doubleArrayOf(curS, lastEnd)); curS = t0 }
+                    lastEnd = t1
+                }
+            }
+            if (curS >= 0) out.add(doubleArrayOf(curS, lastEnd))
+            return out
+        } catch (_: Exception) { return null }
+    }
+
+    /** نفس المجالات بس بالثواني المطلقة (من أول الفيديو) */
+    fun absolute(spans: List<DoubleArray>, wavStart: Double): List<DoubleArray> = spans.map { doubleArrayOf(it[0] + wavStart, it[1] + wavStart) }
+
+    /** الأجزاء اللي فيها صوت (داخل from..to) ومفيش ولا جملة فوقها، وطولها >= minSec */
+    fun holes(spansAbs: List<DoubleArray>, subs: List<Sub>, from: Double, to: Double, minSec: Double): List<DoubleArray> {
+        val cov = subs.filter { !it.isSound && it.end > from - 1.0 && it.start < to + 1.0 }.sortedBy { it.start }   // وصف الصوت [موسيقى] مايغطيش كلام تحته
+        val out = ArrayList<DoubleArray>()
+        for (sp in spansAbs) {
+            var cur = maxOf(sp[0], from); val end = minOf(sp[1], to)
+            if (end - cur < minSec) continue
+            for (s in cov) {
+                if (s.end + 0.3 <= cur) continue
+                if (s.start - 0.3 >= end) break
+                if (s.start - 0.3 - cur >= minSec) out.add(doubleArrayOf(cur, s.start - 0.3))
+                if (s.end + 0.3 > cur) cur = s.end + 0.3
+            }
+            if (end - cur >= minSec) out.add(doubleArrayOf(cur, end))
+        }
+        return out
+    }
+
+    // ===== (v183) مواءمة توقيت جمل المقطع كله مع الصوت الفعلي =====
+    // الموديل ساعات بيزحلق توقيت الجمل (كلها بإزاحة ثابتة أو بتمدّد/انكماش على طول المقطع) فالجملة الظاهرة بتبقى سابقة أو متأخرة عن المتكلم بجملتين أو تلاتة.
+    // بنقارن «بصمة» الكلام/السكتات اللي في توقيت الجمل بالبصمة الحقيقية من الصوت (نافذة 0.25ث)، وندوّر على أحسن إزاحة (±8ث) ومقياس (0.90..1.10)؛
+    // ومابنطبّقش إلا لو التطابق اتحسّن بفرق واضح — يعني المقطع السليم مابيتلمسش.
+    class Align(val subs: List<Sub>, val shift: Double, val scale: Double, val before: Double, val after: Double)
+    private const val AR = 0.25
+    private val SCALES = doubleArrayOf(0.90, 0.92, 0.94, 0.96, 0.98, 1.0, 1.02, 1.04, 1.06, 1.08, 1.10)
+
+    private fun raster(iv: List<DoubleArray>, w0: Double, n: Int): ByteArray {
+        val m = ByteArray(n)
+        for (x in iv) {
+            val i0 = Math.max(0, Math.floor((x[0] - w0) / AR).toInt()); val i1 = Math.min(n, Math.ceil((x[1] - w0) / AR).toInt())
+            var k = i0
+            while (k < i1) { m[k] = 1; k++ }
+        }
+        return m
+    }
+    private fun corr(a: ByteArray, s: ByteArray): Double {
+        val n = a.size
+        var sa = 0; var ss = 0; var sas = 0
+        for (k in 0 until n) { val x = a[k].toInt(); val y = s[k].toInt(); sa += x; ss += y; sas += x * y }
+        val va = sa - sa.toDouble() * sa / n; val vs = ss - ss.toDouble() * ss / n
+        if (va < 1e-9 || vs < 1e-9) return -1.0
+        return (sas - sa.toDouble() * ss / n) / Math.sqrt(va * vs)
+    }
+    fun align(subs: List<Sub>, spansAbs: List<DoubleArray>, w0: Double, w1: Double): Align? {
+        val sp = subs.filter { !it.isSound }
+        if (sp.size < 6 || w1 - w0 < 20.0 || spansAbs.isEmpty()) return null
+        val n = Math.ceil((w1 - w0) / AR).toInt(); if (n < 40) return null
+        val a = raster(spansAbs, w0, n)
+        val base = sp.map { doubleArrayOf(it.start, it.end) }
+        val c0 = corr(a, raster(base, w0, n))
+        var bc = c0; var bd = 0.0; var bs = 1.0
+        for (sc in SCALES) for (k in -32..32) {
+            val d = k * 0.25
+            val c = corr(a, raster(base.map { doubleArrayOf(w0 + sc * (it[0] - w0) + d, w0 + sc * (it[1] - w0) + d) }, w0, n))
+            if (c > bc + 1e-9) { bc = c; bd = d; bs = sc }
+        }
+        if (bc - c0 < 0.12 || bc < 0.35) return null
+        if (Math.abs(bd) < 0.5 && Math.abs(bs - 1.0) < 0.02) return null
+        val out = subs.map {
+            val s2 = Math.max(w0, w0 + bs * (it.start - w0) + bd); val e2 = Math.min(w1, w0 + bs * (it.end - w0) + bd)
+            if (e2 - s2 >= 0.2) it.copy(start = s2, end = e2) else it
+        }
+        return Align(out, bd, bs, c0, bc)
+    }
+
+    /** يضبط بداية/نهاية الجملة على الصوت الفعلي. null = الجملة فوق صمت تام (تتشال). */
+    fun fit(s: Sub, spansAbs: List<DoubleArray>): Sub? {
+        val ov = spansAbs.filter { it.size == 2 && it[1] > s.start && it[0] < s.end }
+        val dur = s.end - s.start
+        if (ov.isEmpty()) {
+            // (v177) قبل كده: أي جملة ≥1.5ث مفيهاش صوت فوقها بالظبط كانت بتتشال حتى لو الصوت على بعد نص ثانية (الموديل بيغلط في التوقيت ثواني).
+            // دلوقتي بتتشال بس لو أقرب صوت فعلي أبعد من DROP_FAR_SEC (يعني فعلًا فوق صمت).
+            val near = spansAbs.filter { it.size == 2 }.minOfOrNull { if (it[0] >= s.end) it[0] - s.end else s.start - it[1] } ?: Double.MAX_VALUE
+            return if (near > DROP_FAR_SEC) null else s
+        }
+        var a = s.start; var b = s.end
+        val fs = ov.first()[0] - 0.15; val le = ov.last()[1] + 0.35
+        if (fs - a >= 1.0) a = fs
+        if (b - le >= 1.0) b = le
+        return if (b - a >= 0.8) s.copy(start = a, end = b) else s
+    }
+}

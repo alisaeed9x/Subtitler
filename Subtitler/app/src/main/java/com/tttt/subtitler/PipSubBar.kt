@@ -1,0 +1,123 @@
+package com.tttt.subtitler
+
+import android.content.Context
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.TextView
+
+/** شريط الترجمة وقت PiP: نافذة overlay بتتحط **تحت** نافذة الـ PiP بنفس عرضها (ولو مفيش مكان تحت بتتحط فوقها)،
+ *  وبتتابع مكان النافذة وحجمها (لما تسحبها أو تكبّرها/تصغّرها) كل ربع ثانية. */
+class PipSubBar(private val ctx: Context, private val rect: () -> IntArray?, private val actions: List<Pair<String, () -> Unit>> = emptyList()) {
+    private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val d = ctx.resources.displayMetrics.density
+    private val h = Handler(Looper.getMainLooper())
+    private var tv: TextView? = null
+    private var lp: WindowManager.LayoutParams? = null
+    private var added = false
+    private var text = ""
+    private var bar: android.widget.LinearLayout? = null
+    private var barLp: WindowManager.LayoutParams? = null
+    private val tick = object : Runnable { override fun run() { reposition(); repositionBar(); if (added) h.postDelayed(this, 250) } }
+
+    @Suppress("DEPRECATION")
+    fun show() {
+        if (added) return
+        val t = IconTextView(ctx).apply {
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD
+            layoutDirection = View.LAYOUT_DIRECTION_RTL; maxLines = 3
+            setPadding((8 * d).toInt(), (5 * d).toInt(), (8 * d).toInt(), (5 * d).toInt())
+            background = GradientDrawable().apply { setColor(0xCC000000.toInt()); cornerRadius = 10 * d }
+            setShadowLayer(4f, 0f, 1f, Color.BLACK); visibility = View.GONE
+        }
+        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+        val p = WindowManager.LayoutParams(ctx.resources.displayMetrics.widthPixels / 2, WindowManager.LayoutParams.WRAP_CONTENT, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = 0; y = 0 }
+        try { wm.addView(t, p); tv = t; lp = p; added = true; h.post(tick) } catch (_: Exception) { added = false }
+        if (added && actions.isNotEmpty()) addBar(type)
+    }
+
+    /** (v149) أزرار فوق نافذة الـ PiP (قابلة للمس): ترجم في الخلفية / إيقاف نهائي */
+    private fun addBar(type: Int) {
+        val row = android.widget.LinearLayout(ctx).apply { orientation = android.widget.LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER }
+        actions.forEachIndexed { i, a ->
+            val b = IconTextView(ctx).apply {
+                text = a.first; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; maxLines = 1
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setPadding((5 * d).toInt(), (7 * d).toInt(), (5 * d).toInt(), (7 * d).toInt())
+                background = GradientDrawable().apply { setColor(if (i == 0) 0xF03F6FD1.toInt() else if (i == actions.size - 1) 0xF0C0432F.toInt() else 0xF0546E7A.toInt()); cornerRadius = 14 * d }
+                setOnClickListener { try { a.second() } catch (_: Throwable) {} }
+            }
+            row.addView(b, android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins((2 * d).toInt(), 0, (2 * d).toInt(), 0) })
+        }
+        val p = WindowManager.LayoutParams((ctx.resources.displayMetrics.widthPixels * 0.6f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = 0; y = 0 }
+        try { wm.addView(row, p); bar = row; barLp = p } catch (_: Exception) { bar = null; barLp = null }
+    }
+
+    private fun repositionBar() {
+        val b = bar ?: return; val p = barLp ?: return
+        val sw = ctx.resources.displayMetrics.widthPixels
+        val r = rect()
+        val bh = if (b.height > 0) b.height else (38 * d).toInt()
+        val x: Int; val w: Int; var y: Int
+        if (r == null || r[2] <= 0) { x = (sw * 0.03f).toInt(); w = (sw * 0.94f).toInt(); y = (24 * d).toInt() }
+        else {
+            x = r[0].coerceAtLeast(0); w = r[2].coerceAtMost(sw - x).coerceAtLeast((200 * d).toInt()).coerceAtMost(sw)
+            // تحت النافذة (وتحت شريط الترجمة لو ظاهر تحتها)؛ لو مفيش مكان تحت يتحط فوقها
+            val sh = ctx.resources.displayMetrics.heightPixels
+            val t = tv?.takeIf { it.visibility == View.VISIBLE }
+            val subH = if (t != null) (if (t.height > 0) t.height else (44 * d).toInt()) + (4 * d).toInt() else 0
+            val subAbove = t != null && (lp?.let { it.y < r[1] } ?: false)
+            y = r[1] + r[3] + (4 * d).toInt() + (if (subAbove) 0 else subH)
+            if (y + bh > sh - (8 * d).toInt()) y = (r[1] - bh - (4 * d).toInt() - (if (subAbove) subH else 0)).coerceAtLeast(0)
+        }
+        if (p.x != x || p.y != y || p.width != w) { p.x = x; p.y = y; p.width = w; try { wm.updateViewLayout(b, p) } catch (_: Exception) {} }
+    }
+
+    fun set(s: String) {
+        text = s
+        val t = tv ?: return
+        if (s.isBlank()) { t.visibility = View.GONE; return }
+        t.text = s; t.visibility = View.VISIBLE
+        reposition()
+    }
+
+    private fun reposition() {
+        val t = tv ?: return; val p = lp ?: return
+        if (!added || t.visibility != View.VISIBLE) return
+        val sw = ctx.resources.displayMetrics.widthPixels; val sh = ctx.resources.displayMetrics.heightPixels
+        val r = rect()
+        val x: Int; val w: Int; var y: Int
+        if (r == null || r[2] <= 0) { x = (sw * 0.03f).toInt(); w = (sw * 0.94f).toInt(); y = (60 * d).toInt() }
+        else {
+            x = r[0].coerceAtLeast(0); w = r[2].coerceAtMost(sw - x).coerceAtLeast((120 * d).toInt()); y = r[1] + r[3] + (4 * d).toInt()
+            // الخط بيكبر ويصغر مع عرض نافذة الـ PiP
+            t.setTextSize(TypedValue.COMPLEX_UNIT_SP, (w / d / 20f).coerceIn(10f, 22f))
+        }
+        if (r == null) t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        val bh = if (t.height > 0) t.height else (60 * d).toInt()
+        // مفيش مكان تحت النافذة؟ حطّه فوقها
+        if (r != null && y + bh > sh - (8 * d).toInt()) y = (r[1] - bh - (4 * d).toInt()).coerceAtLeast(0)
+        if (p.x != x || p.y != y || p.width != w) { p.x = x; p.y = y; p.width = w; try { wm.updateViewLayout(t, p) } catch (_: Exception) {} }
+    }
+
+    fun hide() {
+        h.removeCallbacksAndMessages(null)
+        bar?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        bar = null; barLp = null
+        val t = tv ?: return
+        try { wm.removeView(t) } catch (_: Exception) {}
+        tv = null; lp = null; added = false
+    }
+}
