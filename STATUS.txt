@@ -436,3 +436,5 @@ v120 — زرار «🎞 الجودة» جنب زرار الترجمة لأي م
 - ماتجرّبش compile ولا تشغيل على جهاز.
 
 (v181-VIS-FPS1) الافتراضي رجع فريم واحد في الثانية (vis_fps=1 = 10 صور/نافذة)؛ 2 و3 لسه متاحين من الإعدادات. الراحة عشان 429 زي ما هي. ماتجرّبش compile.
+
+(v181-OVERLAY-FIX) النسخ بـ cp فوق المشروع مابيمسحش الملفات المحذوفة (فبنا v181 #89 فشل بسبب OfflineVis.kt القديم). الحل: OfflineVis.kt بقى ملف فاضي (package بس) وassets/voice_embed.onnx بقى ملف 0 بايت عشان يغطّوا القديمين. للتنضيف النهائي: git rm app/src/main/java/com/tttt/subtitler/OfflineVis.kt app/src/main/assets/voice_embed.onnx
