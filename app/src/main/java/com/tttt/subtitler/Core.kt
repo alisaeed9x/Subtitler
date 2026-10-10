@@ -537,6 +537,39 @@ object Api {
         } finally { c.disconnect() }
     }
 
+    /**
+     * (v185) طلب generateContent بمقطع فيديو mp4 (10 ثواني) inline — الوضع البصري بيبعت مقاطع بدل الفريمات.
+     * extras=true: بيضيف video_metadata.fps (كثافة الفريمات اللي جيميناي بياخدها من المقطع) + mediaResolution عالية؛ لو الموديل رفضهم (400) المتصل بيعيد من غير extras.
+     */
+    fun generateClip(model: String, key: String, prompt: String, mp4: ByteArray, fps: Int, extras: Boolean, maxTokens: Int = 16000, temp: Double = 0.0): Result {
+        Quota.hit(model); Stats.req(model, key)
+        val head = StringBuilder("{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"video/mp4\",\"data\":\"")
+        val tail = StringBuilder("\"}")
+        if (extras) tail.append(",\"video_metadata\":{\"fps\":").append(fps.coerceIn(1, 10)).append("}")
+        tail.append("},{\"text\":").append(JSONObject.quote(prompt)).append("}]}],")
+        tail.append("\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp,\"responseMimeType\":\"application/json\"")
+        if (extras) tail.append(",\"mediaResolution\":\"MEDIA_RESOLUTION_HIGH\"")
+        tail.append("},\"safetySettings\":[$SAFETY]}")
+        val hb = head.toString().toByteArray(Charsets.UTF_8)
+        val b64 = java.util.Base64.getEncoder().encode(mp4)
+        val tb = tail.toString().toByteArray(Charsets.UTF_8)
+        val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 180000
+            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-goog-api-key", key)
+            c.setFixedLengthStreamingMode(hb.size.toLong() + b64.size + tb.size)
+            c.outputStream.use { it.write(hb); it.write(b64); it.write(tb) }
+            val code = c.responseCode
+            val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (code >= 300) throw ApiErr(code, try { JSONObject(txt).getJSONObject("error").getString("message") } catch (_: Exception) { "HTTP $code" })
+            val cand = JSONObject(txt).optJSONArray("candidates")?.optJSONObject(0) ?: return Result("", "")
+            val parts = cand.optJSONObject("content")?.optJSONArray("parts")
+            val out = StringBuilder()
+            if (parts != null) for (i in 0 until parts.length()) out.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
+            return Result(out.toString(), cand.optString("finishReason", ""))
+        } finally { c.disconnect() }
+    }
+
     class ModelRow(val id: String, val display: String)
 
     /** كل الموديلات اللي المفتاح ده يقدر يستخدمها في generateContent (بيعدّي على كل الصفحات) */

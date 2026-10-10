@@ -428,6 +428,8 @@ class MainActivity : Activity() {
         val visFpsChips = ui.chips(listOf(vf1, vf2, vf3), { when (VisualMode.fps()) { 1 -> vf1; 3 -> vf3; else -> vf2 } }) {
             Cfg.put("vis_fps", when (it) { vf1 -> "1"; vf3 -> "3"; else -> "2" })
         }
+        val vsClip = "🎬 مقاطع فيديو (10ث)"; val vsFrames = "🖼 فريمات"
+        val visSrcChips = ui.chips(listOf(vsClip, vsFrames), { if (VisualMode.useClip()) vsClip else vsFrames }) { Cfg.put("vis_src", if (it == vsFrames) "frames" else "clip") }
         val vaOn = "⚡ تلقائي مع كل فيديو"; val vaOff = "✋ يدوي (من زرار 👁)"
         val visAutoChips = ui.chips(listOf(vaOn, vaOff), { if (VisualMode.auto()) vaOn else vaOff }) { Cfg.put("vis_auto", if (it == vaOn) "1" else "0") }
         val neuralStatus = ui.text(NeuralEngine.status(this), 12f, th.muted)
@@ -445,25 +447,30 @@ class MainActivity : Activity() {
             NeuralEngine.delete(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
         }
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
-            TabDef("fonts", "🔤 الخطوط", sp.fonts, true, "نوع الخط ونمطه وحجم الترجمة"),
-            TabDef("anim", "✨ الأنيميشن", sp.anim, true, "حركة ظهور الترجمة وسرعتها"),
-            TabDef("look", "🎬 العرض والألوان", sp.look, true, "وضع العرض · اللون · تقسيم الجمل · الخلفية"),
-            TabDef("general", "🌐 اللهجة والأسلوب", listOf<View>(
-                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it; save() }),
-                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it; save() })), false, "لهجة الترجمة وأسلوبها"),
-            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
-            TabDef("engine", "⚙ الترجمة والمحرك", listOf<View>(
-                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
-                ui.section("🏎 اختبار سرعة رد الـ AI", false,
+            // (v187) الإعدادات اتجمّعت حسب الموضوع: الترجمة · شكل الترجمة · البصري · الصوت · الشخصيات · المفاتيح · أخرى
+            TabDef("general", "🌐 الترجمة", listOf<View>(
+                                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it; save() }),
+                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it; save() }),
+                                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
+                                ui.section("🏎 اختبار سرعة رد الـ AI", false,
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
-                ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
-                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
-                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
-                ui.section("👁 محرك الوضع البصري", false, visAutoChips, visFpsChips,
-                    ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» في تبويب المفاتيح): بيبعت نوافذ فريمات 10 ثواني (كل فريم معاه وقته، والنوافذ بتتداخل ثانيتين)، وجيميناي بيرجّع لكل نص مكانه ووقت ظهوره ووقت اختفائه، فالترجمة بتظهر من الظهور للاختفاء بالظبط. لو النص بيتحرك بيستنى لحد ما يثبت. كثافة الفريمات فوق (الافتراضي فريم واحد في الثانية = 10 صور في كل نافذة، و3 فريم/ث = 30 صورة). بين كل نافذة والتانية فيه راحة تلقائية (4ث وبتزيد لحد 20ث لو جيميناي رفض بخطأ 429)، وكل مفتاح بياخد راحة لوحده. بيتطبق من أول تشغيل جديد للوضع البصري.", 12f, th.muted)),
-                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
-                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted)),
-                ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
+                                ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
+                                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
+                ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "اللهجة · الأسلوب · الموديل · السرعة · الأداء · التصحيح التلقائي · الحفظ"),
+            TabDef("look", "🎬 شكل الترجمة", listOf<View>(
+                ui.section("🔤 الخطوط", true, *sp.fonts.toTypedArray()),
+                ui.section("✨ الأنيميشن", false, *sp.anim.toTypedArray()),
+                ui.section("🎬 العرض والألوان", false, *sp.look.toTypedArray())), true, "الخطوط · الأنيميشن · وضع العرض · الألوان · الخلفية"),
+            TabDef("visual", "👁 الوضع البصري", listOf<View>(
+                                ui.section("👁 محرك الوضع البصري", false, visAutoChips, visSrcChips, visFpsChips,
+                    ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» تحت). «مقاطع فيديو» = بيبعت مقطع 10 ثواني وجيميناي بيحدد مكان كل نص ووقته وحركته (الأدق). «فريمات» = بيبعت صور متتالية (أخف على الأجهزة والمصادر اللي مابتتقصّش). الكثافة بتتحكم في عدد الفريمات في الثانية اللي جيميناي بياخدها. النتايج بتتحفظ مع الفيديو. بين كل نافذة والتانية راحة تلقائية لو جيميناي رفض (429). بيتطبق من أول تشغيل جديد.", 12f, th.muted)),
+                                ui.section("👁 مفتاح الوضع البصري فقط", false,
+                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "تلقائي/يدوي · مقاطع أو فريمات · الكثافة · مفتاح الوضع البصري"),
+            TabDef("audio", "🔊 الصوت والبصمة", listOf<View>(
+                                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
+                                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
+                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted))), false, "جودة الصوت · كشف الكلام · التوقيت · بصمة المتكلم"),
+            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
                 ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
                     showKeyGuide { k ->
@@ -475,26 +482,24 @@ class MainActivity : Activity() {
                     }
                 },
                 ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() },
-                ui.section("🔑 كل المفاتيح", true,
-                    ui.text("حط كل مفاتيحك هنا في قايمة واحدة — البرنامج بيوزّعها لوحده: مفاتيح للترجمة (أغلبها)، ومفتاح أو اتنين للتنقيح الجزئي أثناء الترجمة، ومفتاح احتياطي لو مفتاح اتعطّل (من 6 مفاتيح). التنقيح الجزئي بيبدأ من 3 مفاتيح.", 12f, th.muted), keysUi),
-                ui.section("👁 مفتاح الوضع البصري فقط", false,
-                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "مفاتيح Gemini (توزيع تلقائي) · مفتاح الصور"),
-            TabDef("bg", "🌙 الترجمة في الخلفية", listOf<View>(
-                ui.section("▶ التشغيل", true,
+                                ui.section("🔑 كل المفاتيح", true,
+                    ui.text("حط كل مفاتيحك هنا في قايمة واحدة — البرنامج بيوزّعها لوحده: مفاتيح للترجمة (أغلبها)، ومفتاح أو اتنين للتنقيح الجزئي أثناء الترجمة، ومفتاح احتياطي لو مفتاح اتعطّل (من 6 مفاتيح). التنقيح الجزئي بيبدأ من 3 مفاتيح.", 12f, th.muted), keysUi)), false, "مفاتيح Gemini (توزيع تلقائي) · الاستهلاك والكوتة · طريقة جلب مفتاح"),
+            TabDef("more", "🛠 الخلفية · الأمان · المظهر", listOf<View>(
+                                ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
                     ui.text("الطابور بيتحفظ، وبيكمّل حتى لو قفلت البرنامج أو مسحته من الأخيرة. الفيديو اللي فوق في «مجلد الترجمة في الخلفية» بيترجم الأول.", 12f, th.muted),
                     ui.button("📋 افتح مجلد الترجمة في الخلفية") { settingsDlg0?.dialog?.dismiss(); qui0?.show() }),
-                ui.section("🔋 عشان الجهاز ما يقتلش الخدمة", true,
+                                ui.section("🔋 عشان الجهاز ما يقتلش الخدمة", true,
                     ui.text("أجهزة شاومي / أوبو / فيفو / سامسونج / هواوي بتقتل الخدمات الخلفية. اعمل الخطوتين دول مرة واحدة:", 12f, th.muted),
                     ui.button("1) استثناء من توفير البطارية") { requestBatteryExemption() },
                     ui.button("2) السماح بالتشغيل التلقائي / الخلفية للتطبيق") { openAutoStartSettings() },
-                    ui.text("وكمان: في قايمة التطبيقات الأخيرة اعمل «قفل 🔒» للتطبيق لو جهازك فيه الخيار ده.", 12f, th.muted))), false, "استمرار الترجمة بعد قفل البرنامج · التشغيل التلقائي · استثناء البطارية"),
-            TabDef("sec", "🔒 الأمان", listOf<View>(lockStatus,
+                    ui.text("وكمان: في قايمة التطبيقات الأخيرة اعمل «قفل 🔒» للتطبيق لو جهازك فيه الخيار ده.", 12f, th.muted)),
+                            ui.section("🔒 الأمان", false, lockStatus,
                 ui.text("القفل بيحمي المجلد المخفي. لفتحه: اسحب لتحت في قايمة الفيديوهات وكمّل السحب لحد 🔒 وسيب.", 12f, th.muted),
                 ui.button("🔑 تعيين / تغيير النمط") { lk.change { refreshLock() } }, bioBtn,
                 ui.button("🗑 إزالة القفل") { lk.remove { refreshLock() } },
-                ui.text("البصمة بتتحقق من بصمات جهازك المسجّلة في إعدادات الأندرويد (التطبيق مابيخزّنش بصمتك). لو نسيت النمط: «نسيت النمط؟» بيطلب قفل شاشة الجهاز.", 12f, th.muted)), false, "نمط وبصمة للمجلد المخفي"),
-            TabDef("theme", "🎨 المظهر", listOf<View>(themeChips), false, "ثيم البرنامج"),
+                ui.text("البصمة بتتحقق من بصمات جهازك المسجّلة في إعدادات الأندرويد (التطبيق مابيخزّنش بصمتك). لو نسيت النمط: «نسيت النمط؟» بيطلب قفل شاشة الجهاز.", 12f, th.muted)),
+                ui.section("🎨 المظهر", false, themeChips)), false, "الترجمة في الخلفية · استثناء البطارية · قفل المجلد · ثيم البرنامج"),
             TabDef("credits", "🙏 شكر وتقدير", listOf<View>(
                 ui.text("موديل بصمة الصوت (التعرف على المتكلم) المستخدم في التطبيق:", 13f, th.text, true),
                 ui.text("WeSpeaker · voxceleb_resnet34_LM (ResNet34 متدرّب على VoxCeleb) — من مشروع WeSpeaker مفتوح المصدر. الشكر لفريق WeSpeaker ولمنشور الموديل على Hugging Face. رخصة الموديل وشروطه حسب صفحته الأصلية.", 12f, th.muted),

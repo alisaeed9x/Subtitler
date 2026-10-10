@@ -931,7 +931,7 @@ class PlayerActivity : Activity(), Host {
         visOv.area = { if (sv.width > 0 && sv.height > 0) android.graphics.RectF(sv.left.toFloat(), sv.top.toFloat(), sv.right.toFloat(), sv.bottom.toFloat()) else android.graphics.RectF(0f, 0f, videoBox.width.toFloat(), videoBox.height.toFloat()) }
         fx = Fx(this, videoBox, sub, { visOv.area() }, { player.currentPosition / 1000.0 }, { durMs / 1000.0 }, { try { player.isPlaying } catch (_: Exception) { false } },
             { makeRetriever() }, { s -> runOnUiThread { try { player.seekTo((s * 1000).toLong().coerceAtLeast(0L)) } catch (_: Exception) {} } },
-            { m -> runOnUiThread { Notice.show(this, m, 2300L) } }, { t -> if (::visual.isInitialized) visual.boxesAt(t) else emptyList() })
+            { m -> runOnUiThread { Notice.show(this, m, 2300L) } }, { t -> if (::visual.isInitialized) visual.boxesAt(visNow, t) else emptyList() })
         videoBox.addView(sub, subLp)
         sub.backdrop = sv
         st = IconTextView(this).apply { setTextColor(th.primary); textSize = 11f; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)); setShadowLayer(4f, 0f, 0f, Color.BLACK) }
@@ -970,8 +970,9 @@ class PlayerActivity : Activity(), Host {
         // (v100) اللوج العايم اتلغى: حالة الباتشات بقت جوه صفحة اللوجز (logCol)
         videoBox.addView(leftCol, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(0, ui.dp(66), 0, 0) })   // (v182) نازل تحت عدّاد الوضع البصري
         // 👁 بصري: دايرة عايمة فوق دايرة ✦
-        floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualToggle() }.apply {
-            textSize = 24f; alpha = REST_A; setOnLongClickListener { visualDialog(); true }
+        // (v185) ضغطة واحدة = لقطة (بتتصوّر وتتترجم وتتحفظ مع الفيديو)؛ مفيش ضغطة مطوّلة، والتلقائي مابيتقفلش من الزرار ده (القايمة من عدّاد 👁 أقصى الشمال)
+        floatBar = ui.fsCircle("👁") { flashFloat(floatBar); visualSnap() }.apply {
+            textSize = 24f; alpha = REST_A
         }
         videoBox.addView(floatBar, FrameLayout.LayoutParams(ui.dp(44), ui.dp(44), Gravity.END or Gravity.TOP).apply { setMargins(0, ui.dp(120), ui.dp(8), 0) })   // (v95) المكان بيتحسب في placeFloatFn
         // (v95) زرار الروتيشن: شاشة بسهمين دايريين زي MX Player — فوق 👁 على طول؛ بيقلب بين الرأسي والأفقي
@@ -1262,6 +1263,7 @@ class PlayerActivity : Activity(), Host {
         }
         gTool.addView(pk("🗂 ترجمات الفيديو ›") { fillVer(); dismissPop(); togglePop(menuB, gVer, false) })
         gTool.addView(pd("🔄 إعادة ترجمة") { batchDialog() })
+        gTool.addView(pd("👁 الوضع البصري (قايمة / إعادة)") { visualDialog() })
         gTool.addView(pd("🌙 ترجمة بالخلفية") { translateInBackground() })
         gTool.addView(pd("📜 ذكّرني") { recapDialog() })
         gTool.addView(pd("🌍 ترجمة جوجل (من غير API)") { googleTranslateNow() })
@@ -2057,12 +2059,14 @@ class PlayerActivity : Activity(), Host {
                 if (!important) visSayAt = now
                 runOnUiThread { Notice.show(this, m, 2300L) }
             }
-        }, { }, { grabSurface() })
+        }, { }, { grabSurface() }, clipSrc = { makeExtractor() }, cacheDir = cacheDir)
+        // (v185) النتايج بتتحفظ مع الفيديو وبترجع لما تفتحه تاني (المتخفي: من غير حفظ)
+        if (!incognito) try { visual.bind(File(File(filesDir, "visual"), Store.keyFor(vid) + ".json")) } catch (_: Throwable) {}
         fx?.start(vid)
         // (v181) الوضع البصري تلقائي: بيشتغل لوحده مع فتح الفيديو لو فيه مفتاح للوضع البصري (ضغطة 👁 بتقفله/تشغّله، ومن الإعدادات تقدر تقفل التلقائي)
         if (VisualMode.auto() && conf.visKeys.any { it.length > 10 } && !incognito) {
             visAutoRun = true
-            h.postDelayed({ if (!isFinishing && !isDestroyed && !visual.running) { visLog("👁 تشغيل تلقائي مع فتح الفيديو"); visual.mode = "scene"; visual.clear(); visual.start() } }, 1200)
+            h.postDelayed({ if (!isFinishing && !isDestroyed && !visual.running) { visLog("👁 تشغيل تلقائي مع فتح الفيديو"); visual.mode = "scene"; visual.start() } }, 1200)
         }
         status = "⏳ بحمّل بيانات الفيديو…"
         val vidNow = vid
@@ -2813,6 +2817,16 @@ class PlayerActivity : Activity(), Host {
         } catch (_: Exception) { null }
     }
 
+    /** (v185) قاريء مقاطع لنفس مصدر الفيديو (لقص مقطع 10 ثواني للوضع البصري) — m3u8 مش مدعوم (بيرجّع null) */
+    fun makeExtractor(): android.media.MediaExtractor? {
+        val e = android.media.MediaExtractor()
+        return try {
+            val u = uri; val l = url
+            if (u != null) e.setDataSource(this, u, null) else if (l != null && !l.contains(".m3u8", true)) e.setDataSource(l, HashMap(hdr)) else { e.release(); return null }
+            e
+        } catch (_: Exception) { try { e.release() } catch (_: Exception) {}; null }
+    }
+
     fun visualSnap() {
         if (!::svRef.isInitialized || svRef.width <= 0 || svRef.height <= 0) { Notice.show(this, ("مفيش فيديو شغّال").toString(), 2300L); return }
         if (visBusy) { Notice.show(this, ("👁 لسه بترجم اللقطة اللي فاتت…").toString(), 2300L); return }
@@ -2850,7 +2864,7 @@ class PlayerActivity : Activity(), Host {
         if (!::svRef.isInitialized) return null
         val sw = svRef.width; val sh = svRef.height
         if (sw <= 0 || sh <= 0 || !svRef.holder.surface.isValid) return null
-        val sc = minOf(1f, 640f / maxOf(sw, sh))
+        val sc = minOf(1f, 960f / maxOf(sw, sh))
         val bmp = android.graphics.Bitmap.createBitmap((sw * sc).toInt().coerceAtLeast(2), (sh * sc).toInt().coerceAtLeast(2), android.graphics.Bitmap.Config.ARGB_8888)
         val latch = java.util.concurrent.CountDownLatch(1); val ok = java.util.concurrent.atomic.AtomicBoolean(false)
         try {
@@ -2868,7 +2882,7 @@ class PlayerActivity : Activity(), Host {
             visual.stop(); visOv.showBoxes(emptyList()); visAutoRun = false; visLog("👁 الوضع البصري اتقفل (ضغطة)")
             Notice.show(this, "👁 الوضع البصري اتقفل", 2000L)
         } else {
-            visAutoRun = false; visual.mode = "scene"; visual.clear(); visual.start(); visLog("👁 الوضع البصري اتشغّل (ضغطة)")
+            visAutoRun = false; visual.mode = "scene"; visual.start(); visLog("👁 الوضع البصري اتشغّل (ضغطة)")
             Notice.show(this, "👁 الوضع البصري شغّال — بيحلل نوافذ الفيديو قدّام التشغيل، أول نتيجة بتاخد كام ثانية", 3200L)
         }
     }
@@ -2878,15 +2892,25 @@ class PlayerActivity : Activity(), Host {
         val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
         box.addView(ui.text("👁 الوضع البصري", 17f, th.primary, true))
-        box.addView(ui.text("☁ Gemini: بياخد نوافذ فريمات (10 ثواني) قدّام مكان التشغيل ويعرف وقت ظهور واختفاء كل نص، وبيعرض الترجمة في مكانها من الظهور للاختفاء.\nبيشتغل تلقائي مع فتح الفيديو (لو فيه مفتاح للوضع البصري). ضغطة واحدة على 👁 = إيقاف/تشغيل، وضغطة مطوّلة = القايمة دي.\nm3u8 كمان شغّال: بيلقط الفريمات من الشاشة وقت التشغيل (النتيجة بتتأخر حوالي 10ث).", 12f, th.muted))
+        box.addView(ui.text("☁ Gemini: بيبعت مقاطع فيديو (10 ثواني) قدّام مكان التشغيل، وبيحدد مكان كل نص ووقت ظهوره واختفائه وحركته، والترجمة بتتعرض في مكانها وبتتحرك معاه. الترجمة الصوتية بتطلع فوق النص البصري لحد ما يختفي.\nبيشتغل تلقائي مع فتح الفيديو، والنتايج بتتحفظ مع الفيديو وترجع لما تفتحه تاني. ضغطة على 👁 = لقطة واحدة وتتحفظ.\nm3u8: بيلقط فريمات من الشاشة وقت التشغيل (النتيجة بتتأخر حوالي 10ث).", 12f, th.muted))
         visual.mode = "scene"
         val st = ui.text(if (visual.running) "الحالة: شغّال — " + visual.status else "الحالة: واقف", 13f, th.text)
         box.addView(st)
         box.addView(ui.button(if (visual.running) "⏹ إيقاف" else "▶ تشغيل", true) {
             if (visual.running) { visual.stop(); visLog("👁 الوضع البصري اتقفل (القايمة)") } else {
-                visLog("👁 الوضع البصري اتشغّل (القايمة)"); visual.clear(); visual.start()
+                visLog("👁 الوضع البصري اتشغّل (القايمة)"); visual.start()
             }
             d.dismiss()
+        })
+        // (v185) إعادة الوضع البصري: من الأول (يمسح كل النتايج المحفوظة) أو من مكان التشغيل وقدّام بس
+        box.addView(ui.button("🔁 إعادة الوضع البصري من الأول") {
+            visual.stop(); visual.clear(); visOv.showBoxes(emptyList()); visual.mode = "scene"; visual.start()
+            visLog("👁 إعادة الوضع البصري من الأول (القايمة)"); Notice.show(this, "👁 بيعيد تحليل الفيديو من الأول", 2300L); d.dismiss()
+        })
+        box.addView(ui.button("↪ إعادة من مكان التشغيل وقدّام") {
+            val t = cur / 1000.0
+            visual.stop(); visual.clearFrom(t); visOv.showBoxes(emptyList()); visual.mode = "scene"; visual.start()
+            visLog("👁 إعادة الوضع البصري من " + fmtMs(cur) + " (القايمة)"); Notice.show(this, "👁 بيعيد التحليل من مكان التشغيل", 2300L); d.dismiss()
         })
         box.addView(ui.button("📸 لقطة واحدة دلوقتي") { d.dismiss(); visualSnap() })
         box.addView(ui.button("🗑 مسح النتائج") { visual.clear(); visOv.showBoxes(emptyList()); d.dismiss() })

@@ -511,11 +511,38 @@ class Fx(
         placeSub(posSec, now)
     }
 
+    /** (v185) كام بكسل نرفع الترجمة الصوتية عشان ماتغطيش على نصوص الوضع البصري الظاهرة دلوقتي (0 = مفيش تعارض) */
+    private fun visLift(posSec: Double): Float {
+        val bs = boxesAt(posSec)
+        if (bs.isEmpty()) return 0f
+        val a = area()
+        if (a.height() < 20f) return 0f
+        val gap = dp(4).toFloat()
+        val bands = ArrayList<FloatArray>()
+        for (b in bs) {
+            val half = maxOf(b.h * a.height(), dp(14).toFloat()) / 2f + dp(5)
+            val cy = a.top + b.y * a.height()
+            bands.add(floatArrayOf(cy - half, cy + half))
+        }
+        var dy = 0f
+        for (n in 0 until 6) {
+            val top = sub.top + dy; val bot = sub.bottom + dy
+            var hit = Float.NaN
+            for (r in bands) if (r[1] > top && r[0] < bot && (hit.isNaN() || r[0] < hit)) hit = r[0]
+            if (hit.isNaN()) break
+            dy = hit - gap - sub.bottom
+        }
+        val minDy = -(sub.top - dp(56)).toFloat()
+        if (dy < minDy) dy = minDy
+        val q = dp(3).toFloat()
+        return Math.round(dy / q) * q
+    }
+
     /** بنحرّك الترجمة بـ translationY بس (من غير ما نلمس الـ layout بتاع المشغّل اللي بيغيّر الهوامش لوحده) */
     private fun placeSub(posSec: Double, now: Long) {
         if (sub.height <= 0 || box.height <= 0) return
         if (Extras.smartPos) {
-            val busy = boxesAt(posSec).any { it.y + it.h / 2f > 0.74f } || (face?.let { it.bottomBusy && !it.topBusy } ?: false)
+            val busy = (face?.let { it.bottomBusy && !it.topBusy } ?: false)   // (v185) نصوص الوضع البصري بقت بترفع الترجمة بس (visLift) مش بتنقلها فوق خالص
             if (busy != wantTop && now - lastSwitch > 2500L) { wantTop = busy; lastSwitch = now }
         } else wantTop = false
         var dy = 0f
@@ -527,6 +554,9 @@ class Fx(
                 val want = a.top + cr.b * a.height()
                 dy = (want - sub.bottom - dp(2)).coerceIn(-dp(40).toFloat(), maxOf(0f, (box.height - sub.bottom - dp(2)).toFloat()))
             }
+            // (v185) ترجمة الوضع البصري مربوطة بالصوتي: لو نص بصري واخد مكان الترجمة الصوتية، الصوتية تطلع فوقه لحد ما يختفي وبعدها ترجع تحت
+            val lift = visLift(posSec)
+            if (lift < dy) dy = lift
         }
         if (dy != lastDy) { lastDy = dy; sub.animate().translationY(dy).setDuration(160).start() }
     }
