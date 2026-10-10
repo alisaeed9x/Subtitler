@@ -65,7 +65,25 @@ class MainActivity : Activity() {
     private var curTab = 0                       // (v117) 0 = الفيديوهات · 1 = يوتيوب
     private var ytUi: YoutubeUi? = null
     private var navUi: BottomNav? = null
+    private var musicUi: MusicUi? = null            // (v189) صفحة الموسيقى
+    private var tasksUiRef: TasksUi? = null
     private var showTabFn: (Int) -> Unit = {}
+    private var tasksDlgRefresh: (() -> Unit)? = null
+    /** (v189) صفحة المهام في نافذة كاملة (من ⚙️ في المكتبة أو من الويدجت/الإشعار) */
+    private fun showTasksDialog() {
+        val tu = tasksUiRef ?: return
+        val th = Themes.byId(Cfg.str("theme", "mx")); val ui = Ui(this, th)
+        (tu.root.parent as? android.view.ViewGroup)?.removeView(tu.root)
+        val dlg = android.app.Dialog(this)
+        dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setBackgroundColor(th.bg) }
+        box.addView(ui.button("✕ إغلاق") { dlg.dismiss() }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(12), ui.dp(8), ui.dp(12), 0) })
+        box.addView(tu.root, LinearLayout.LayoutParams(-1, 0, 1f))
+        dlg.setContentView(box)
+        tasksDlgRefresh = { tu.refresh() }
+        dlg.setOnDismissListener { tasksDlgRefresh = null; (tu.root.parent as? android.view.ViewGroup)?.removeView(tu.root) }
+        tu.refresh(); dlg.show(); dlg.window?.setLayout(-1, -1)
+    }
     private var toolsUiM: ToolsUi? = null
     private var pendingTool = ""
     private var pendingSrc: ToolSrc? = null
@@ -441,7 +459,7 @@ class MainActivity : Activity() {
         })
         val neuralDl = ui.button("⬇ تحميل المحرك العصبي (26MB)") {
             NeuralEngine.manual(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
-            try { Notice.show(actNeural, "⬇ بيتحمّل — تابعه من تبويب «المهام»", 2600L) } catch (_: Throwable) {}
+            try { Notice.show(actNeural, "⬇ بيتحمّل — تابعه من ⚙️ ← ⏳ المهام", 2600L) } catch (_: Throwable) {}
         }
         val neuralDel = ui.button("🗑 حذف المحرك العصبي (يرجّع 26MB)") {
             NeuralEngine.delete(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
@@ -573,6 +591,12 @@ class MainActivity : Activity() {
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)); background = ui.box(th.card, th.border, 14); elevation = ui.dp(8).toFloat() }
             val pw = android.widget.PopupWindow(col, -2, -2, true)
             pw.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+            col.addView(IconTextView(this).apply {
+                val n = TaskCenter.active() + BgJobs.jobs.count { it.active }
+                text = if (n > 0) "⏳ المهام ($n)" else "⏳ المهام"; textSize = 14f; setTextColor(th.text); minHeight = ui.dp(42); gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6)); minimumWidth = ui.dp(190)
+                setOnClickListener { pw.dismiss(); showTasksDialog() }
+            })
             for (t in settingsDlg.tabs) col.addView(IconTextView(this).apply {
                 text = t.label; textSize = 14f; setTextColor(th.text); minHeight = ui.dp(42); gravity = Gravity.CENTER_VERTICAL or Gravity.START
                 setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6)); minimumWidth = ui.dp(190)
@@ -601,26 +625,23 @@ class MainActivity : Activity() {
         // (v124) الشريط السفلي: بوابتين — الفيديوهات (المكتبة) · المتصفح (تبويب يوتيوب اتشال)
         // (v135) بوابة تالتة: «المهام» (قص · صوت · GIF · ضغط · ترجمة ثابتة)
         toolsUiM = ToolsUi(this, ui, th)
-        val tasksUi = TasksUi(this, ui, th) { k -> pickTool(k) }; tasksUi.root.visibility = View.GONE
+        val tasksUi = TasksUi(this, ui, th) { k -> pickTool(k) }; tasksUiRef = tasksUi
+        val music = MusicUi(this, ui, th); musicUi = music; music.root.visibility = View.GONE
+        music.onGrant = { requestPermissions(arrayOf(MusicScan.permission()), 12) }
+        // (v189) البوابات: 0 الفيديوهات · 1 الموسيقى · 2 المتصفح (صفحة المهام بقت زرار ⏳ في المشغّل + قايمة ⚙️ في المكتبة)
         showTabFn = { i ->
-            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; tasksUi.root.visibility = View.GONE; navUi?.set(0) }
-            else if (i == 2) { curTab = 2; lib.root.visibility = View.GONE; tasksUi.root.visibility = View.VISIBLE; tasksUi.refresh(); navUi?.set(2) }
+            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; music.root.visibility = View.GONE; navUi?.set(0) }
+            else if (i == 1) { curTab = 1; lib.root.visibility = View.GONE; music.root.visibility = View.VISIBLE; music.ensureLoaded(); navUi?.set(1) }
+            else if (i == 3) showTasksDialog()
         }
-        val nav = BottomNav(this, ui, th, 0) { i -> if (i == 1) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
+        val nav = BottomNav(this, ui, th, 0) { i -> if (i == 2) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
         navUi = nav
         if (!fromPlayer) {
-            TaskCenter.listener = {
-                if (!isDestroyed && !isFinishing) {
-                    val n = TaskCenter.active() + BgJobs.jobs.count { it.active }
-                    nav.label(2, if (n > 0) "المهام ($n)" else "المهام")
-                    if (curTab == 2) tasksUi.refresh()
-                }
-            }
-            TaskCenter.listener?.invoke()
+            TaskCenter.listener = { if (!isDestroyed && !isFinishing) { tasksDlgRefresh?.invoke() } }
         }
         val pane = FrameLayout(this)
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
-        pane.addView(tasksUi.root, FrameLayout.LayoutParams(-1, -1))
+        pane.addView(music.root, FrameLayout.LayoutParams(-1, -1))
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
         shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))
@@ -865,6 +886,7 @@ class MainActivity : Activity() {
         if (Sniff.isDirect(u)) play(u, null) else startActivity(Intent(this, BrowserActivity::class.java).putExtra("start", u))
     }
     fun play(u: String, uri: Uri?, landscape: Boolean = uri != null, fresh: Boolean = false, noSub: Boolean = false, ask: Boolean = false) {
+        try { musicUi?.pause() } catch (_: Throwable) {}
         if (u.isBlank() && uri == null) return
         if (noSub) startPlayerNow(u, uri, landscape, fresh, true)   // فرجة من غير ترجمة: مش محتاج مفتاح
         else ensureKeys { startPlayerNow(u, uri, landscape, fresh, false, ask) }
@@ -894,6 +916,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(rc: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(rc, perms, res)
         if (rc == 13) { scanFn(); nextPerm(); return }
+        if (rc == 12) { if (res.isNotEmpty() && res[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) musicUi?.load() else Notice.show(this, "من غير إذن الصوتيات مش هقدر أعرض الموسيقى", 3200L); return }
         if (rc != 11) return
         if (res.isNotEmpty() && res[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) { scanFn(); return }
         Notice.show(this, ("من غير إذن الفيديوهات مش هقدر أعرض فولدرات الجهاز").toString(), 3600L)
@@ -973,11 +996,11 @@ class MainActivity : Activity() {
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
         if (!fromPlayer && curTab == 1) ytUi?.refresh()
     }
-    override fun onDestroy() { if (!fromPlayer) TaskCenter.listener = null; super.onDestroy() }
+    override fun onDestroy() { if (!fromPlayer) TaskCenter.listener = null; try { musicUi?.destroy() } catch (_: Throwable) {}; super.onDestroy() }
     /** (v117) الرجوع من المتصفح بشريط البوابات: بيفتح البوابة اللي اخترتها */
     override fun onNewIntent(i: Intent?) {
         super.onNewIntent(i)
-        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "yt" -> showTabFn(1); "tasks" -> showTabFn(2) }
+        when (i?.getStringExtra("tab")) { "videos" -> showTabFn(0); "music" -> showTabFn(1); "tasks" -> showTabFn(3) }
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {

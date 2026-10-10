@@ -89,6 +89,14 @@ class PlayerActivity : Activity(), Host {
     private var qualBRef: TextView? = null
     private val qualRowRefs = ArrayList<TextView>()          // (v120) زرار «🎞 الجودة» اللي جنب زرار الترجمة (في الشريط السفلي والواسع)
     private var qualPopFn: ((View) -> Unit)? = null
+    // (v188) زرار «⏳ المهام» جنب زرار الترجمة: عداد أحمر + قايمة الأدوات بتنزل لفوق
+    private var tasksPopFn: ((View) -> Unit)? = null
+    private val taskBadges = ArrayList<TextView>()
+    private fun taskCount(): Int = TaskCenter.active() + BgJobs.jobs.count { it.active }
+    private val taskListener: () -> Unit = {
+        val n = taskCount()
+        for (bd in taskBadges) { bd.text = if (n > 99) "99+" else n.toString(); bd.visibility = if (n > 0) View.VISIBLE else View.GONE }
+    }
     private fun setQualLabel(h: Int) {
         qualBRef?.text = if (h > 0) h.toString() else "HD"
         for (v in qualRowRefs) v.text = if (h > 0) "${h}p ▾" else if (vidW > 0 && vidH > 0) "${minOf(vidW, vidH)}p ▾" else "الجودة ▾"
@@ -441,7 +449,22 @@ class PlayerActivity : Activity(), Host {
             var rdRef: TextView? = null
             val rd = b("🔁 إعادة", 0xFF6A1B9A.toInt()) { h.removeCallbacks(closeR); h.postDelayed(closeR, 8000); rdRef?.let { redoDialog(it) } }
             rdRef = rd
-            row.addView(chipB, lp(-2)); row.addView(tg, lp(-2)); row.addView(rd, lp(-2)); row.addView(lgB, lp(-2))
+            fun taskBtn(): View {
+                val btn = b("⏳ المهام", 0xFF37474F.toInt()) { }
+                val fl = FrameLayout(this)
+                val badge = TextView(this).apply {
+                    textSize = 10f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    includeFontPadding = false; minWidth = ui.dp(18); setPadding(ui.dp(4), 0, ui.dp(4), 0)
+                    background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = ui.dp(9).toFloat(); setColor(0xFFE53935.toInt()); setStroke(ui.dp(1), Color.WHITE) }
+                    visibility = View.GONE
+                }
+                fl.addView(btn, FrameLayout.LayoutParams(-2, -1))
+                fl.addView(badge, FrameLayout.LayoutParams(-2, ui.dp(18), Gravity.TOP or Gravity.END))
+                btn.setOnClickListener { tasksPopFn?.invoke(fl) }
+                taskBadges.add(badge); if (!TaskCenter.extra.contains(taskListener)) TaskCenter.extra.add(taskListener); taskListener()
+                return fl
+            }
+            row.addView(chipB, lp(-2)); row.addView(taskBtn(), lp(-2)); row.addView(tg, lp(-2)); row.addView(rd, lp(-2)); row.addView(lgB, lp(-2))
             if (webVid) { row.addView(qBtn(), lp(-2)); row.addView(dlB, lp(-2)) }
             trUpdaters.add {
                 val paused = ::engine.isInitialized && engine.userPaused
@@ -1287,7 +1310,29 @@ class PlayerActivity : Activity(), Host {
         gTools.addView(pd("🎞 عمل GIF") { withSrc { toolsUi.gif(it) } })
         gTools.addView(pd("📦 ضغط / تغيير الدقة") { withSrc { toolsUi.compress(it) } })
         gTools.addView(pd("🎬 ترجمة ثابتة (هارد ساب)") { withSrc { toolsUi.hardsub(it) } })
-        gTools.addView(ui.text("النتيجة بتظهر في توبيب «المهام» في الشاشة الرئيسية", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(2)) })
+        gTools.addView(ui.text("النتيجة بتظهر في «📋 صفحة المهام» (زرار ⏳ جنب الترجمة)", 10f, 0xFF9AA0A6.toInt()).apply { setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(2)) })
+        // (v188) صفحة المهام (التقدم + الناتج) في نافذة فوق المشغّل — الأدوات جواها بتشتغل على الفيديو الشغّال
+        fun openTasksDialog() {
+            val tu = TasksUi(this, ui, th) { k ->
+                withSrc { ts ->
+                    when (k) { "trim" -> toolsUi.trim(ts); "audio" -> toolsUi.audio(ts); "gif" -> toolsUi.gif(ts); "compress" -> toolsUi.compress(ts); "hardsub" -> toolsUi.hardsub(ts); else -> {} }
+                }
+            }
+            val dlg = android.app.Dialog(this)
+            dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setBackgroundColor(th.bg) }
+            box.addView(ui.button("✕ إغلاق") { dlg.dismiss() }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(ui.dp(12), ui.dp(8), ui.dp(12), 0) })
+            box.addView(tu.root, LinearLayout.LayoutParams(-1, 0, 1f))
+            dlg.setContentView(box)
+            val l: () -> Unit = { tu.refresh() }
+            TaskCenter.extra.add(l)
+            dlg.setOnDismissListener { TaskCenter.extra.remove(l) }
+            dlg.show()
+            dlg.window?.setLayout(-1, -1)
+        }
+        val tasksPageB = pd("📋 صفحة المهام") { openTasksDialog() }
+        gTools.addView(tasksPageB, 1)
+        tasksPopFn = { v -> tasksPageB.text = "📋 صفحة المهام (" + taskCount() + ")"; togglePop(v, gTools, true) }
         val toolsB = IconGlyphButton(this, "toolbox").apply { background = ui.box(0xE0141418.toInt(), 0x1FFFFFFF, 12); setOnClickListener { togglePop(this, gTools, false) } }
         // (v151) خيارات متعددة الاختيار + زرار واحد «طبّق المحدد»: بيتنفّذوا ورا بعض (تنقيح ← لهجة+ ← عائلي/صريح ← ضمائر ← دمج مكرر)
         val aiBase = linkedMapOf("refine" to "✍ تنقيح بالسياق", "dial" to "🔥 لهجة +", "family" to "🧹 عائلي", "explicit" to "🔞 صريح", "pron" to "🔧 ضمائر", "dedup" to "🧠 دمج مكرر")
@@ -2964,6 +3009,7 @@ class PlayerActivity : Activity(), Host {
     }
     override fun onDestroy() {
         LogStore.add("🔚 onDestroy (isFinishing=$isFinishing)")
+        try { TaskCenter.extra.remove(taskListener) } catch (_: Throwable) {}
         h.removeCallbacksAndMessages(null)
         pipOv?.hide(); pipOv = null
         saveRecent()

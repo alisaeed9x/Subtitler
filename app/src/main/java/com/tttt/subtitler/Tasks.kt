@@ -84,6 +84,8 @@ class TaskCancelled : RuntimeException("اتلغت")
 object TaskCenter {
     val items = CopyOnWriteArrayList<TaskItem>()
     @Volatile var listener: (() -> Unit)? = null
+    /** (v188) مستمعين إضافيين (عداد زرار المهام في المشغّل + صفحة المهام المفتوحة جواه) من غير ما نلمس listener بتاع الشاشة الرئيسية */
+    val extra = CopyOnWriteArrayList<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
     private val q = LinkedBlockingQueue<TaskItem>()
     private val qd = LinkedBlockingQueue<TaskItem>()   // (v137) التحميلات في طابور لوحدها عشان ما تستناش الترميز
@@ -92,7 +94,7 @@ object TaskCenter {
     private var appCtx: Context? = null
     private var seq = 0
 
-    fun changed() { main.post { try { listener?.invoke() } catch (_: Throwable) {} }; WidgetHub.poke(appCtx) }
+    fun changed() { main.post { try { listener?.invoke() } catch (_: Throwable) {}; for (l in extra) { try { l() } catch (_: Throwable) {} } }; WidgetHub.poke(appCtx) }
     fun active(): Int = items.count { it.state == 0 || it.state == 1 }
 
     @Synchronized fun add(app: Context, kind: String, title: String, work: (TaskItem) -> Unit): TaskItem {
