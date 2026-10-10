@@ -1060,7 +1060,9 @@ class Engine(
         synchronized(lock) {
             tagged = Subs.dropOverlapZone(tagged, subs.filter { it.chunk != i }, rawStart)
             val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) && !Subs.inMyZone(it, tagged, i, rawEnd) }
-            subs = Subs.fillSpeakerNames(Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start })
+            subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
+            // (v181) تعبئة الأسماء من بصمة الصوت بتشتغل بس لو المحرك العصبي شغّال (البصمة الخفيفة بتغلط)؛ الباقي بيتحسب بس
+            subs = if (try { VoiceNet.useNet() } catch (_: Throwable) { false }) Subs.fillSpeakerNames(subs) else subs.also { Subs.refreshMain(it) }
         }
         // (v177) دفتر الفقد: لو جمل رجعت من Gemini واختفت بعد التنضيف (تكرار/تداخل) نسجّل العدد عشان أي رجوع للمشكلة يبان في اللوج
         try {

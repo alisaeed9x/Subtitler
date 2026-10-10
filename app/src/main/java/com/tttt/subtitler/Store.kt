@@ -91,6 +91,7 @@ class Store(private val dir: File, key: String) {
             j.optJSONObject("tpl")?.let { o -> for (k in o.keys()) tp[k] = o.optString(k) }
             val bnd = HashMap<Int, Double>()
             j.optJSONObject("bounds")?.let { o -> for (k in o.keys()) k.toIntOrNull()?.let { bnd[it] = o.optDouble(k) } }
+            try { Subs.refreshMain(subs) } catch (_: Throwable) {}
             Saved(j.optInt("chunkSec", 60), j.optString("srcLang"), j.optBoolean("detDone"), subs,
                 rangesOf(j.optJSONArray("done")), rangesOf(j.optJSONArray("failed")), chars, gloss, tp,
                 j.optDouble("pos", 0.0), j.optInt("charsTried", 0), bnd, rangesOf(j.optJSONArray("gapTried")), j.optString("voices"))

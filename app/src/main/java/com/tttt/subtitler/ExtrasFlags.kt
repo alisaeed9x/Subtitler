@@ -7,8 +7,12 @@ package com.tttt.subtitler
 object Extras {
     /** وضع الصم: أوصاف الأحداث الصوتية [باب بيتفتح] بتتطلب من الموديل وبتظهر فوق الفيديو */
     @Volatile var deaf = false
-    /** (v179) اسم المتكلم قبل الجملة: «هاوس: الكلام» */
-    @Volatile var spkNames = true
+    /** (v179) اسم المتكلم قبل الجملة: «هاوس: الكلام». (v181) مقفول افتراضيًا */
+    @Volatile var spkNames = false
+    /** (v181) الشخصيات الأساسية: اللي اسمها اتسمّى في 3 جمل أو أكتر. الفرعية بتتعرض من غير اسم */
+    @Volatile var mainNames: Set<String> = emptySet()
+    const val MAIN_MIN = 3
+    fun isMain(n: String): Boolean = n in mainNames
     /** فلتر المشاهد الحساسة: 0 مقفول · 1 زرار تخطي · 2 تخطي تلقائي */
     @Volatile var sceneMode = 0
     @Volatile var sceneViolence = true
@@ -22,7 +26,7 @@ object Extras {
     fun load() {
         try {
             deaf = Cfg.bool("fx_deaf", false)
-            spkNames = Cfg.bool("fx_spk", true)
+            spkNames = Cfg.bool("fx_spk2", false)   // (v181) مفتاح جديد: اللي كان مفعّل تلقائيًا قبل كده مايفضلش شغّال
             sceneMode = Cfg.int("fx_scene", 0).coerceIn(0, 2)
             sceneViolence = Cfg.bool("fx_s_viol", true)
             sceneIntimate = Cfg.bool("fx_s_int", true)

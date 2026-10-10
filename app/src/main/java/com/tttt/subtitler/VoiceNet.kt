@@ -13,8 +13,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * (v172) بصمة الصوت العصبية (اختيارية). لو ملف الموديل `voice_embed.onnx` موجود بيتحمّل ويشتغل؛ لو مش موجود التطبيق بيكمّل بالبصمة الخفيفة زي v171 بالظبط.
- * مكان الملف (بالترتيب): getExternalFilesDir(null) ← filesDir ← assets/ جوه المشروع.
+ * (v172) بصمة الصوت العصبية (اختيارية). (v181) الموديل بقى بيتنزّل بره الـ APK (NeuralEngine) في filesDir/neural؛ لو لسه ما اتحمّلش التطبيق بيكمّل بالبصمة الخفيفة.
  * الموديل المتوقع: WeSpeaker/ECAPA-style — مدخل [1, T, 80] log-mel fbank (Kaldi) بعد CMN، مخرج متجه [1, D].
  */
 object VoiceNet {
@@ -31,38 +30,77 @@ object VoiceNet {
     private var env: OrtEnvironment? = null
     private var sess: OrtSession? = null
     private var inName = ""
-    private var tried = false
+    private var retryAt = 0L
+    private var embErrLogged = 0
+    @Volatile var lastErr = ""
     private val lock = Any()
 
     fun init(c: Context) { ctx = c.applicationContext }
 
     fun available(): Boolean = synchronized(lock) { load() }
+    fun isReady(): Boolean = sess != null
+
+    /** (v181) بيقفل الجلسة ويصفّر المحاولات: بعد تحميل موديل جديد أو حذفه */
+    fun reset() = synchronized(lock) {
+        try { sess?.close() } catch (_: Throwable) {}
+        sess = null; env = null; retryAt = 0L; lastErr = ""
+    }
 
     /** وضع البصمة من الإعدادات: light (خفيفة فقط) · neural (عصبي فقط) · combo (الاتنين معًا — الافتراضي) */
     fun mode(): String = try { Cfg.str("voice_mode", "combo").let { if (it == "light" || it == "neural") it else "combo" } } catch (_: Throwable) { "combo" }
     /** نحسب البصمة العصبية بس لو الوضع مش «خفيف» والموديل متاح */
     fun useNet(): Boolean = mode() != "light" && available()
 
+    private fun reason(t: Throwable): String {
+        val m = (t.message ?: "").replace(Regex("\\s+"), " ").take(140)
+        return when (t) {
+            is UnsatisfiedLinkError -> "مكتبة onnxruntime مش متوافقة مع معالج الجهاز ($m)"
+            is OutOfMemoryError -> "الذاكرة مش كفاية لتحميل الموديل"
+            is java.io.IOException -> "مشكلة في قراءة ملف الموديل: $m"
+            else -> "${t.javaClass.simpleName}: $m"
+        }
+    }
+
+    /** (v181) اختبار ذاتي بعد التحميل: مدخل ثابت [1,200,80] لازم يطلع متجه أرقام سليمة ومش ثابتة */
+    private fun selfTest(e: OrtEnvironment, s: OrtSession, name: String): Int {
+        val rnd = java.util.Random(7)
+        val x = Array(200) { FloatArray(NMEL) { (rnd.nextGaussian() * 1.5).toFloat() } }
+        OnnxTensor.createTensor(e, arrayOf(x)).use { t ->
+            s.run(mapOf(name to t)).use { res ->
+                val o = res[0].value
+                val v = if (o is Array<*>) o[0] as FloatArray else o as FloatArray
+                if (v.size < 32) throw IllegalStateException("مخرج الموديل قصير (${v.size})")
+                if (v.any { it.isNaN() || it.isInfinite() }) throw IllegalStateException("مخرج الموديل فيه NaN")
+                if (v.all { it == v[0] }) throw IllegalStateException("مخرج الموديل ثابت")
+                return v.size
+            }
+        }
+    }
+
+    /** (v181) مفيش «يأس دايم»: لو فشل بيحاول تاني بعد 30 ثانية، وسبب الفشل بيتسجّل في اللوج ويظهر في الإعدادات */
     private fun load(): Boolean {
         if (sess != null) return true
-        if (tried) return false
-        tried = true
+        val now = System.currentTimeMillis()
+        if (now < retryAt) return false
         val c = ctx ?: return false
+        if (!NeuralEngine.installed(c)) { lastErr = ""; retryAt = now + 30_000L; return false }
+        var s: OrtSession? = null
         try {
-            val ext = c.getExternalFilesDir(null)?.let { java.io.File(it, "voice_embed.onnx") }
-            val loc = java.io.File(c.filesDir, "voice_embed.onnx")
-            val bytes = when {
-                ext != null && ext.exists() -> ext.readBytes()
-                loc.exists() -> loc.readBytes()
-                else -> c.assets.open("voice_embed.onnx").use { it.readBytes() }
-            }
+            val f = NeuralEngine.file(c)
             val e = OrtEnvironment.getEnvironment()
             val o = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
-            val s = e.createSession(bytes, o)
-            env = e; sess = s; inName = s.inputNames.first()
-            LogStore.add("🧠 موديل بصمة الصوت العصبي اتحمّل")
+            s = e.createSession(f.absolutePath, o)
+            val nm = s.inputNames.first()
+            val d = selfTest(e, s, nm)
+            env = e; sess = s; inName = nm; lastErr = ""
+            LogStore.add("🧠 موديل بصمة الصوت العصبي اتحمّل واتجرّب (متجه $d)")
             return true
-        } catch (t: Throwable) { return false }   // مفيش موديل/مكتبة: بصمة خفيفة بس
+        } catch (t: Throwable) {
+            try { s?.close() } catch (_: Throwable) {}
+            lastErr = reason(t); retryAt = now + 30_000L
+            LogStore.add("⚠ موديل بصمة الصوت فشل: $lastErr (هيحاول تاني بعد 30 ثانية)")
+            return false
+        }
     }
 
     fun norm(v: FloatArray): FloatArray {
@@ -95,7 +133,11 @@ object VoiceNet {
                         return norm(v)
                     }
                 }
-            } catch (t: Throwable) { return null }
+            } catch (t: Throwable) {
+                lastErr = reason(t)
+                if (embErrLogged++ < 3) LogStore.add("⚠ حساب البصمة العصبية فشل: $lastErr")
+                return null
+            }
         }
     }
 

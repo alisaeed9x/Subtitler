@@ -19,9 +19,7 @@ class VisFrame(val t: Double, val boxes: List<VisBox>, val dur: Double = VisualM
 
 /**
  * الوضع البصري: بياخد فريم كل ثانيتين قدّام مكان التشغيل، يبعته لـ Gemini، ويعرض النصوص المترجمة فوق الفيديو في مكانها.
- * (v175) وضع «على الجهاز»: ML Kit بيراقب الفيديو طول الوقت (فريم كل ثانية قدّام مكان التشغيل) وبيلقط أي نص ظاهر
- * ما عدا الجزء السفلي (هارد ساب)، وبيبعت النص لجيميناي (مفتاح الوضع البصري) يترجمه، والترجمة بتتعرض في مكان النص
- * من وقت ظهوره لحد وقت اختفائه (TextTracker) — مش مدة ثابتة.
+ * (v181) ML Kit اتشال بالكامل: الاعتماد الأساسي على Gemini (مفتاح الوضع البصري فقط).
  */
 class VisualMode(
     private val conf: Conf,
@@ -35,17 +33,33 @@ class VisualMode(
         /** (v154) true لو الوضع البصري شغّال دلوقتي — التنقيح الجزئي مابيستعملش مفاتيح الصور وقتها */
         fun anyActive(): Boolean = active.get() > 0
         const val STEP = 2.0            // ثانية بين كل فريم والتاني
-        const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
+        const val AHEAD = 30.0          // أقصى مسافة قدّام مكان التشغيل
+        const val WIN_SEC = 10.0        // (v181) طول نافذة الفريمات المبعوتة لجيميناي
+        const val OVERLAP = 2.0         // (v181) التداخل بين نافذة والتانية
+        /** (v181) كثافة الفريمات: 1 أو 2 أو 3 في الثانية (جيميناي بيحلل الفيديو بفريم تقريبًا في الثانية فأكتر من 3 مالوش لازمة) */
+        fun fps(): Int = try { Cfg.int("vis_fps", 1).coerceIn(1, 3) } catch (_: Throwable) { 1 }
         const val WAIT_429 = 30_000L
+        const val REST_MIN = 4_000L     // (v181) أقل راحة بين نافذة والتانية
+        const val REST_MAX = 20_000L
         const val SNAP_DUR = 6.0        // ثواني عرض نتيجة اللقطة
-        const val WATCH_STEP = 1.0      // (v175) ثانية بين كل لقطتين في وضع المراقبة على الجهاز
 
-        const val PROMPT_TEXTS = "أنت مترجم نصوص ظاهرة على شاشة فيديو (لافتات، عناوين، كتابات على ملابس وأغراض، نصوص شاشات).\n" +
-            "النصوص دي اتقرت من الفيديو بقارئ آلي (OCR) فممكن فيها غلطات قراءة بسيطة — صحّحها بالسياق.\n" +
-            "ترجم كل نص للعربية الفصحى المبسطة وبإيجاز (الترجمة بتتعرض فوق الفيديو في نفس مكان النص، فخليها قصيرة وواضحة).\n" +
-            "العلامات التجارية وأسماء الأعلام: ارجعها كما هي. الأرقام والتواريخ كما هي. لو النص رموز أو مش مفهوم ارجع \"\".\n" +
-            "═ الإخراج JSON فقط ═\n{\"t\":[{\"id\":0,\"tr\":\"الترجمة\"}]}\nلا شرح ولا مقدمة — JSON فقط.\n" +
-            "═ النصوص ═\n"
+        const val PROMPT_WINDOW = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك مجموعة فريمات متتالية من فيديو، وقبل كل فريم وقته بالثواني على خط زمن الفيديو.\n" +
+            "المطلوب: كل نص غير عربي ظاهر على الشاشة (لافتات، محلات، أسماء شوارع، نصوص شاشات، كتابات على ملابس/أغراض، عناوين وكروت نصية) ترجمه ورجّع له مكانه ووقت ظهوره ووقت اختفائه.\n" +
+            "🚫 تجاهل تمامًا: أي ترجمة عربية جاهزة/محروقة أسفل أو أعلى الفيديو، شعار القناة/الواترمارك الثابت، واجهة المشغّل، وأي نص أقل من حرفين.\n" +
+            "⏱ قواعد التوقيت (إلزامية):\n" +
+            "- appear = وقت أول فريم بيبقى فيه النص كامل وواضح ومستقر في مكانه. disappear = وقت أول فريم النص مش موجود فيه (لو لسه ظاهر في آخر فريم اكتب وقت آخر فريم + الفرق بين فريمين، وكمان continues=true).\n" +
+            "- 🔴 لو النص لسه بيتحرك (بيتزحلق، بيكبر، بيتلاشى، بيدخل من حافة الشاشة): استنى لحد ما يثبت في مكانه، وخلّي appear عند لحظة ما يثبت، وx/y/w/h هما مكانه بعد الثبات مش وهو بيتحرك. لو ما ثبتش خالص في الفريمات دي (لسه بيتحرك في آخرها) ماترجّعوش، هيتشاف في النافذة اللي بعدها.\n" +
+            "- لو النص بيتحرك باستمرار (كريدت بيطلع لفوق): خد الفريم اللي بيبان فيه كامل ومقروء، وحط مكانه فيه.\n" +
+            "- نفس النص الظاهر في أكتر من فريم = عنصر واحد بس. نفس العبارة لو ظهرت تاني بعد ما اختفت = عنصر جديد.\n" +
+            "- الأوقات بالثواني بنفس خط الزمن المكتوب قبل الفريمات (أرقام عشرية).\n" +
+            "═ قواعد الموضع (نسبة من 0 إلى 1) ═\n" +
+            "x=مركز النص أفقياً (0=يسار→1=يمين) | y=مركز النص رأسياً (0=أعلى→1=أسفل) | w=عرض النص÷عرض الصورة | h=ارتفاع النص÷ارتفاع الصورة | angle=زاوية الميل (موجب=عكس عقارب الساعة)\n" +
+            "═ قواعد الستايل ═\n" +
+            "bg_hex: لون خلفية النص (لو لافتة/بوكس اكتب لونها، لو نص مباشر على المشهد اكتب \"#000000\" مع opacity_pct=0) | text_hex: لون النص | opacity_pct: شفافية الخلفية 0-100 | has_box: true لو جوه إطار/بوكس\n" +
+            "═ الترجمة ═\nعربية فصحى مبسطة وقصيرة (بتتعرض فوق النص في مكانه). العلامات التجارية: كما هي. الأرقام والتواريخ كما هي. لو النص رموز أو مش مفهوم ماترجّعوش.\n" +
+            "═ الإخراج JSON فقط ═\n" +
+            "{\"texts\":[{\"appear\":12.5,\"disappear\":17.0,\"continues\":false,\"x\":0.75,\"y\":0.35,\"w\":0.22,\"h\":0.06,\"angle\":0,\"original\":\"OPEN 24H\",\"translated\":\"مفتوح ٢٤ ساعة\",\"lang\":\"en\",\"bg_hex\":\"#CC0000\",\"text_hex\":\"#FFFFFF\",\"opacity_pct\":90,\"has_box\":true}]}\n" +
+            "لو مفيش نصوص: {\"texts\":[]}. لا شرح ولا مقدمة — JSON فقط."
 
         const val PROMPT_SCENE = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك فريم واحد من فيديو.\n" +
             "🔍 افحص الصورة بأقصى دقة ممكنة — النصوص أحياناً صغيرة ويسهل تفويتها.\n" +
@@ -81,20 +95,14 @@ class VisualMode(
     private var th: Thread? = null
     var sent = 0; private set
 
-    // (v175) وضع المراقبة على الجهاز
-    private val tracker = TextTracker(WATCH_STEP)
-    private val scanned = java.util.Collections.synchronizedSet(HashSet<Long>())      // اللقطات اللي اتفحصت (رقم الثانية)
-    private val tcache = java.util.concurrent.ConcurrentHashMap<String, String>()     // نص مطبّع ← ترجمة ("" = مفيش ترجمة صالحة)
-    private val tq = java.util.concurrent.LinkedBlockingQueue<Pair<String, String>>() // (لغة، نص) مستني ترجمة
-    private val queued = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val keyRR = java.util.concurrent.atomic.AtomicInteger(0)
-    private var tth: Thread? = null
-    private var liveKey = ""
-    private var liveList: List<VisBox> = emptyList()
+    /** (v181) نص ظاهر بوقت ظهور واختفاء (من نوافذ الفريمات) */
+    private class TItem(val box: VisBox, var start: Double, var end: Double)
+    private val items = java.util.concurrent.CopyOnWriteArrayList<TItem>()
+    private var cacheKey = ""
+    private var cacheList: List<VisBox> = emptyList()
 
     fun clear() {
-        frames.clear(); sent = 0
-        tracker.clear(); scanned.clear(); tcache.clear(); tq.clear(); queued.clear(); liveKey = ""; liveList = emptyList()
+        frames.clear(); items.clear(); sent = 0; cacheKey = ""; cacheList = emptyList()
     }
 
     /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
@@ -105,20 +113,7 @@ class VisualMode(
             finally { try { onDone() } catch (_: Exception) {} }
         }.also { it.isDaemon = true; it.start() }
     }
-    /** (v174) من غير مفاتيح: ML Kit على الجهاز — لو الإعداد «على الجهاز» مفعّل أو مفيش مفتاح للوضع البصري */
-    private fun offline() = OfflineVis.enabled() || keyList().isEmpty()
     private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
-        if (offline()) {
-            val hard = mode == "hardsub"
-            val dets = try { OfflineVis.scan(bmp, hard) } finally { bmp.recycle() }
-            resolve(dets.map { Pair(it.lang, it.text) })
-            val boxes = dets.mapNotNull { d -> usable(d.text)?.let { OfflineVis.box(d, it, hard) } }
-            val t = nowSec()
-            frames.removeIf { Math.abs(it.t - t) < 0.5 || it.dur == SNAP_DUR }
-            frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
-            say(if (boxes.isEmpty()) "👁 مفيش نصوص واضحة في اللقطة" else "👁 اتترجم ${boxes.size} نص — اتعرض على الفيديو")
-            changed(); return
-        }
         val keys = keyList()
         if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
         val jpeg = toJpeg(bmp); bmp.recycle()
@@ -149,54 +144,121 @@ class VisualMode(
         stop(); running = true
         th = Thread { active.incrementAndGet(); try { loop() } catch (e: Exception) { status = "⚠ " + (e.message ?: "").take(80); say(status) } finally { running = false; active.decrementAndGet() } }.also { it.isDaemon = true; it.start() }
     }
-    fun stop() { running = false; th?.interrupt(); th = null; tth?.interrupt(); tth = null }
+    fun stop() { running = false; th?.interrupt(); th = null }
 
     /** (v141) الوضع البصري بياخد من «مفتاح الوضع البصري فقط» وبس — مفيش رجوع للاحتياطي ولا الأساسي أبدًا، عشان ما يستهلكش كوتة الترجمة */
     private fun keyList(): List<String> = conf.visKeys.filter { it.length > 10 }.distinct()
 
     private fun loop() {
         val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
-        val keys = keyList(); val off = offline()
-        if (keys.isEmpty() && !off) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
-        if (off) {
-            try { watchLoop(r) } catch (_: InterruptedException) {} finally { try { r.release() } catch (_: Exception) {}; tth?.interrupt() }
-            return
-        }
-        var next = Math.floor(position())
-        var ki = 0
+        val keys = keyList()
+        if (keys.isEmpty()) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); try { r.release() } catch (_: Exception) {}; return }
+        val durSec = try { (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0 } catch (_: Exception) { 0.0 }
+        val fps = fps(); val step = 1.0 / fps
+        var w0 = Math.floor(position())
+        var ki = 0; var fails = 0
+        // (v181) راحة بين الطلبات عشان خطأ 429: فاصل أدنى بعد كل نافذة، وبيزيد لو جيميناي رفض وبيرجع يقل، وكل مفتاح اتوقف عنده بياخد راحة لوحده
+        var restMs = REST_MIN
+        val cool = HashMap<String, Long>()
         try {
             while (running) {
                 val pos = position()
-                if (next < pos - 1.0) next = Math.floor(pos)
-                if (next > pos + AHEAD) { Thread.sleep(500); continue }
-                val bmp = try { r.getFrameAtTime((next * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
-                if (bmp == null) { next += STEP; Thread.sleep(200); continue }
-                val jpeg = toJpeg(bmp); bmp.recycle()
-                status = "👁 يحلل ${"%.0f".format(next)}ث…"
+                // اليوزر قفز (قدّام أو ورا) أو إحنا متأخرين عن التشغيل: نبدأ من مكان التشغيل
+                if (pos > w0 + WIN_SEC - 1.0 || pos < w0 - AHEAD - 1.0) w0 = Math.floor(pos)
+                if (durSec > 0 && w0 >= durSec - 0.5) { status = "👁 النوافذ خلصت لحد آخر الفيديو"; Thread.sleep(1000); continue }
+                if (w0 > pos + AHEAD) { Thread.sleep(500); continue }
+                val wEnd = if (durSec > 0) minOf(w0 + WIN_SEC, durSec) else w0 + WIN_SEC
+                val fr = ArrayList<Pair<Double, ByteArray>>()
+                var t = w0
+                while (t < wEnd - 0.01 && running) {
+                    val bmp = try { r.getFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
+                    if (bmp != null) { fr.add(Pair(t, toJpeg(bmp, 640, 68))); bmp.recycle() }
+                    t += step
+                }
+                if (fr.size < 2) { w0 += WIN_SEC - OVERLAP; Thread.sleep(200); continue }
+                status = "👁 يحلل ${"%.0f".format(w0)}–${"%.0f".format(wEnd)}ث (${fr.size} فريم)…"
+                // نختار مفتاح مش في راحة؛ لو كلهم في راحة نستنى أقربهم
+                var key = ""
+                while (running) {
+                    val now = System.currentTimeMillis()
+                    val free = keys.indices.map { keys[(ki + it) % keys.size] }.firstOrNull { (cool[it] ?: 0L) <= now }
+                    if (free != null) { key = free; break }
+                    val wait = (keys.minOf { cool[it] ?: 0L } - now).coerceIn(500L, 65_000L)
+                    status = "😴 راحة ${wait / 1000}ث عشان الكوتة (429)"; say(status)
+                    Thread.sleep(minOf(wait, 5_000L))
+                }
+                if (key.isEmpty()) break
                 try {
-                    val key = keys[ki % keys.size]
-                    val prompt = if (mode == "hardsub") PROMPT_HARDSUB.replace("§DIALECT§", "بلهجة ${conf.lang} وأسلوب ${conf.style}")
-                        .replace("§LANG§", if (hardLang.isBlank()) "لغة الهاردسب: اكتشفها تلقائيًا من السطر المحروق." else "لغة الهاردسب في هذا الفيديو هي: \"$hardLang\" — اقرأ فقط الأسطر المكتوبة بيها.") else PROMPT_SCENE
-                    val res = Api.generateImage(conf.model, key, prompt, jpeg)
-                    val boxes = parse(res.text)
-                    frames.add(VisFrame(next, boxes)); sent++
-                    status = "👁 $sent فريم | ${boxes.size} نص"
+                    val res = Api.generateFrames(conf.model, key, PROMPT_WINDOW, fr)
+                    val parsed = parseTimed(res.text, w0, wEnd, step)
+                    if (parsed == null) {
+                        fails++; say("👁 الرد مش واضح — بحاول تاني")
+                        if (fails >= 3) { fails = 0; w0 += WIN_SEC - OVERLAP }
+                        Thread.sleep(500); continue
+                    }
+                    fails = 0
+                    addTimed(parsed)
+                    sent++
+                    status = "👁 $sent نافذة | ${items.size} نص"
                     changed()
-                    next += STEP
+                    w0 += WIN_SEC - OVERLAP
+                    Thread.sleep(restMs); restMs = maxOf(REST_MIN, restMs * 8 / 10)
                 } catch (e: ApiErr) {
-                    if (e.code == 429) { status = "⏸ ${e.message?.take(90)} — انتظار 30ث"; say(status); ki++; Thread.sleep(WAIT_429) }
+                    if (e.code == 429) {
+                        val sec = Regex("(\\d+(?:\\.\\d+)?)\\s*s").find(e.message ?: "")?.groupValues?.get(1)?.toDoubleOrNull()
+                        val ms = ((sec ?: 60.0) * 1000).toLong().coerceIn(15_000L, 120_000L)
+                        cool[key] = System.currentTimeMillis() + ms
+                        restMs = minOf(REST_MAX, restMs * 2)
+                        status = "⏸ 429 على …${key.takeLast(4)} — راحة ${ms / 1000}ث"; say(status); ki++
+                    }
                     else if (e.code == 403) { ki++; if (ki > keys.size * 2) { say("المفاتيح كلها مرفوضة (${e.message?.take(80)})"); return } }
-                    else { say("👁 خطأ: " + (e.message ?: "").take(110)); next += STEP; Thread.sleep(1000) }
+                    else { say("👁 خطأ ${e.code}: " + (e.message ?: "").take(110)); ki++; fails++; if (fails >= 3) { fails = 0; w0 += WIN_SEC - OVERLAP }; Thread.sleep(1000) }
+                } catch (e: java.io.IOException) {
+                    say("👁 مشكلة اتصال — بحاول تاني"); Thread.sleep(1500)
                 }
             }
         } catch (_: InterruptedException) {
         } finally { try { r.release() } catch (_: Exception) {} }
     }
 
-    private fun toJpeg(b: Bitmap): ByteArray {
-        val m = maxOf(b.width, b.height); val sc = if (m > 1024) 1024f / m else 1f
+    /** (v181) بيضيف نتايج نافذة: نفس النص (أو فيه الآخر) والفترتين متلامستين = نفس الظهور فنمدّد المدة بدل ما نكرره */
+    private fun addTimed(list: List<TItem>) {
+        for (n in list) {
+            val nk = TextTracker.norm(n.box.original)
+            if (nk.isEmpty()) continue
+            var hit: TItem? = null
+            for (e in items) {
+                val ek = TextTracker.norm(e.box.original)
+                val same = ek == nk || (minOf(ek.length, nk.length) >= 4 && (ek.contains(nk) || nk.contains(ek))) || TextTracker.sim(ek, nk) >= 0.85
+                if (same && n.start <= e.end + 1.0 && n.end >= e.start - 1.0) { hit = e; break }
+            }
+            if (hit == null) items.add(n) else { hit.start = minOf(hit.start, n.start); hit.end = maxOf(hit.end, n.end) }
+        }
+    }
+
+    /** null = الرد مش JSON مفهوم (يتعاد) */
+    private fun parseTimed(txt: String, w0: Double, wEnd: Double, step: Double): List<TItem>? {
+        val j = Parse.json(txt) ?: return null
+        val a = j.optJSONArray("texts") ?: return if (j.has("texts")) emptyList() else null
+        val out = ArrayList<TItem>()
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            val b = boxOf(o) ?: continue
+            var ap = o.optDouble("appear", Double.NaN); var dis = o.optDouble("disappear", Double.NaN)
+            if (ap.isNaN()) ap = w0
+            ap = ap.coerceIn(w0, wEnd)
+            if (dis.isNaN() || dis <= ap) dis = ap + 1.5
+            dis = dis.coerceAtMost(wEnd + step * 2)
+            if (dis <= ap) dis = ap + step
+            out.add(TItem(b, ap, dis))
+        }
+        return out
+    }
+
+    private fun toJpeg(b: Bitmap, maxSide: Int = 1024, q: Int = 82): ByteArray {
+        val m = maxOf(b.width, b.height); val sc = if (m > maxSide) maxSide.toFloat() / m else 1f
         val s = if (sc < 1f) Bitmap.createScaledBitmap(b, (b.width * sc).toInt().coerceAtLeast(1), (b.height * sc).toInt().coerceAtLeast(1), true) else b
-        val o = ByteArrayOutputStream(); s.compress(Bitmap.CompressFormat.JPEG, 82, o)
+        val o = ByteArrayOutputStream(); s.compress(Bitmap.CompressFormat.JPEG, q, o)
         if (s !== b) s.recycle()
         return o.toByteArray()
     }
@@ -212,18 +274,19 @@ class VisualMode(
         return n.coerceIn(0.0, 1.0).toFloat()
     }
 
+    private fun boxOf(o: JSONObject): VisBox? {
+        val tr = o.optString("translated").trim(); val og = o.optString("original").trim()
+        if (tr.isEmpty() || og.isEmpty()) return null
+        return VisBox(frac(o.optDouble("x", 0.5), 0.5), frac(o.optDouble("y", 0.5), 0.5),
+            frac(o.optDouble("w", 0.15), 0.15).coerceIn(0.03f, 1f), frac(o.optDouble("h", 0.04), 0.04).coerceIn(0.02f, 0.5f),
+            o.optDouble("angle", 0.0).toFloat().coerceIn(-45f, 45f), og, tr, col(o.optString("bg_hex"), Color.BLACK), col(o.optString("text_hex"), Color.WHITE), o.optInt("opacity_pct", 80).coerceIn(0, 100), o.optBoolean("has_box"))
+    }
+
     /** null = الرد مش JSON مفهوم (يتعاد)، قائمة فاضية = JSON سليم من غير نصوص */
     private fun parseOrNull(txt: String): List<VisBox>? {
         val j = Parse.json(txt) ?: return null
         val out = ArrayList<VisBox>()
-        j.optJSONArray("texts")?.let { a -> for (i in 0 until a.length()) {
-            val o = a.optJSONObject(i) ?: continue
-            val tr = o.optString("translated").trim(); val og = o.optString("original").trim()
-            if (tr.isEmpty() || og.isEmpty()) continue
-            out.add(VisBox(frac(o.optDouble("x", 0.5), 0.5), frac(o.optDouble("y", 0.5), 0.5),
-                frac(o.optDouble("w", 0.15), 0.15).coerceIn(0.03f, 1f), frac(o.optDouble("h", 0.04), 0.04).coerceIn(0.02f, 0.5f),
-                o.optDouble("angle", 0.0).toFloat().coerceIn(-45f, 45f), og, tr, col(o.optString("bg_hex"), Color.BLACK), col(o.optString("text_hex"), Color.WHITE), o.optInt("opacity_pct", 80).coerceIn(0, 100), o.optBoolean("has_box")))
-        } }
+        j.optJSONArray("texts")?.let { a -> for (i in 0 until a.length()) { a.optJSONObject(i)?.let { o -> boxOf(o)?.let { out.add(it) } } } }
         j.optJSONArray("lines")?.let { a -> for (i in 0 until a.length()) {
             val o = a.optJSONObject(i) ?: continue
             val tr = o.optString("translated").trim(); val og = o.optString("original").trim()
@@ -234,14 +297,7 @@ class VisualMode(
         return out
     }
 
-    /** (v175) هل النص ده ليه ترجمة صالحة للعرض؟ (مش فاضية ومش نفس الأصل) */
-    private fun usable(text: String): String? {
-        val tr = tcache[TextTracker.norm(text)] ?: return null
-        if (tr.isBlank() || TextTracker.norm(tr) == TextTracker.norm(text)) return null
-        return tr
-    }
-
-    /** نتايج اللقطات اليدوية / وضع Gemini الكامل (فريم + مدة ثابتة) */
+    /** نتايج اللقطات اليدوية / وضع Gemini الكامل (فريم + مدة) */
     private fun frameBoxes(sec: Double): List<VisBox> {
         var f: VisFrame? = null
         for (x in frames) if (x.t <= sec + 0.3 && (f == null || x.t > f.t)) f = x
@@ -249,117 +305,18 @@ class VisualMode(
     }
 
     /**
-     * اللي يتعرض عند الثانية دي. sec = وقت اللقطات اليدوية (بعد تزامن الترجمة)، media = وقت الفيديو الفعلي
-     * (للنصوص اللي المراقبة لقطتها: بتظهر من أول ما النص يظهر وتختفي لما يختفي).
+     * اللي يتعرض عند الثانية دي. sec = وقت اللقطات اليدوية (بعد تزامن الترجمة)، media = وقت الفيديو الفعلي:
+     * نصوص النوافذ بتظهر من وقت ظهورها لوقت اختفائها بالظبط (مش مدة ثابتة).
      */
     fun boxesAt(sec: Double, media: Double = sec): List<VisBox> {
         val base = frameBoxes(sec)
-        if (tracker.tracks.isEmpty()) return base
-        val live = ArrayList<VisBox>(); val sb = StringBuilder()
-        for (k in tracker.activeAt(media)) {
-            val tr = usable(k.text) ?: continue
-            sb.append(k.id).append(':').append((k.x * 1000).toInt()).append(',').append((k.y * 1000).toInt()).append(':').append(tr.length).append(';')
-            live.add(VisBox(k.x, k.y, k.w, k.h, 0f, k.text, tr, Color.BLACK, Color.WHITE, 85, true))
-        }
-        if (live.isEmpty()) return base
-        if (base.isNotEmpty()) return base + live
-        val key = sb.toString()
-        if (key != liveKey) { liveKey = key; liveList = live }
-        return liveList   // نفس القايمة طول ما مفيش تغيير عشان الطبقة ماتعيدش الرسم كل 100ms
-    }
-
-    // ===== (v175) المراقبة المستمرة: ML Kit يلقط ← جيميناي يترجم ← عرض من الظهور للاختفاء =====
-
-    private fun want(lang: String, text: String) {
-        val k = TextTracker.norm(text)
-        if (k.isEmpty() || tcache.containsKey(k) || !queued.add(k)) return
-        tq.offer(Pair(lang, text))
-    }
-
-    private fun watchLoop(r: MediaMetadataRetriever) {
-        tth = Thread { try { transLoop() } catch (_: InterruptedException) {} }.also { it.isDaemon = true; it.start() }
-        var prevSlot = Long.MIN_VALUE
-        while (running) {
-            val pos = position()
-            var s = Math.floor(pos / WATCH_STEP).toLong()
-            val endS = Math.floor((pos + AHEAD) / WATCH_STEP).toLong()
-            while (s <= endS && scanned.contains(s)) s++
-            if (s > endS) { Thread.sleep(400); continue }          // وصلنا لآخر مسافة قدّام التشغيل
-            val t = s * WATCH_STEP
-            val bmp = try { r.getFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
-            scanned.add(s)
-            if (bmp == null) { prevSlot = Long.MIN_VALUE; Thread.sleep(150); continue }
-            status = "👁 يراقب ${"%.0f".format(t)}ث…"
-            val dets = try { OfflineVis.scan(bmp, mode == "hardsub") }
-                catch (e: InterruptedException) { throw e }
-                catch (e: Exception) { say("👁 خطأ: " + (e.message ?: "").take(110)); null }
-                finally { bmp.recycle() }
-            if (dets == null) { prevSlot = Long.MIN_VALUE; Thread.sleep(1500); continue }
-            val prevT = if (prevSlot == s - 1) (s - 1) * WATCH_STEP else Double.NaN
-            val fresh = tracker.feed(t, dets, prevT)
-            for (k in fresh) { k.tries = 1; want(k.lang, k.text) }
-            // نص ظاهر من غير ترجمة (الطلب فشل قبل كده) — نعيد الطلب لحد 3 مرات
-            for (k in tracker.tracks) if (k.end.isNaN() && k.tries in 1..2 && !tcache.containsKey(TextTracker.norm(k.text)) && !queued.contains(TextTracker.norm(k.text))) { k.tries++; want(k.lang, k.text) }
-            prevSlot = s; sent++
-            status = "👁 يراقب | $sent لقطة | ${tracker.tracks.size} نص"
-            changed()
-        }
-    }
-
-    /** خيط الترجمة: بيجمّع النصوص الجديدة (لحد 8) في طلب واحد لجيميناي */
-    private fun transLoop() {
-        while (running) {
-            val first = tq.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-            val batch = ArrayList<Pair<String, String>>(); batch.add(first)
-            tq.drainTo(batch, 7)
-            try { resolve(batch) } finally { for (b in batch) queued.remove(TextTracker.norm(b.second)) }
-            changed()
-        }
-    }
-
-    /** بيملا tcache لقايمة (لغة، نص): جيميناي الأول (مفتاح الوضع البصري)، وللي مارجعش ترجمته ← ML Kit على الجهاز */
-    private fun resolve(items: List<Pair<String, String>>) {
-        val todo = items.filter { !tcache.containsKey(TextTracker.norm(it.second)) }.distinctBy { TextTracker.norm(it.second) }
-        if (todo.isEmpty()) return
-        val got = geminiTexts(todo.map { it.second })
-        for ((i, p) in todo.withIndex()) {
-            val k = TextTracker.norm(p.second)
-            val g = got?.getOrNull(i)
-            if (g != null && g.isNotBlank()) { tcache[k] = g; continue }
-            val ml = try { OfflineVis.mlTranslate(p.first, p.second, say) }
-                catch (e: InterruptedException) { throw e }
-                catch (e: Exception) { say("👁 فشلت الترجمة: " + (e.message ?: "").take(90)); null }
-            if (ml != null) tcache[k] = ml      // لو فشلت الاتنين ما بنكتبش حاجة فالمحاولة تتعاد
-        }
-    }
-
-    /** طلب واحد لجيميناي بنصوص الدفعة؛ بيرجّع الترجمات بنفس الترتيب أو null لو فشل (أو مفيش مفتاح) */
-    private fun geminiTexts(texts: List<String>): List<String>? {
-        val keys = keyList(); if (keys.isEmpty()) return null
-        val arr = org.json.JSONArray()
-        for ((i, t) in texts.withIndex()) arr.put(JSONObject().put("id", i).put("text", t))
-        val prompt = PROMPT_TEXTS + arr.toString()
-        var attempts = 0
-        while (!Thread.currentThread().isInterrupted && attempts < keys.size * 2 + 1) {
-            attempts++
-            val key = keys[Math.floorMod(keyRR.getAndIncrement(), keys.size)]
-            try {
-                val res = Api.generate(conf.model, key, prompt, null, 2048, 0.1, true)
-                val a = Parse.json(res.text)?.optJSONArray("t")
-                if (a == null) { say("👁 رد جيميناي مش واضح — بحاول تاني"); continue }
-                val out = arrayOfNulls<String>(texts.size)
-                for (j in 0 until a.length()) {
-                    val o = a.optJSONObject(j) ?: continue
-                    val id = o.optInt("id", -1)
-                    if (id >= 0 && id < out.size) out[id] = o.optString("tr").trim()
-                }
-                return out.map { it ?: "" }
-            } catch (e: ApiErr) {
-                say("👁 خطأ ${e.code} على …${key.takeLast(4)}")
-                if (e.code == 429 || e.code >= 500) Thread.sleep(700)
-            } catch (e: java.io.IOException) { Thread.sleep(500) }
-        }
-        return null
+        if (items.isEmpty()) return base
+        val act = items.filter { media >= it.start - 0.05 && media <= it.end }
+        if (act.isEmpty()) return base
+        if (base.isNotEmpty()) return base + act.map { it.box }
+        val key = act.joinToString(",") { System.identityHashCode(it.box).toString() }
+        if (key != cacheKey) { cacheKey = key; cacheList = act.map { it.box } }
+        return cacheList   // نفس القايمة طول ما مفيش تغيير عشان الطبقة ماتعيدش الرسم كل 100ms
     }
 }
 

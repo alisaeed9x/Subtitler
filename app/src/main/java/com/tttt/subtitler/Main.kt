@@ -76,6 +76,7 @@ class MainActivity : Activity() {
         if (fromPlayer) requestedOrientation = if (intent?.getBooleanExtra("land", false) == true) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT   // الإعدادات من المشغّل: بنفس اتجاه المشغّل
         UiWatchdog.start()
         Cfg.init(this); CrashLog.install(this)
+        try { NeuralEngine.auto(this) } catch (_: Throwable) {}   // (v181) تحميل المحرك العصبي في الخلفية أول مرة
         val th = Themes.byId(Cfg.str("theme", "mx"))
         val ui = Ui(this, th)
         applyBars(th)
@@ -415,9 +416,23 @@ class MainActivity : Activity() {
         val voiceModeChips = ui.chips(listOf(vmLight, vmNeural, vmCombo), { when (VoiceNet.mode()) { "light" -> vmLight; "neural" -> vmNeural; else -> vmCombo } }) {
             Cfg.p.edit().putString("voice_mode", when (it) { vmLight -> "light"; vmNeural -> "neural"; else -> "combo" }).apply()
         }
-        val visCloud = "☁ Gemini (بمفتاح)"; val visLocal = "📴 على الجهاز: ML Kit يراقب + Gemini يترجم"
-        val visEngineChips = ui.chips(listOf(visCloud, visLocal), { if (OfflineVis.enabled()) visLocal else visCloud }) {
-            Cfg.p.edit().putBoolean("vis_offline", it == visLocal).apply()
+        val vf1 = "1 فريم/ث"; val vf2 = "2 فريم/ث"; val vf3 = "3 فريم/ث"
+        val visFpsChips = ui.chips(listOf(vf1, vf2, vf3), { when (VisualMode.fps()) { 1 -> vf1; 3 -> vf3; else -> vf2 } }) {
+            Cfg.put("vis_fps", when (it) { vf1 -> "1"; vf3 -> "3"; else -> "2" })
+        }
+        val neuralStatus = ui.text(NeuralEngine.status(this), 12f, th.muted)
+        val actNeural = this
+        fun neuralTick() { neuralStatus.text = NeuralEngine.status(actNeural); if (neuralStatus.isAttachedToWindow) neuralStatus.postDelayed({ neuralTick() }, 1500L) }
+        neuralStatus.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) { neuralTick() }
+            override fun onViewDetachedFromWindow(v: View) {}
+        })
+        val neuralDl = ui.button("⬇ تحميل المحرك العصبي (26MB)") {
+            NeuralEngine.manual(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
+            try { Notice.show(actNeural, "⬇ بيتحمّل — تابعه من تبويب «المهام»", 2600L) } catch (_: Throwable) {}
+        }
+        val neuralDel = ui.button("🗑 حذف المحرك العصبي (يرجّع 26MB)") {
+            NeuralEngine.delete(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
         }
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
             TabDef("fonts", "🔤 الخطوط", sp.fonts, true, "نوع الخط ونمطه وحجم الترجمة"),
@@ -434,9 +449,9 @@ class MainActivity : Activity() {
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
                 ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
-                ui.section("👁 محرك الوضع البصري", false, visEngineChips,
-                    ui.text("على الجهاز: ML Kit بيراقب الفيديو طول الوقت (فريم كل ثانية قدّام مكان التشغيل) ويلقط أي نص ظاهر (إنجليزي / ياباني / كوري) ما عدا الجزء السفلي من الشاشة (مكان الهارد ساب). النص بيتبعت لجيميناي بمفتاح الوضع البصري يترجمه، والترجمة بتظهر في مكان النص من أول ما يظهر لحد ما يختفي. لو مفيش مفتاح للوضع البصري (أو جيميناي فشل) بيترجم بموديل ML Kit على الجهاز (~30MB لكل لغة، بيتنزّل مرة واحدة وبعدها أوفلاين).", 12f, th.muted)),
-                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips,
+                ui.section("👁 محرك الوضع البصري", false, visFpsChips,
+                    ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» في تبويب المفاتيح): بيبعت نوافذ فريمات 10 ثواني (كل فريم معاه وقته، والنوافذ بتتداخل ثانيتين)، وجيميناي بيرجّع لكل نص مكانه ووقت ظهوره ووقت اختفائه، فالترجمة بتظهر من الظهور للاختفاء بالظبط. لو النص بيتحرك بيستنى لحد ما يثبت. كثافة الفريمات فوق (الافتراضي فريم واحد في الثانية = 10 صور في كل نافذة، و3 فريم/ث = 30 صورة). بين كل نافذة والتانية فيه راحة تلقائية (4ث وبتزيد لحد 20ث لو جيميناي رفض بخطأ 429)، وكل مفتاح بياخد راحة لوحده. بيتطبق من أول تشغيل جديد للوضع البصري.", 12f, th.muted)),
+                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
                     ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted)),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(

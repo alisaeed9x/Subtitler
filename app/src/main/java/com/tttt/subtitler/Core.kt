@@ -26,7 +26,7 @@ data class Sub(
     val speakerName: String = ""
 ) {
     /** النص اللي بيتعرض/بيتصدّر: «الاسم: الجملة» لو الميزة شغالة والاسم معروف */
-    fun withSpeaker(t: String): String = if (Extras.spkNames && !isSound && speakerName.isNotBlank() && t.isNotBlank() && !t.trimStart().startsWith("«") && !t.trimStart().startsWith("[")) "$speakerName: $t" else t
+    fun withSpeaker(t: String): String = if (Extras.spkNames && !isSound && speakerName.isNotBlank() && Extras.isMain(speakerName) && t.isNotBlank() && !t.trimStart().startsWith("«") && !t.trimStart().startsWith("[")) "$speakerName: $t" else t
 }
 
 data class Chr(val name: String, val gender: String, val role: String)
@@ -253,6 +253,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- أضف لكل subtitle حقل \"speaker_name\": اسم الشخص اللي بيقول الجملة دي (مثلًا \"هاوس\"، \"ستيف\"، \"د. كاميرون\") مكتوب بالعربي وبشكل ثابت في كل الجمل (نفس الشخص = نفس الكتابة بالظبط).\n" +
             "- 🔴 لو في جدول شخصيات فوق: استخدم الاسم بالظبط زي ما هو مكتوب هناك لما تتعرف على الشخص. غير كده خد الاسم من الحوار (نداء، تقديم، اسم مكتوب على الشاشة) أو من الصوت لو نفس الصوت اتسمّى قبل كده.\n" +
             "- 🔴 لو مش متأكد 100% مين المتكلم: اكتب \"\" (فاضي). ماتخمّنش اسم وماتكتبش \"متكلم 1\" ولا \"رجل\" ولا \"امرأة\" ولا جنس/وصف. الاسم بس.\n" +
+            "- 🔴 الاسم بيتكتب للشخصيات الأساسية بس. أي شخصية فرعية ماتعرفش اسمها (عابر، موظف، صوت مجهول): speaker_name = \"\" (فاضي). فاضي أحسن ألف مرة من اسم غلط.\n" +
             "- ماتحطش الاسم جوه حقل translated ولا original: في حقل speaker_name بس.\n"
         const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
@@ -506,6 +507,33 @@ object Api {
             val sb = StringBuilder()
             if (parts != null) for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
             return Result(sb.toString(), cand.optString("finishReason", ""))
+        } finally { c.disconnect() }
+    }
+
+    /** (v181) طلب generateContent بعدة فريمات JPEG (كل فريم معاه وقته بالثواني) + نص — الوضع البصري بنوافذ الفريمات */
+    fun generateFrames(model: String, key: String, prompt: String, frames: List<Pair<Double, ByteArray>>, maxTokens: Int = 8192, temp: Double = 0.0): Result {
+        Quota.hit(model); Stats.req(model, key)
+        val sb = StringBuilder("{\"contents\":[{\"parts\":[")
+        for ((t, jpeg) in frames) {
+            sb.append("{\"text\":").append(JSONObject.quote("الفريم عند الثانية " + "%.2f".format(java.util.Locale.US, t) + ":")).append("},")
+            sb.append("{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"").append(java.util.Base64.getEncoder().encodeToString(jpeg)).append("\"}},")
+        }
+        sb.append("{\"text\":").append(JSONObject.quote(prompt)).append("}]}],")
+        sb.append("\"generationConfig\":{\"maxOutputTokens\":$maxTokens,\"temperature\":$temp,\"responseMimeType\":\"application/json\"},\"safetySettings\":[$SAFETY]}")
+        val bytes = sb.toString().toByteArray(Charsets.UTF_8)
+        val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 120000
+            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-goog-api-key", key); c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            val code = c.responseCode
+            val txt = (if (code < 300) c.inputStream else c.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (code >= 300) throw ApiErr(code, try { JSONObject(txt).getJSONObject("error").getString("message") } catch (_: Exception) { "HTTP $code" })
+            val cand = JSONObject(txt).optJSONArray("candidates")?.optJSONObject(0) ?: return Result("", "")
+            val parts = cand.optJSONObject("content")?.optJSONArray("parts")
+            val out = StringBuilder()
+            if (parts != null) for (i in 0 until parts.length()) out.append(parts.optJSONObject(i)?.optString("text", "") ?: "")
+            return Result(out.toString(), cand.optString("finishReason", ""))
         } finally { c.disconnect() }
     }
 
@@ -828,7 +856,16 @@ object Subs {
     /** (v150) جملة أصلها مجرد علامات ترقيم («...») وليها ترجمة = تأليف على صمت — بتتشال */
     private fun emptyOrig(s: Sub) = !s.isSound && !s.isSong && s.original.isNotBlank() && s.original.none { it.isLetterOrDigit() }
     /** (v179) صوت (voice) معروف اسمه في أغلب جمله بيتملا بيه الجمل اللي اسمها فاضي (≥2 جملة متسمّية و≥70% نفس الاسم). بيشتغل على بصمة الصوت العامة بين المقاطع */
+    /** (v181) بيحسب الشخصيات الأساسية (الاسم اتكرر MAIN_MIN مرات فأكتر) */
+    fun refreshMain(l: List<Sub>) {
+        val cnt = HashMap<String, Int>()
+        for (s in l) if (!s.isSound && s.speakerName.isNotBlank()) cnt.merge(s.speakerName, 1, Int::plus)
+        Extras.mainNames = cnt.filter { it.value >= Extras.MAIN_MIN }.keys.toSet()
+    }
     fun fillSpeakerNames(l: List<Sub>): List<Sub> {
+        val r = fillSpeakerNames0(l); refreshMain(r); return r
+    }
+    private fun fillSpeakerNames0(l: List<Sub>): List<Sub> {
         if (l.none { it.speakerName.isBlank() && it.voice.isNotBlank() && !it.isSound }) return l
         val byVoice = HashMap<String, HashMap<String, Int>>()
         for (s in l) if (s.voice.isNotBlank() && s.speakerName.isNotBlank()) byVoice.getOrPut(s.voice) { HashMap() }.merge(s.speakerName, 1, Int::plus)

@@ -2826,7 +2826,7 @@ class PlayerActivity : Activity(), Host {
         val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
         box.addView(ui.text("👁 الوضع البصري", 17f, th.primary, true))
-        box.addView(ui.text("☁ Gemini: بياخد فريم كل ثانيتين قدّام مكان التشغيل ويبعته لـ Gemini ويعرض النصوص المترجمة في مكانها.\n📴 على الجهاز (من الإعدادات): ML Kit بيراقب الفيديو طول الوقت ويلقط أي نص ظاهر ما عدا الجزء السفلي (هارد ساب)، وجيميناي (مفتاح الوضع البصري) بيترجمه، والترجمة بتظهر في مكان النص من أول ما يظهر لحد ما يختفي. من غير مفتاح بيترجم بـ ML Kit.\nمحتاج فيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
+        box.addView(ui.text("☁ Gemini: بياخد نوافذ فريمات (10 ثواني) قدّام مكان التشغيل ويعرف وقت ظهور واختفاء كل نص، وبيعرض الترجمة في مكانها من الظهور للاختفاء.\nمحتاج فيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
         visual.mode = "scene"
         val st = ui.text(if (visual.running) "الحالة: شغّال — " + visual.status else "الحالة: واقف", 13f, th.text)
         box.addView(st)
