@@ -620,13 +620,15 @@ class BrowserActivity : Activity() {
         val list = tabs.withIndex().filter { it.value.priv == tabsPrivView }
         if (list.isEmpty()) box.addView(ui.text(if (tabsPrivView) "مفيش تبويبات متخفية — مفيش سجل ولا حفظ فيها" else "مفيش تبويبات", 13f, th.muted).apply { setPadding(ui.dp(12), ui.dp(16), ui.dp(12), 0) })
         val cardW = (resources.displayMetrics.widthPixels - ui.dp(12) * 3) / 2
+        if (list.isNotEmpty() && !prefs().getBoolean("br_swipe_hint_done", false))
+            box.addView(ui.text("👆 اسحب أي تبويب يمين أو شمال عشان تقفله", 12f, th.muted).apply { gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(2), ui.dp(12), ui.dp(6)) })
         for (pair in list.chunked(2)) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
             for ((i, t) in pair) {
                 val url = t.wv?.url ?: t.url
                 val ttl = t.title.ifBlank { Sniff.nameOf(url).ifBlank { "تبويب جديد" } }
                 val dark = t.priv
-                val card = LinearLayout(this).apply {
+                val card = SwipeCard(this) { swipeClose(t) }.apply {
                     orientation = LinearLayout.VERTICAL
                     background = ui.box(if (dark) 0xFF2B2D31.toInt() else th.card, if (i == curIdx) th.primary else th.border, 14, if (i == curIdx) 3 else 1)
                     setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
@@ -650,6 +652,13 @@ class BrowserActivity : Activity() {
             }
             box.addView(row)
         }
+    }
+    /** (v200) قفل تبويب بالسحب — بالـ id مش بالـ index عشان لو الشاشة اتعمل لها render وسط الأنيميشن ما يتقفلش تبويب غلط */
+    private fun swipeClose(t: BTab) {
+        val i = tabs.indexOfFirst { it.id == t.id }
+        if (i >= 0) closeTab(i)
+        prefs().edit().putBoolean("br_swipe_hint_done", true).apply()
+        if (tabsDlg?.isShowing == true) renderTabs()
     }
     private fun closeAllTabs(priv: Boolean = false) {
         val victims = tabs.filter { it.priv == priv }

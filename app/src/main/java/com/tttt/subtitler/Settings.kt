@@ -13,7 +13,7 @@ import android.widget.*
 /** مرجع للمحرك الشغّال حاليًا (بيستخدمه تبويب الشخصيات عشان يستورد المكتشفة تلقائيًا) */
 object Live { @Volatile var engine: Engine? = null }
 
-class TabDef(val id: String, val label: String, val content: List<View>, val preview: Boolean = false, val sub: String = "")
+class TabDef(val id: String, val label: String, val content: List<View>, val preview: Boolean = false, val sub: String = "", val group: String = "")
 
 /** إعدادات على طريقة MX Player: قايمة أقسام (أيقونة · عنوان · وصف) ← دوس على قسم يفتح شاشته ← سهم الرجوع يرجّعك للقايمة. preview = معاينة الترجمة بتظهر فوق المحتوى في الأقسام اللي preview=true */
 class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: List<TabDef>, val preview: View?, onClose: () -> Unit) {
@@ -53,7 +53,13 @@ class TabbedDialog(val act: Activity, val ui: Ui, val title: String, val tabs: L
 
         // صفحة القايمة الرئيسية
         listPage.apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        var lastGroup = ""
         tabs.forEachIndexed { i, t ->
+            // (v198) عنوان قسم لما المجموعة تتغيّر: عام (الاتنين) · مشغّل الفيديو · مشغّل الموسيقى
+            if (t.group.isNotBlank() && t.group != lastGroup) {
+                lastGroup = t.group
+                listPage.addView(ui.text(t.group, 13f, th.muted, true).apply { setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(2)) }, LinearLayout.LayoutParams(-1, -2))
+            }
             val row = LinearLayout(act).apply {
                 layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(12)); background = ui.box(th.surface, th.border, 12)

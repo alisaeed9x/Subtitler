@@ -84,6 +84,15 @@ class MainActivity : Activity() {
         dlg.setOnDismissListener { tasksDlgRefresh = null; (tu.root.parent as? android.view.ViewGroup)?.removeView(tu.root) }
         tu.refresh(); dlg.show(); dlg.window?.setLayout(-1, -1)
     }
+    // (v199) زرار «المهام» العايم (بشكل زرار التخطي): بيظهر لما فيه مهام شغّالة
+    private var tasksFab: IconTextView? = null
+    private var fabHide = false
+    private fun updateTasksFab() {
+        val f = tasksFab ?: return
+        val n = TaskCenter.active() + BgJobs.jobs.count { it.active }
+        f.text = "⏳ المهام ($n)"
+        f.visibility = if (n > 0 && !fabHide) View.VISIBLE else View.GONE
+    }
     private var toolsUiM: ToolsUi? = null
     private var pendingTool = ""
     private var pendingSrc: ToolSrc? = null
@@ -464,31 +473,15 @@ class MainActivity : Activity() {
         val neuralDel = ui.button("🗑 حذف المحرك العصبي (يرجّع 26MB)") {
             NeuralEngine.delete(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
         }
+        // (v198) إعدادات مشغّل الموسيقى
+        val lmFull = "📝 كلمات كاملة (جيميناي)"; val lmAudio = "🎧 تفريغ من الصوت"
+        val lyrModeChips = ui.chips(listOf(lmFull, lmAudio), { if (LyricsEngine.mode() == LyricsEngine.M_FULL) lmFull else lmAudio }) { LyricsEngine.setMode(if (it == lmFull) LyricsEngine.M_FULL else LyricsEngine.M_AUDIO) }
+        val lyrFontChips = ui.chips(SubStyle.fonts.map { it.label }, { (SubStyle.fonts.firstOrNull { f -> f.id == Cfg.str("lyr_font", "Noto Sans Arabic") } ?: SubStyle.fonts[0]).label }) { l ->
+            SubStyle.fonts.firstOrNull { f -> f.label == l }?.let { f -> Cfg.put("lyr_font", f.id) }
+        }
+        val lyrSizeChips = ui.chips(listOf("16", "20", "24", "28", "32"), { (Cfg.str("lyr_size", "20").trim().toIntOrNull() ?: 20).toString() }) { Cfg.put("lyr_size", it) }
         val settingsDlg = TabbedDialog(this, ui, "⚙️ الإعدادات", listOf(
             // (v187) الإعدادات اتجمّعت حسب الموضوع: الترجمة · شكل الترجمة · البصري · الصوت · الشخصيات · المفاتيح · أخرى
-            TabDef("general", "🌐 الترجمة", listOf<View>(
-                                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it; save() }),
-                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it; save() }),
-                                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
-                                ui.section("🏎 اختبار سرعة رد الـ AI", false,
-                    ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
-                                ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
-                                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
-                ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "اللهجة · الأسلوب · الموديل · السرعة · الأداء · التصحيح التلقائي · الحفظ"),
-            TabDef("look", "🎬 شكل الترجمة", listOf<View>(
-                ui.section("🔤 الخطوط", true, *sp.fonts.toTypedArray()),
-                ui.section("✨ الأنيميشن", false, *sp.anim.toTypedArray()),
-                ui.section("🎬 العرض والألوان", false, *sp.look.toTypedArray())), true, "الخطوط · الأنيميشن · وضع العرض · الألوان · الخلفية"),
-            TabDef("visual", "👁 الوضع البصري", listOf<View>(
-                                ui.section("👁 محرك الوضع البصري", false, visAutoChips, visSrcChips, visFpsChips,
-                    ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» تحت). «مقاطع فيديو» = بيبعت مقطع 10 ثواني وجيميناي بيحدد مكان كل نص ووقته وحركته (الأدق). «فريمات» = بيبعت صور متتالية (أخف على الأجهزة والمصادر اللي مابتتقصّش). الكثافة بتتحكم في عدد الفريمات في الثانية اللي جيميناي بياخدها. النتايج بتتحفظ مع الفيديو. بين كل نافذة والتانية راحة تلقائية لو جيميناي رفض (429). بيتطبق من أول تشغيل جديد.", 12f, th.muted)),
-                                ui.section("👁 مفتاح الوضع البصري فقط", false,
-                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "تلقائي/يدوي · مقاطع أو فريمات · الكثافة · مفتاح الوضع البصري"),
-            TabDef("audio", "🔊 الصوت والبصمة", listOf<View>(
-                                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
-                                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
-                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted))), false, "جودة الصوت · كشف الكلام · التوقيت · بصمة المتكلم"),
-            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد"),
             TabDef("keys", "🔑 المفاتيح", listOf<View>(
                 ui.button("❓ إزاي أجيب مفتاح Gemini؟ (وألصقه)", true) {
                     showKeyGuide { k ->
@@ -501,7 +494,7 @@ class MainActivity : Activity() {
                 },
                 ui.button("📊 إحصائية الاستهلاك والكوتة") { StatsUi(this, ui, th).show() },
                                 ui.section("🔑 كل المفاتيح", true,
-                    ui.text("حط كل مفاتيحك هنا في قايمة واحدة — البرنامج بيوزّعها لوحده: مفاتيح للترجمة (أغلبها)، ومفتاح أو اتنين للتنقيح الجزئي أثناء الترجمة، ومفتاح احتياطي لو مفتاح اتعطّل (من 6 مفاتيح). التنقيح الجزئي بيبدأ من 3 مفاتيح.", 12f, th.muted), keysUi)), false, "مفاتيح Gemini (توزيع تلقائي) · الاستهلاك والكوتة · طريقة جلب مفتاح"),
+                    ui.text("حط كل مفاتيحك هنا في قايمة واحدة — البرنامج بيوزّعها لوحده: مفاتيح للترجمة (أغلبها)، ومفتاح أو اتنين للتنقيح الجزئي أثناء الترجمة، ومفتاح احتياطي لو مفتاح اتعطّل (من 6 مفاتيح). التنقيح الجزئي بيبدأ من 3 مفاتيح.", 12f, th.muted), keysUi)), false, "مفاتيح Gemini (توزيع تلقائي) · الاستهلاك والكوتة · طريقة جلب مفتاح", group = "🌍 عام — بيأثر على الفيديو والموسيقى"),
             TabDef("more", "🛠 الخلفية · الأمان · المظهر", listOf<View>(
                                 ui.section("▶ التشغيل", true,
                     ui.switchRow("كمّل الطابور تلقائيًا بعد إعادة تشغيل الجهاز", Cfg.bool("bg_autostart", true)) { Cfg.put("bg_autostart", if (it) "1" else "0") },
@@ -517,12 +510,46 @@ class MainActivity : Activity() {
                 ui.button("🔑 تعيين / تغيير النمط") { lk.change { refreshLock() } }, bioBtn,
                 ui.button("🗑 إزالة القفل") { lk.remove { refreshLock() } },
                 ui.text("البصمة بتتحقق من بصمات جهازك المسجّلة في إعدادات الأندرويد (التطبيق مابيخزّنش بصمتك). لو نسيت النمط: «نسيت النمط؟» بيطلب قفل شاشة الجهاز.", 12f, th.muted)),
-                ui.section("🎨 المظهر", false, themeChips)), false, "الترجمة في الخلفية · استثناء البطارية · قفل المجلد · ثيم البرنامج"),
+                ui.section("🎨 المظهر", false, themeChips)), false, "الترجمة في الخلفية · استثناء البطارية · قفل المجلد · ثيم البرنامج", group = "🌍 عام — بيأثر على الفيديو والموسيقى"),
+            TabDef("general", "🌐 الترجمة", listOf<View>(
+                                ui.section("اللهجة", true, ui.chips(langs, { lang }) { lang = it; save() }),
+                ui.section("أسلوب الترجمة", true, ui.chips(styles, { style }) { style = it; save() }),
+                                ui.section("🤖 الموديل", true, modelChips, fetchModelsBtn, model, modelDesc),
+                                ui.section("🏎 اختبار سرعة رد الـ AI", false,
+                    ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
+                                ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
+                                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
+                ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "اللهجة · الأسلوب · الموديل · السرعة · الأداء · التصحيح التلقائي · الحفظ", group = "🎞 مشغّل الفيديو"),
+            TabDef("look", "🎬 شكل الترجمة", listOf<View>(
+                ui.section("🔤 الخطوط", true, *sp.fonts.toTypedArray()),
+                ui.section("✨ الأنيميشن", false, *sp.anim.toTypedArray()),
+                ui.section("🎬 العرض والألوان", false, *sp.look.toTypedArray())), true, "الخطوط · الأنيميشن · وضع العرض · الألوان · الخلفية", group = "🎞 مشغّل الفيديو"),
+            TabDef("visual", "👁 الوضع البصري", listOf<View>(
+                                ui.section("👁 محرك الوضع البصري", false, visAutoChips, visSrcChips, visFpsChips,
+                    ui.text("الوضع البصري بيعتمد على Gemini فقط (مفتاح «الوضع البصري فقط» تحت). «مقاطع فيديو» = بيبعت مقطع 10 ثواني وجيميناي بيحدد مكان كل نص ووقته وحركته (الأدق). «فريمات» = بيبعت صور متتالية (أخف على الأجهزة والمصادر اللي مابتتقصّش). الكثافة بتتحكم في عدد الفريمات في الثانية اللي جيميناي بياخدها. النتايج بتتحفظ مع الفيديو. بين كل نافذة والتانية راحة تلقائية لو جيميناي رفض (429). بيتطبق من أول تشغيل جديد.", 12f, th.muted)),
+                                ui.section("👁 مفتاح الوضع البصري فقط", false,
+                    ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "تلقائي/يدوي · مقاطع أو فريمات · الكثافة · مفتاح الوضع البصري", group = "🎞 مشغّل الفيديو"),
+            TabDef("audio", "🔊 الصوت والبصمة", listOf<View>(
+                                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
+                                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
+                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted))), false, "جودة الصوت · كشف الكلام · التوقيت · بصمة المتكلم", group = "🎞 مشغّل الفيديو"),
+            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد", group = "🎞 مشغّل الفيديو"),
+            TabDef("music", "🎵 مشغّل الموسيقى", listOf<View>(
+                ui.section("📝 الكلمات", true,
+                    ui.text("طريقة جلب الكلمات الافتراضية:", 12f, th.muted), lyrModeChips,
+                    ui.text("📝 كلمات كاملة: جيميناي يجيب الكلمات الرسمية وبعدين يظبط توقيت كل سطر على الصوت الفعلي. 🎧 تفريغ: جيميناي يسمع الأغنية مقطع مقطع ويكتب اللي بيتقال. وتقدر تبدّل بينهم من جوه المشغّل (إظهار الكلمات).", 12f, th.muted),
+                    ui.switchRow("جيب الكلمات تلقائيًا لما أفتح المشغّل", Cfg.str("music_auto_lyr", "1") != "0") { Cfg.put("music_auto_lyr", if (it) "1" else "0") }),
+                ui.section("🔤 شكل الكلمات", false,
+                    ui.text("الخط:", 12f, th.muted), lyrFontChips,
+                    ui.text("الحجم:", 12f, th.muted), lyrSizeChips),
+                ui.section("🎵 المكتبة", false,
+                    ui.text("لو أغاني جديدة ماظهرتش في صفحة الموسيقى، أعد الفحص:", 12f, th.muted),
+                    ui.button("🔄 إعادة فحص الأغاني") { try { musicUi?.reload(true) } catch (_: Throwable) {}; Notice.show(this, "🔄 بفحص الأغاني…", 1600L) })), false, "الكلمات (جيميناي / تفريغ) · الخط والحجم · الكلمات التلقائية · فحص الأغاني", group = "🎵 مشغّل الموسيقى"),
             TabDef("credits", "🙏 شكر وتقدير", listOf<View>(
                 ui.text("موديل بصمة الصوت (التعرف على المتكلم) المستخدم في التطبيق:", 13f, th.text, true),
                 ui.text("WeSpeaker · voxceleb_resnet34_LM (ResNet34 متدرّب على VoxCeleb) — من مشروع WeSpeaker مفتوح المصدر. الشكر لفريق WeSpeaker ولمنشور الموديل على Hugging Face. رخصة الموديل وشروطه حسب صفحته الأصلية.", 12f, th.muted),
                 ui.button("🔗 صفحة الموديل") { try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM"))) } catch (_: Exception) {} },
-                ui.text("تشغيل الموديل على الجهاز: ONNX Runtime (Microsoft).", 12f, th.muted)), false, "مصادر الموديلات والمكتبات المستخدمة")
+                ui.text("تشغيل الموديل على الجهاز: ONNX Runtime (Microsoft).", 12f, th.muted)), false, "مصادر الموديلات والمكتبات المستخدمة", group = "ℹ️ أخرى")
         ), sp.holder) { save(); refreshChip(); if (fromPlayer) finish() }
         // رابط مباشر + المحفوظة (نافذة سفلية): حقل الرابط بيتحط هنا
         link.hint = "الصق أي لينك: فيديو مباشر / يوتيوب / صفحة فيها فيديو"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR
@@ -584,7 +611,7 @@ class MainActivity : Activity() {
         // رجّع الطابور المحفوظ (لو التطبيق اتقفل/اتمسح) وكمّل الترجمة
         if (!fromPlayer && BgJobs.restore(this) > 0) { BgService.start(this); libUi?.refreshRows() }
         lib.onQueue = { qui.show() }
-        BgJobs.onChange = { runOnUiThread { if (!isDestroyed) { libUi?.refreshRows(); if (qui.showing) qui.refresh(); TaskCenter.changed() } } }
+        BgJobs.onChange = { runOnUiThread { if (!isDestroyed) { libUi?.refreshRows(); if (qui.showing) qui.refresh(); TaskCenter.changed(); updateTasksFab() } } }
         lib.gate = { open -> lk.gate(open) }
         // (v87) ⚙️ في المكتبة: قايمة صغيرة منسدلة بالأقسام، دوسة على قسم تفتحه دايركت (بدل شاشة القايمة الكبيرة)
         lib.onSettings = { anchor ->
@@ -626,7 +653,24 @@ class MainActivity : Activity() {
         // (v135) بوابة تالتة: «المهام» (قص · صوت · GIF · ضغط · ترجمة ثابتة)
         toolsUiM = ToolsUi(this, ui, th)
         val tasksUi = TasksUi(this, ui, th) { k -> pickTool(k) }; tasksUiRef = tasksUi
+        // (v198) الشريط السفلي (البوابات) وشريط النظام بياخدوا لون مشغّل الموسيقى لما يتفتح، ويرجعوا لثيم البرنامج لما يتقفل
+        @Suppress("DEPRECATION")
+        fun setNavTint(c: Int?) {
+            navUi?.tint(c)
+            fabHide = c != null; updateTasksFab()
+            try {
+                // (v199) شريط الحالة (فوق) وشريط البوابات وشريط النظام (تحت) بنفس اللون: لون الغلاف وقت المشغّل، وإلا لون الثيم
+                window.statusBarColor = c ?: th.bg; window.navigationBarColor = c ?: th.bg
+                if (th.isLight) {
+                    var f = window.decorView.systemUiVisibility
+                    f = if (c != null) f and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv() else f or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    if (android.os.Build.VERSION.SDK_INT >= 26) f = if (c != null) f and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv() else f or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                    window.decorView.systemUiVisibility = f
+                }
+            } catch (_: Throwable) {}
+        }
         val music = MusicUi(this, ui, th); musicUi = music; music.root.visibility = View.GONE
+        music.onNavTint = { c -> setNavTint(c) }
         music.onGrant = { requestPermissions(arrayOf(MusicScan.permission()), 12) }
         // (v194) صفحة الموسيقى = نفس كلاس صفحة الفيديوهات: نفس الإعدادات والعمليات (إعادة تسمية/نقل/مشاركة/حذف/تفاصيل) والبوابة بتاعة المخفي
         music.lib.onSettings = lib.onSettings
@@ -641,18 +685,25 @@ class MainActivity : Activity() {
         music.lib.onDetails = { v -> ops.details(v, null) }
         // (v189) البوابات: 0 الفيديوهات · 1 الموسيقى · 2 المتصفح (صفحة المهام بقت زرار ⏳ في المشغّل + قايمة ⚙️ في المكتبة)
         showTabFn = { i ->
-            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; music.root.visibility = View.GONE; navUi?.set(0) }
-            else if (i == 1) { curTab = 1; lib.root.visibility = View.GONE; music.root.visibility = View.VISIBLE; music.ensureLoaded(); navUi?.set(1) }
+            if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; music.root.visibility = View.GONE; navUi?.set(0); setNavTint(null) }
+            else if (i == 1) { curTab = 1; lib.root.visibility = View.GONE; music.root.visibility = View.VISIBLE; music.ensureLoaded(); navUi?.set(1); music.applyNavTint() }
             else if (i == 3) showTasksDialog()
         }
         val nav = BottomNav(this, ui, th, 0) { i -> if (i == 2) { save(); startActivity(Intent(this, BrowserActivity::class.java)) } else showTabFn(i) }
         navUi = nav
         if (!fromPlayer) {
-            TaskCenter.listener = { if (!isDestroyed && !isFinishing) { tasksDlgRefresh?.invoke() } }
+            TaskCenter.listener = { if (!isDestroyed && !isFinishing) { tasksDlgRefresh?.invoke(); runOnUiThread { updateTasksFab() } } }
         }
         val pane = FrameLayout(this)
         pane.addView(lib.root, FrameLayout.LayoutParams(-1, -1))
         pane.addView(music.root, FrameLayout.LayoutParams(-1, -1))
+        val fab = IconTextView(this).apply {
+            textSize = 14f; setTextColor(Color.WHITE); setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8)); visibility = View.GONE; elevation = ui.dp(6).toFloat()
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(0xDD1E2A3A.toInt()); cornerRadius = ui.dp(18).toFloat(); setStroke(ui.dp(1), 0x88FFFFFF.toInt()) }
+            setOnClickListener { showTasksDialog() }
+        }
+        tasksFab = fab; pane.addView(fab, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { bottomMargin = ui.dp(86); marginEnd = ui.dp(16) })
+        updateTasksFab()
         val shell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
         shell.addView(pane, LinearLayout.LayoutParams(-1, 0, 1f))
         shell.addView(nav.view, LinearLayout.LayoutParams(-1, -2))

@@ -21,6 +21,8 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaMetadataRetriever
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -150,12 +152,124 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     private var fullOn = false
     private val middle = FrameLayout(act)
     private val eq = EqView(act).apply { accent = BLUE }
-    private val ORB_SCALE = 0.44f
+    var onNavTint: (Int?) -> Unit = {}          // (v198) لون الشريط السفلي (البوابات) وهو المشغّل مفتوح؛ null = الشكل العادي
+    private fun navCol(c: Int) = blend(c, BLACK, 0.80f)
+    fun applyNavTint() { onNavTint(if (fullOn) navCol(bgColor) else null) }
+    // شريط التقدم الطولي (v198): الوقت الحالي · السلايدر · مدة الأغنية
+    private val seekBar = SeekBar(act).apply {
+        max = 1000; layoutDirection = View.LAYOUT_DIRECTION_LTR; splitTrack = false
+        progressTintList = android.content.res.ColorStateList.valueOf(BLUE)
+        progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x40FFFFFF)
+        thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+        setPadding(ui.dp(14), 0, ui.dp(14), 0)
+    }
+    private val tCur = ui.text("0:00", 12f, 0xCCFFFFFF.toInt()).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER; gravity = Gravity.CENTER }
+    private val tTot = ui.text("0:00", 12f, 0xCCFFFFFF.toInt()).apply { textAlignment = View.TEXT_ALIGNMENT_CENTER; gravity = Gravity.CENTER }
+    private var seeking = false
     private val lyrBtn = ui.text("📝 إظهار الكلمات", 12.5f, Color.WHITE, true).apply {
         gravity = Gravity.CENTER; setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8)); background = ui.box(0x33FFFFFF, 0x55FFFFFF, 20)
         setOnClickListener { toggleLyrics() }
     }
     private var lyrFontBtn: TextView? = null
+    // ===== (v200) أدوات المشغّل: ⏱ مؤقت النوم · ⏩ السرعة · 📃 التالي =====
+    private fun pillBg(on: Boolean) = if (on) ui.box(0x445B9DFF, BLUE, 20) else ui.box(0x22FFFFFF, 0x33FFFFFF, 20)
+    private fun toolPill(t: String, f: () -> Unit) = ui.text(t, 12f, Color.WHITE, true).apply {
+        gravity = Gravity.CENTER; setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(ui.dp(6), ui.dp(9), ui.dp(6), ui.dp(9))
+        background = pillBg(false); setOnClickListener { f() }
+    }
+    private val bSleep = toolPill("⏱ نوم") { sleepDialog() }
+    private val bSpeed = toolPill("⏩ 1×") { speedDialog() }
+    private val bQueue = toolPill("📃 التالي") { queueDialog() }
+    private val bVol = toolPill("🔊 100%") { volumeDialog() }
+    private var lastToolSig = ""
+    private fun speedLabel(s: Float): String = if (s == s.toInt().toFloat()) s.toInt().toString() + "×" else String.format(java.util.Locale.US, "%.2f", s).trimEnd('0') + "×"
+    private fun paintTools() {
+        val left = MusicEngine.sleepLeftMs(); val sec = (left + 999L) / 1000L
+        val eot = MusicEngine.sleepEndOfTrack; val sp = MusicEngine.speed
+        val rest = (MusicEngine.queue.size - MusicEngine.idx - 1).coerceAtLeast(0)
+        val vp = MusicEngine.volPct
+        val sig = "$sec|$eot|$sp|$rest|$vp"
+        if (sig == lastToolSig) return
+        lastToolSig = sig
+        bSleep.text = when { eot -> "⏱ بعد دي"; sec > 0L -> "⏱ " + VideoLib.fmtDur(left); else -> "⏱ نوم" }
+        bSleep.background = pillBg(eot || sec > 0L)
+        bSpeed.text = "⏩ " + speedLabel(sp); bSpeed.background = pillBg(sp != 1f)
+        bQueue.text = if (rest > 0) "📃 التالي ($rest)" else "📃 التالي"
+        bVol.text = "🔊 $vp%"; bVol.background = pillBg(vp != 100)
+    }
+    private fun optRow(label: String, on: Boolean, f: () -> Unit) = ui.text(label, 15f, th.text, on).apply {
+        gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(12), ui.dp(10), ui.dp(12))
+        background = ui.box(if (on) 0x445B9DFF else 0x14808080, if (on) BLUE else th.border, 12); setOnClickListener { f() }
+    }
+    private fun sleepDialog() {
+        var dlg: android.app.Dialog? = null
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(2)) }
+        fun add(label: String, on: Boolean, f: () -> Unit) {
+            col.addView(optRow(label, on) { f(); lastToolSig = ""; paintTools(); dlg?.dismiss() }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
+        }
+        if (MusicEngine.sleepLeftMs() > 0L || MusicEngine.sleepEndOfTrack) add("🚫 إلغاء المؤقت", false) { MusicEngine.setSleep(0); Notice.show(act, "المؤقت اتلغى", 1500L) }
+        for (m in intArrayOf(5, 10, 15, 30, 45, 60)) add("⏱ بعد $m دقيقة", false) { MusicEngine.setSleep(m); Notice.show(act, "😴 هتقف بعد $m دقيقة (بفيد هادي)", 2200L) }
+        add("🎵 لما الأغنية دي تخلص", MusicEngine.sleepEndOfTrack) { MusicEngine.setSleep(-1); Notice.show(act, "😴 هتقف في آخر الأغنية دي", 2200L) }
+        dlg = ui.sheet(act, "⏱ مؤقت النوم", listOf<View>(col)); dlg.show()
+    }
+    private fun speedDialog() {
+        var dlg: android.app.Dialog? = null
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(2)) }
+        for (sp in floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)) {
+            val lbl = speedLabel(sp) + (if (sp == 1f) "  (عادي)" else "")
+            col.addView(optRow(lbl, MusicEngine.speed == sp) { MusicEngine.setSpeed(sp); lastToolSig = ""; paintTools(); Notice.show(act, "⏩ السرعة " + speedLabel(sp), 1300L); dlg?.dismiss() }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
+        }
+        col.addView(ui.text("الصوت بيفضل بنفس الدرجة (من غير تخين أو رفع)", 11.5f, th.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(2), 0, 0) })
+        dlg = ui.sheet(act, "⏩ سرعة التشغيل", listOf<View>(col)); dlg.show()
+    }
+    private fun queueDialog() {
+        val q = MusicEngine.queue; val cur = MusicEngine.idx
+        if (q.isEmpty() || cur !in q.indices) { Notice.show(act, "مفيش حاجة شغّالة", 1500L); return }
+        var dlg: android.app.Dialog? = null
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(2)) }
+        if (MusicEngine.shuffle) col.addView(ui.text("🔀 العشوائي شغّال — الترتيب هنا مش بالضرورة اللي هيشتغل", 11.5f, th.muted).apply { gravity = Gravity.CENTER; setPadding(0, 0, 0, ui.dp(6)) })
+        val from = (cur - 1).coerceAtLeast(0); val to = minOf(q.size, cur + 60)
+        for (i in from until to) {
+            val t = q[i]; val nm = nameOf(t); val on = i == cur
+            val row = LinearLayout(act).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(ui.dp(12), ui.dp(9), ui.dp(12), ui.dp(9))
+                background = ui.box(if (on) 0x445B9DFF else 0x14808080, if (on) BLUE else th.border, 12)
+                setOnClickListener { MusicEngine.play(act, q, i); dlg?.dismiss() }
+            }
+            row.addView(ui.text((if (on) "▶ " else "") + nm.first, 14.5f, th.text, on).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END })
+            if (nm.second.isNotBlank()) row.addView(ui.text(nm.second, 12f, th.muted).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END })
+            col.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
+        }
+        if (to < q.size) col.addView(ui.text("… و " + (q.size - to) + " أغنية كمان", 12f, th.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(4), 0, 0) })
+        dlg = ui.sheet(act, "📃 التالي في القايمة", listOf<View>(col)); dlg.show()
+    }
+    /** (v200) سحب لتحت من الشريط العلوي = قفل المشغّل الكامل */
+    private fun attachSwipeDown(handle: View) {
+        var y0 = 0f; var dragging = false; var vt: VelocityTracker? = null
+        val slop = android.view.ViewConfiguration.get(act).scaledTouchSlop
+        handle.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { y0 = e.rawY; dragging = false; vt?.recycle(); vt = VelocityTracker.obtain(); vt?.addMovement(e) }
+                MotionEvent.ACTION_MOVE -> {
+                    vt?.addMovement(e)
+                    val dy = e.rawY - y0
+                    if (!dragging && dy > slop) { dragging = true; handle.parent?.requestDisallowInterceptTouchEvent(true) }
+                    if (dragging) { full.translationY = dy.coerceAtLeast(0f); full.alpha = 1f - (dy / full.height.coerceAtLeast(1)).coerceIn(0f, 0.6f) }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        vt?.addMovement(e); vt?.computeCurrentVelocity(1000)
+                        val dy = e.rawY - y0; val vy = vt?.yVelocity ?: 0f
+                        if (e.actionMasked == MotionEvent.ACTION_UP && (dy > full.height * 0.22f || vy > 1400f)) {
+                            full.animate().translationY(full.height.toFloat()).alpha(0f).setDuration(180L).withEndAction { hideFull(); full.translationY = 0f; full.alpha = 1f }.start()
+                        } else full.animate().translationY(0f).alpha(1f).setDuration(160L).start()
+                    }
+                    vt?.recycle(); vt = null; dragging = false
+                }
+            }
+            true
+        }
+    }
     private fun canEq() = act.checkSelfPermission("android.permission.RECORD_AUDIO") == PackageManager.PERMISSION_GRANTED
     private fun askEq() {
         try { act.requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 14) } catch (_: Throwable) {}
@@ -186,17 +300,27 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     private fun fontDialog() {
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(4)) }
         val rows = ArrayList<Pair<FontOpt, TextView>>()
+        // (v201) الحجم جنب الخط في نفس النافذة (A− / A+ طلعوا من شريط الكلمات)
+        val sizeLbl = ui.text("", 15f, th.text, true).apply { gravity = Gravity.CENTER }
+        fun paintSize() { sizeLbl.text = "حجم الكلمات: " + lsz().toInt() }
+        fun sizeBtn(t: String, d: Int) = ui.text(t, 18f, th.text, true).apply { gravity = Gravity.CENTER; background = ui.box(0x14808080, th.border, 12); setOnClickListener { bumpSize(d); paintSize() } }
+        paintSize()
+        val sizeRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
+        sizeRow.addView(sizeBtn("A−", -2), LinearLayout.LayoutParams(ui.dp(64), ui.dp(48)))
+        sizeRow.addView(sizeLbl, LinearLayout.LayoutParams(0, -2, 1f))
+        sizeRow.addView(sizeBtn("A+", 2), LinearLayout.LayoutParams(ui.dp(64), ui.dp(48)))
+        col.addView(sizeRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
         fun paintRows() { val cur = fontOpt().id; rows.forEach { (f, tv) -> tv.background = ui.box(if (f.id == cur) 0x445B9DFF else 0x14808080, if (f.id == cur) BLUE else th.border, 10) } }
         SubStyle.fonts.forEach { f ->
             val tv = ui.text(f.label + " — كلمات الأغنية", 18f, th.text).apply {
                 gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(10), ui.dp(8), ui.dp(10)); typeface = lyrTfFor(f)
-                setOnClickListener { Cfg.put("lyr_font", f.id); lyrFontBtn?.text = "🔤 الخط: " + f.label; paintRows(); restyleLyrics() }
+                setOnClickListener { Cfg.put("lyr_font", f.id); paintRows(); restyleLyrics() }
             }
             rows.add(f to tv); col.addView(tv, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
         }
         paintRows()
         val sc = ScrollView(act).apply { addView(col) }
-        GAlert(act).setTitle("🔤 خط الكلمات").setView(sc).setPositiveButton("تمام", null).show()
+        GAlert(act).setTitle("🔤 خط وحجم الكلمات").setView(sc).setPositiveButton("تمام", null).show()
     }
 
     // ===== الكلمات: حيّة فوق الدايرة + صفحة كاملة (بوضعين: 📝 كاملة من جيميناي · 🎧 تفريغ من الصوت) =====
@@ -208,7 +332,7 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     private val inner = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
     private val lyrPanel = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
     private val lyrStatus = ui.text("", 12.5f, 0xFFD0D3DA.toInt()).apply { gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4)) }
-    private val lyrBox = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(60)) }
+    private val lyrBox = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(40)) }
     private val lyrScroll = ScrollView(act).apply { overScrollMode = View.OVER_SCROLL_NEVER; isVerticalScrollBarEnabled = false; addView(lyrBox) }
     private val lyrViews = ArrayList<TextView>()
     private val modeChips = ArrayList<TextView>()
@@ -224,36 +348,28 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     private fun autoLyr() = Cfg.str("music_auto_lyr", "1") != "0"
 
     private fun buildLyricsPanel() {
-        // اختيار الوضع
-        val modes = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(4)) }
-        fun chip(label: String, m: String) = ui.text(label, 13f, Color.WHITE, true).apply {
-            gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(9), ui.dp(8), ui.dp(9)); tag = m
+        // (v198) صف واحد متحرك أفقيًا فيه كل الأزرار: وضعي الكلمات · التصحيح · الخط والحجم — عشان الكلمات تاخد أكبر مساحة
+        val tools = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(10), ui.dp(2), ui.dp(10), ui.dp(2)) }
+        fun chip(label: String, m: String) = ui.text(label, 12.5f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(11), ui.dp(12), ui.dp(11)); tag = m
             setOnClickListener { if (LyricsEngine.mode() != m) { LyricsEngine.setMode(m); paintModes(); loadLyrics(manual = true) } }
         }
+        fun fb(t: String, f: () -> Unit) = ui.text(t, 12f, Color.WHITE).apply {
+            gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(11), ui.dp(12), ui.dp(11)); background = ui.box(0x22FFFFFF, 0x33FFFFFF, 10); setOnClickListener { f() }
+        }
+        fun add(v: View) { tools.addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }) }
         val a = chip("📝 كلمات كاملة (جيميناي)", LyricsEngine.M_FULL); val b = chip("🎧 تفريغ من الصوت", LyricsEngine.M_AUDIO)
         modeChips.add(a); modeChips.add(b)
-        modes.addView(a, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) }); modes.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
-        lyrPanel.addView(modes, LinearLayout.LayoutParams(-1, -2))
-        // أزرار التصحيح
-        val fix = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), 0, ui.dp(12), 0) }
-        fun fb(t: String, f: () -> Unit) = ui.text(t, 12f, Color.WHITE).apply {
-            gravity = Gravity.CENTER; setPadding(ui.dp(4), ui.dp(8), ui.dp(4), ui.dp(8)); background = ui.box(0x22FFFFFF, 0x33FFFFFF, 10); setOnClickListener { f() }
-        }
-        fix.addView(fb("🔁 إعادة") { redoLyrics(false) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
-        fix.addView(fb("✍️ الكلمات غلط") { redoLyrics(true) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
-        fix.addView(fb("❌ الأغنية غلط") { wrongSong() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
-        fix.addView(fb("🔄 ريفريش") { refreshAll() }, LinearLayout.LayoutParams(0, -2, 1f))
-        lyrPanel.addView(fix, LinearLayout.LayoutParams(-1, -2))
-        // الخط والحجم
-        val fontRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(2)) }
-        val fbtn = fb("🔤 الخط: " + fontOpt().label) { fontDialog() }; lyrFontBtn = fbtn
-        fontRow.addView(fbtn, LinearLayout.LayoutParams(0, -2, 2f).apply { marginEnd = ui.dp(4) })
-        fontRow.addView(fb("A−") { bumpSize(-2) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(4) })
-        fontRow.addView(fb("A+") { bumpSize(2) }, LinearLayout.LayoutParams(0, -2, 1f))
-        lyrPanel.addView(fontRow, LinearLayout.LayoutParams(-1, -2))
+        add(a); add(b)
+        // (v201) شريط الكلمات: 4 أزرار بس — الباقي (إعادة · الكلمات غلط · الأغنية غلط · ريفريش …) جوه «⋯ المزيد»
+        val fbtn = fb("🔤 خط وحجم") { fontDialog() }; lyrFontBtn = fbtn; add(fbtn)
+        add(fb("⋯ المزيد") { moreSheet() })
+        val hs = android.widget.HorizontalScrollView(act).apply { isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER; layoutDirection = View.LAYOUT_DIRECTION_RTL; addView(tools) }
+        lyrPanel.addView(hs, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4) })
         lyrPanel.addView(lyrStatus, LinearLayout.LayoutParams(-1, -2))
+        lyrScroll.apply { isVerticalFadingEdgeEnabled = true; setFadingEdgeLength(ui.dp(46)) }
         lyrPanel.addView(lyrScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        lyrPanel.setBackgroundColor(0x40000000)
+        lyrPanel.setBackgroundColor(0x00000000)
         paintModes()
     }
     private fun paintModes() {
@@ -279,34 +395,37 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
         lyrBox.addView(ui.text(t, 15f, C_DIM).apply { gravity = Gravity.CENTER; setPadding(ui.dp(8), ui.dp(40), ui.dp(8), ui.dp(12)) })
         liveReset()
     }
-    /** فتح/قفل صفحة الكلمات الكاملة (بتتفتح بالضغط على الكلمات فوق الدايرة أو من ⋮) */
+    /** (v198) المسافة اللي الدواير بتنزلها: من أسفل الحلقة لحد ما تلمس اسم الأغنية بالظبط — من غير تصغير (فمفيش قص للأغلفة اللي على الجنبين) */
+    private fun lyrShift(): Float = (orb.height / 2f - orb.ringR - ui.dp(3)).coerceAtLeast(0f)
+    /** فتح/قفل صفحة الكلمات (بتتفتح بزرار «إظهار الكلمات» أو من ⋮) */
     private fun toggleLyrics() {
         if (MusicEngine.current == null) { Notice.show(act, "شغّل أغنية الأول وبعدين دوس على الكلمات", 2200L); return }
         if (lyrOn) { hideLyrics(); return }
         lyrOn = true; lyrIdx = -2; lyrWordKey = ""
         paintModes(); paintLyrBtn()
-        // الدواير تصغر وتنزل لتحت (متثبّتة من تحت) والكلمات تظهر من وراها
-        orb.pivotX = orb.width / 2f; orb.pivotY = orb.height.toFloat()
-        val top = orb.top + orb.height * (1f - ORB_SCALE)
-        (lyrPanel.layoutParams as FrameLayout.LayoutParams).bottomMargin = (middle.height - top).toInt().coerceAtLeast(0)
+        // الدواير بنفس حجمها بتنزل لتحت لحد اسم الأغنية، والكلمات بتظهر من وراها بفيد
+        val shift = lyrShift()
+        val ringTop = orb.top + shift + (orb.ringCy - orb.ringR)
+        (lyrPanel.layoutParams as FrameLayout.LayoutParams).bottomMargin = (middle.height - ringTop - orb.ringR * 0.08f).toInt().coerceIn(0, (middle.height - ui.dp(140)).coerceAtLeast(0))
         lyrPanel.requestLayout()
+        orb.passThrough = true
         lyrPanel.animate().cancel(); lyrPanel.alpha = 0f; lyrPanel.visibility = View.VISIBLE
-        lyrPanel.animate().alpha(1f).setDuration(280L).start()
-        orb.animate().cancel(); orb.animate().scaleX(ORB_SCALE).scaleY(ORB_SCALE).setDuration(320L).start()
+        lyrPanel.animate().alpha(1f).setStartDelay(120L).setDuration(340L).start()
+        orb.animate().cancel(); orb.animate().translationY(shift).setDuration(340L).setInterpolator(android.view.animation.DecelerateInterpolator(1.4f)).start()
         loadLyrics(manual = true)
     }
     private fun paintLyrBtn() { lyrBtn.text = if (lyrOn) "🙈 إخفاء الكلمات" else "📝 إظهار الكلمات" }
     private fun hideLyrics() {
         if (!lyrOn) return
-        lyrOn = false; paintLyrBtn()
-        lyrPanel.animate().cancel(); lyrPanel.animate().alpha(0f).setDuration(220L).withEndAction { if (!lyrOn) lyrPanel.visibility = View.GONE }.start()
-        orb.animate().cancel(); orb.animate().scaleX(1f).scaleY(1f).setDuration(300L).start()
+        lyrOn = false; paintLyrBtn(); orb.passThrough = false
+        lyrPanel.animate().cancel(); lyrPanel.animate().setStartDelay(0L).alpha(0f).setDuration(220L).withEndAction { if (!lyrOn) lyrPanel.visibility = View.GONE }.start()
+        orb.animate().cancel(); orb.animate().translationY(0f).setDuration(320L).setInterpolator(android.view.animation.DecelerateInterpolator(1.4f)).start()
     }
     /** لما المشغّل نفسه يتقفل: رجّع الدايرة والكلمات لوضعهم فورًا (الأنيميشن مابيشتغلش على view مخفي) */
     private fun snapLyrReset() {
-        lyrOn = false; paintLyrBtn()
+        lyrOn = false; paintLyrBtn(); orb.passThrough = false
         lyrPanel.animate().cancel(); lyrPanel.visibility = View.GONE; lyrPanel.alpha = 1f
-        orb.animate().cancel(); orb.scaleX = 1f; orb.scaleY = 1f
+        orb.animate().cancel(); orb.translationY = 0f
     }
     private fun nameHint(t: Track): Pair<String, String>? = nameOf(t).let { if (it.first.isBlank()) null else it }
 
@@ -443,6 +562,7 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
         top.addView(View(act).apply { background = ui.box(0x59FFFFFF, Color.TRANSPARENT, 3) }, FrameLayout.LayoutParams(ui.dp(40), ui.dp(5), Gravity.CENTER))
         val dots = GlyphBtn(act, "dots", 24).apply { setOnClickListener { v -> menu(v) } }
         top.addView(dots, FrameLayout.LayoutParams(ui.dp(56), ui.dp(48), Gravity.END or Gravity.CENTER_VERTICAL))
+        attachSwipeDown(top)
 
         liveReset(); liveStatus.visibility = View.GONE
 
@@ -465,6 +585,7 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
         ctl.addView(bNext, LinearLayout.LayoutParams(0, ui.dp(64), 1f))
         ctl.addView(bRepeat, LinearLayout.LayoutParams(0, ui.dp(64), 1f))
 
+        inner.clipChildren = false; middle.clipChildren = false
         // الترتيب: [الكلمات] [الدايرة] [اسم الأغنية] — والوسط (inner) بيتغطى بصفحة الكلمات الكاملة لما تتفتح
         inner.addView(orb, LinearLayout.LayoutParams(-1, 0, 1f))
         // اسم الأغنية والفنان + زرار إظهار الكلمات جنبهم
@@ -473,13 +594,33 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
         val titleRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; setPadding(ui.dp(18), 0, ui.dp(14), 0) }
         titleRow.addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
         titleRow.addView(lyrBtn, LinearLayout.LayoutParams(-2, -2))
-        inner.addView(titleRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(2); bottomMargin = ui.dp(4) })
+        inner.addView(titleRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(2); bottomMargin = ui.dp(2) })
+        val toolsRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(12), 0, ui.dp(12), 0) }
+        for (p in listOf<View>(bSleep, bSpeed, bQueue, bVol)) toolsRow.addView(p, LinearLayout.LayoutParams(0, ui.dp(40), 1f).apply { marginStart = ui.dp(3); marginEnd = ui.dp(3) })
+        inner.addView(toolsRow, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { topMargin = ui.dp(4) })
+        // (v198) شريط تقدّم طولي: الوقت الحالي · السلايدر (أول الأغنية وآخرها) · المدة الكلية
+        val seekRow = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR; setPadding(ui.dp(10), 0, ui.dp(10), 0) }
+        seekRow.addView(tCur, LinearLayout.LayoutParams(ui.dp(44), -2))
+        seekRow.addView(seekBar, LinearLayout.LayoutParams(0, ui.dp(34), 1f))
+        seekRow.addView(tTot, LinearLayout.LayoutParams(ui.dp(44), -2))
+        inner.addView(seekRow, LinearLayout.LayoutParams(-1, ui.dp(34)))
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                if (fromUser && MusicEngine.durMs > 0) tCur.text = VideoLib.fmtDur((MusicEngine.durMs.toLong() * p / 1000L))
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) { seeking = true }
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                seeking = false
+                val d = MusicEngine.durMs
+                if (d > 0) MusicEngine.seekTo((d.toLong() * (sb?.progress ?: 0) / 1000L).toInt())
+            }
+        })
         buildLyricsPanel(); lyrPanel.visibility = View.GONE
         // الكلمات ورا الدواير: لوحة الكلمات تحت، والدايرة (inner) فوقها
         middle.addView(lyrPanel, FrameLayout.LayoutParams(-1, -1)); middle.addView(inner, FrameLayout.LayoutParams(-1, -1))
 
         val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(top, LinearLayout.LayoutParams(-1, ui.dp(48)))
+        col.addView(top, LinearLayout.LayoutParams(-1, ui.dp(56)))
         col.addView(middle, LinearLayout.LayoutParams(-1, 0, 1f))
         col.addView(eq, LinearLayout.LayoutParams(-1, ui.dp(58)).apply { setMargins(ui.dp(18), ui.dp(4), ui.dp(18), ui.dp(2)) })
         col.addView(ctl, LinearLayout.LayoutParams(-1, ui.dp(76)))
@@ -488,6 +629,7 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     }
     private fun setBg(col: Int) {
         bg.setColors(intArrayOf(col, blend(col, BLACK, 0.55f), blend(col, BLACK, 0.88f), BLACK))
+        if (fullOn) onNavTint(navCol(col))
     }
     private fun animateBg(to: Int) {
         bgAnim?.cancel()
@@ -512,24 +654,45 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     }
 
     // ===== قايمة ⋮ =====
-    private fun menu(anchor: View) {
-        val items = ArrayList<Pair<String, () -> Unit>>()
-        items += (if (lyrOn) "🙈 إخفاء الكلمات" else "📝 إظهار الكلمات") to { toggleLyrics() }
-        if (!canEq()) items += "📊 تفعيل المؤثر الموسيقي (إذن)" to { askEq() }
-        items += "🎧 تعرّف على أغنية شغّالة في تطبيق تاني" to { try { act.startActivity(android.content.Intent(act, SongRequestActivity::class.java)) } catch (_: Throwable) {} }
-        items += "🔊 مستوى الصوت والتضخيم" to { volumeDialog() }
-        items += "🖼 البوستر غلط" to { wrongPoster() }
-        items += "🔎 تعرّف على الأغنية" to { identify() }
-        items += "❌ الأغنية غلط" to { wrongSong() }
-        items += "🔄 ريفريش (الاسم والكلمات والبوستر)" to { refreshAll() }
-        items += (if (autoLyr()) "⏹ إيقاف الكلمات التلقائية" else "▶ تشغيل الكلمات التلقائية") to {
+    private fun menu(anchor: View) { moreSheet() }
+    /** (v201) «⋮ المزيد»: 3 مجموعات (الكلمات · الأغنية · المشغّل) بدل 11 بند مخلوطين — وكل أمر في مكان واحد بس */
+    private fun moreSheet() {
+        var dlg: android.app.Dialog? = null
+        val col = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(2), 0, ui.dp(2), 0) }
+        fun head(t: String) { col.addView(ui.text(t, 12.5f, th.muted, true).apply { setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(4)) }) }
+        fun item(label: String, on: Boolean = false, f: () -> Unit) {
+            col.addView(ui.text(label, 14.5f, th.text, on).apply {
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START; minHeight = ui.dp(48); setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                background = ui.box(if (on) 0x445B9DFF else 0x14808080, if (on) BLUE else th.border, 12)
+                setOnClickListener { dlg?.dismiss(); f() }
+            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(5) })
+        }
+        head("📝 الكلمات")
+        item(if (lyrOn) "🙈 إخفاء الكلمات" else "📝 إظهار الكلمات") { toggleLyrics() }
+        item("📝 كلمات كاملة من جيميناي", LyricsEngine.mode() == LyricsEngine.M_FULL) { pickLyrMode(LyricsEngine.M_FULL) }
+        item("🎧 تفريغ الكلمات من الصوت", LyricsEngine.mode() == LyricsEngine.M_AUDIO) { pickLyrMode(LyricsEngine.M_AUDIO) }
+        item(if (autoLyr()) "⏹ إيقاف الكلمات التلقائية" else "▶ تشغيل الكلمات التلقائية") {
             Cfg.put("music_auto_lyr", if (autoLyr()) "0" else "1")
             Notice.show(act, if (autoLyr()) "🎤 الكلمات هتتجاب تلقائيًا لما تفتح المشغّل" else "🎤 الكلمات مش هتتجاب إلا لما تدوس عليها", 2400L)
         }
-        val pm = android.widget.PopupMenu(act, anchor)
-        items.forEachIndexed { i, it -> pm.menu.add(0, i, i, Icons.convert(it.first)) }
-        pm.setOnMenuItemClickListener { m -> items[m.itemId].second(); true }
-        pm.show()
+        item("🔁 إعادة تحميل الكلمات") { redoLyrics(false) }
+        item("✍️ الكلمات غلط") { redoLyrics(true) }
+        item("🔤 خط وحجم الكلمات") { fontDialog() }
+        head("🎵 الأغنية")
+        item("🔎 تعرّف على الأغنية") { identify() }
+        item("❌ الأغنية غلط") { wrongSong() }
+        item("🖼 البوستر غلط") { wrongPoster() }
+        item("🔄 ريفريش (الاسم والكلمات والبوستر)") { refreshAll() }
+        item("🎧 تعرّف على أغنية شغّالة في تطبيق تاني") { try { act.startActivity(android.content.Intent(act, SongRequestActivity::class.java)) } catch (_: Throwable) {} }
+        head("🔊 المشغّل")
+        item("🔊 مستوى الصوت والتضخيم") { volumeDialog() }
+        if (!canEq()) item("📊 تفعيل المؤثر الموسيقي (إذن)") { askEq() }
+        dlg = ui.sheet(act, "⋮ المزيد", listOf<View>(col)); dlg.show()
+    }
+    private fun pickLyrMode(m: String) {
+        if (MusicEngine.current == null) { Notice.show(act, "شغّل أغنية الأول", 1500L); return }
+        LyricsEngine.setMode(m); paintModes()
+        if (!lyrOn) toggleLyrics() else loadLyrics(manual = true)
     }
     private fun volumeDialog() {
         val bar = DualVolBar(act, th.primary, th.border).apply { max = 200; progress = MusicEngine.volPct; layoutDirection = View.LAYOUT_DIRECTION_LTR; setPadding(ui.dp(8), 0, ui.dp(8), 0) }
@@ -562,14 +725,14 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
     }
     fun showFull() {
         if (MusicEngine.current == null) return
-        fullOn = true; full.visibility = View.VISIBLE
+        fullOn = true; full.visibility = View.VISIBLE; onNavTint(navCol(bgColor))
         if (!canEq() && Cfg.str("eq_asked", "") != "1") {
             Cfg.put("eq_asked", "1"); Notice.show(act, "📊 المؤثر الموسيقي محتاج إذن «تسجيل الصوت» (للتحليل بس، مفيش تسجيل)", 3200L); askEq()
         }
-        paint(); refreshNow()
+        paint(); refreshNow(); lastToolSig = ""; paintTools()
         loadLyrics()
     }
-    private fun hideFull() { snapLyrReset(); eq.release(); fullOn = false; full.visibility = View.GONE }
+    private fun hideFull() { snapLyrReset(); eq.release(); fullOn = false; full.visibility = View.GONE; onNavTint(null) }
     /** الاسم المعروض: الاسم اللي اتحفظ من التعرف لو موجود، وإلا بيانات الملف */
     private fun nameOf(t: Track): Pair<String, String> { val o = SongId.override(t.id); return (o?.first?.ifBlank { null } ?: t.title) to (o?.second?.ifBlank { null } ?: t.artist) }
 
@@ -681,10 +844,15 @@ class MusicUi(private val act: Activity, private val ui: Ui, private val th: The
                 val f = p.toFloat() / d
                 orb.progress = f; orb.timeText = VideoLib.fmtDur(p.toLong())
                 updateMiniFill(f)
+                if (fullOn) {
+                    if (!seeking) { seekBar.progress = (f * 1000f).toInt().coerceIn(0, 1000); tCur.text = VideoLib.fmtDur(p.toLong()) }
+                    tTot.text = VideoLib.fmtDur(d.toLong())
+                }
             }
             paint()
             if (fullOn) { lyricsTick(); lyricsPoll(); eq.bind(MusicEngine.sessionId, canEq()) }
         }
+        if (fullOn) paintTools()
         h.postDelayed({ tick() }, if (fullOn) 120L else 300L)
     }
 

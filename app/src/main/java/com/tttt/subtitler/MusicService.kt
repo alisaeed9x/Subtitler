@@ -48,6 +48,52 @@ object MusicEngine {
     fun setMode(m: Int) { mode = m.coerceIn(0, 2); try { Cfg.put("music_mode", mode.toString()) } catch (_: Throwable) {}; changed() }
     fun toggleShuffle(): Boolean { shuffle = !shuffle; pendingNext = -1; try { Cfg.put("music_shuffle", if (shuffle) "1" else "0") } catch (_: Throwable) {}; changed(); return shuffle }
 
+    // (v200) سرعة التشغيل (الطبقة ثابتة) + مؤقت النوم (بعد X دقيقة بفيد تدريجي، أو لما الأغنية الحالية تخلص)
+    @Volatile var speed = 1f; private set
+    @Volatile var sleepAtMs = 0L; private set          // 0 = مفيش مؤقت زمني
+    @Volatile var sleepEndOfTrack = false; private set
+    fun sleepLeftMs(): Long = if (sleepAtMs > 0L) (sleepAtMs - System.currentTimeMillis()).coerceAtLeast(0L) else 0L
+    private val sleepTick = object : Runnable {
+        override fun run() {
+            if (sleepAtMs <= 0L) return
+            if (System.currentTimeMillis() >= sleepAtMs) { sleepFire(); return }
+            main.postDelayed(this, 1000L)
+        }
+    }
+    /** m > 0 دقايق · -1 لما الأغنية تخلص · 0 إلغاء */
+    fun setSleep(m: Int) {
+        main.removeCallbacks(sleepTick)
+        sleepEndOfTrack = m < 0
+        sleepAtMs = if (m > 0) System.currentTimeMillis() + m * 60_000L else 0L
+        if (m > 0) main.postDelayed(sleepTick, 1000L)
+        changed()
+    }
+    private fun sleepFire() {
+        sleepAtMs = 0L; sleepEndOfTrack = false
+        val steps = 6; var n = 0
+        val fade = object : Runnable {
+            override fun run() {
+                n++
+                val f = (1f - n / steps.toFloat()).coerceAtLeast(0f)
+                try { val v = (minOf(volPct, 100) / 100f) * f; mp?.setVolume(v, v) } catch (_: Throwable) {}
+                if (n < steps) main.postDelayed(this, 700L) else { pause(); applyVol() }
+            }
+        }
+        changed(); main.post(fade)
+    }
+    fun setSpeed(sp: Float) {
+        speed = sp.coerceIn(0.5f, 2f)
+        try { Cfg.put("music_speed", speed.toString()) } catch (_: Throwable) {}
+        if (isPlaying) applySpeed()
+        changed()
+    }
+    /** بنطبّقها بعد start() بس — على بعض الإصدارات ضبط السرعة وهو واقف بيشغّل الأغنية لوحده */
+    private fun applySpeed() {
+        val m = mp ?: return
+        if (!ready) return
+        try { val pp = m.playbackParams; pp.setSpeed(speed); pp.setPitch(1f); m.playbackParams = pp } catch (e: Throwable) { LogStore.err("music-speed", e) }
+    }
+
     // (v193) الصوت: 0..100 صوت عادي · 100..200 تضخيم (LoudnessEnhancer لحد +15dB) — نفس فكرة مشغّل الفيديو
     @Volatile var volPct = 100; private set
     private var loud: android.media.audiofx.LoudnessEnhancer? = null
@@ -57,6 +103,7 @@ object MusicEngine {
             mode = if (raw >= 3) 0 else raw.coerceIn(0, 2)                    // (v193 القديم: 3 = عشوائي)
             shuffle = raw == 3 || Cfg.str("music_shuffle", "0") == "1"
             volPct = (Cfg.str("music_vol", "100").toIntOrNull() ?: 100).coerceIn(0, 200)
+            speed = (Cfg.str("music_speed", "1").toFloatOrNull() ?: 1f).coerceIn(0.5f, 2f)
         } catch (_: Throwable) {}
     }
     fun setVol(p: Int) {
@@ -124,7 +171,7 @@ object MusicEngine {
                 setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 setWakeMode(ctx.applicationContext, android.os.PowerManager.PARTIAL_WAKE_LOCK)
                 setDataSource(ctx.applicationContext, Uri.parse(t.uri))
-                setOnPreparedListener { ready = true; applyVol(); if (wantPlay) try { it.start() } catch (_: Throwable) {}; changed() }
+                setOnPreparedListener { ready = true; applyVol(); if (wantPlay) { try { it.start() } catch (_: Throwable) {}; applySpeed() }; changed() }
                 setOnCompletionListener { onEnded() }
                 setOnErrorListener { _, _, _ -> ready = false; main.post { if (queue.size > 1) step(1) }; true }
                 prepareAsync()
@@ -164,6 +211,7 @@ object MusicEngine {
     private fun onEnded() {
         val a = app ?: return
         if (queue.isEmpty()) return
+        if (sleepEndOfTrack) { sleepEndOfTrack = false; wantPlay = false; try { mp?.seekTo(0) } catch (_: Throwable) {}; changed(); return }   // (v200) مؤقت النوم: آخر الأغنية
         when {
             mode == 2 -> { try { mp?.seekTo(0); mp?.start() } catch (_: Throwable) {}; changed() }
             shuffle -> play(a, queue, randomOther())
@@ -176,7 +224,7 @@ object MusicEngine {
         val m = mp
         if (m == null) { app?.let { if (queue.isNotEmpty()) play(it, queue, idx.coerceAtLeast(0)) }; return }
         wantPlay = true; gainFocus()
-        if (ready) try { m.start() } catch (_: Throwable) {}
+        if (ready) { try { m.start() } catch (_: Throwable) {}; applySpeed() }
         changed()
     }
     fun pause() { wantPlay = false; try { if (mp?.isPlaying == true) mp?.pause() } catch (_: Throwable) {}; changed() }
@@ -184,6 +232,7 @@ object MusicEngine {
     private fun release() { try { loud?.release() } catch (_: Throwable) {}; loud = null; try { mp?.release() } catch (_: Throwable) {}; mp = null; ready = false }
     /** إيقاف نهائي (زرار ✕ في الإشعار) */
     fun stopAll() {
+        sleepAtMs = 0L; sleepEndOfTrack = false; main.removeCallbacks(sleepTick)
         wantPlay = false; release(); dropFocus(); queue = emptyList(); idx = -1
         app?.let { MusicService.stop(it) }
         changed()

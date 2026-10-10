@@ -15,7 +15,7 @@ class LyricLine(val start: Double, val end: Double, val text: String)
 class LyricsResult(
     val title: String, val artist: String, val lines: List<LyricLine>,
     val complete: Boolean = true, val done: Int = 0, val total: Int = 0,
-    val ok: Set<Int> = emptySet(), val note: String = ""
+    val ok: Set<Int> = emptySet(), val note: String = "", val raw: List<String> = emptyList()
 )
 
 /**
@@ -39,7 +39,12 @@ object LyricsEngine {
     fun isRunning(t: Track, m: String) = running.containsKey(key(t, m))
     fun anyRunning() = running.isNotEmpty()
 
-    fun cached(ctx: Context, t: Track, m: String): LyricsResult? = try { parse(JSONObject(File(dir(ctx), key(t, m)).readText())) } catch (_: Throwable) { null }
+    fun cached(ctx: Context, t: Track, m: String): LyricsResult? = try {
+        val o = JSONObject(File(dir(ctx), key(t, m)).readText())
+        val r = parse(o)
+        // (v198) نسخ «كلمات كاملة» القديمة (توقيت موزّع بالتساوي) بتتعامل كناقصة عشان تتظبط على الصوت
+        if (m == M_FULL && o.optInt("v", 0) < 2 && r.complete) LyricsResult(r.title, r.artist, r.lines, false, 0, 0, emptySet(), r.note, r.raw.ifEmpty { r.lines.map { it.text } }) else r
+    } catch (_: Throwable) { null }
     fun clear(ctx: Context, t: Track, m: String) { try { File(dir(ctx), key(t, m)).delete() } catch (_: Throwable) {}; version++ }
     fun clearAll(ctx: Context, t: Track) { clear(ctx, t, M_AUDIO); clear(ctx, t, M_FULL) }
 
@@ -48,14 +53,16 @@ object LyricsEngine {
         val l = ArrayList<LyricLine>()
         for (i in 0 until a.length()) { val x = a.getJSONObject(i); l.add(LyricLine(x.getDouble("s"), x.getDouble("e"), x.getString("t"))) }
         val ok = HashSet<Int>(); val oa = o.optJSONArray("ok"); if (oa != null) for (i in 0 until oa.length()) ok.add(oa.getInt(i))
-        return LyricsResult(o.optString("title"), o.optString("artist"), l, o.optBoolean("complete", true), o.optInt("done", 0), o.optInt("total", 0), ok, o.optString("note"))
+        val ra = o.optJSONArray("raw"); val raw = ArrayList<String>(); if (ra != null) for (i in 0 until ra.length()) { val x = ra.optString(i).trim(); if (x.isNotEmpty()) raw.add(x) }
+        return LyricsResult(o.optString("title"), o.optString("artist"), l, o.optBoolean("complete", true), o.optInt("done", 0), o.optInt("total", 0), ok, o.optString("note"), raw)
     }
     private fun save(ctx: Context, t: Track, m: String, r: LyricsResult) {
         val a = JSONArray(); for (x in r.lines) a.put(JSONObject().put("s", x.start).put("e", x.end).put("t", x.text))
         val oa = JSONArray(); for (i in r.ok.sorted()) oa.put(i)
+        val ra = JSONArray(); for (x in r.raw) ra.put(x)
         try {
             File(dir(ctx), key(t, m)).writeText(JSONObject().put("title", r.title).put("artist", r.artist).put("lines", a)
-                .put("complete", r.complete).put("done", r.done).put("total", r.total).put("ok", oa).put("note", r.note).toString())
+                .put("complete", r.complete).put("done", r.done).put("total", r.total).put("ok", oa).put("note", r.note).put("raw", ra).put("v", 2).toString())
         } catch (_: Throwable) {}
         version++
     }
@@ -95,6 +102,24 @@ object LyricsEngine {
         append("Return JSON only: {\"title\":\"\",\"artist\":\"\",\"lines\":[{\"s\":0.0,\"e\":0.0,\"t\":\"\"}]}")
     }
 
+    /** (v198) مواءمة الكلمات الرسمية مع الصوت: جيميناي بيسمع المقطع ويقول أنهي سطور (من القايمة) اتغنّت فيه ومتى بالظبط */
+    private fun alignPrompt(raw: List<String>, hint: Pair<String, String>?) = buildString {
+        append("You are given a short audio clip (about one minute) from a song")
+        if (hint != null && hint.first.isNotBlank()) append(" (\"${hint.first}\"" + (if (hint.second.isNotBlank()) " by ${hint.second}" else "") + ")")
+        append(" and the song's official lyrics as numbered lines. Listen to the clip and return ONLY the lines that are actually sung in THIS clip, in the order they are sung, ")
+        append("each with its start and end time in seconds measured from the start of THIS clip. Timings must come from what you hear, not from the position of the line in the list. ")
+        append("Copy the text of each line EXACTLY as written in the list (do not change, translate or merge lines). If the same line is sung more than once (a chorus), return it once per time it is sung. ")
+        append("Do not return lines that are not sung in this clip. If you hear no words from the list, return an empty list. ")
+        append("Return JSON only: {\"lines\":[{\"s\":0.0,\"e\":0.0,\"t\":\"\"}]}\n\nOFFICIAL LYRICS:\n")
+        raw.forEachIndexed { i, x -> append(i + 1).append(". ").append(x).append('\n') }
+    }
+    /** توقيت تقريبي (موزّع بالتساوي) — بنستخدمه بس لو المواءمة مع الصوت فشلت */
+    private fun estimate(t: Track, lines: List<String>): List<LyricLine> {
+        val tot = (t.durMs / 1000.0).coerceAtLeast(30.0)
+        val step = (tot * 0.85) / lines.size.coerceAtLeast(1); val off = tot * 0.07
+        return lines.mapIndexed { i, x -> LyricLine(off + i * step, off + (i + 1) * step, x) }
+    }
+
     /**
      * بيشتغل على خيط خلفية. onStage = نص الحالة الحالية (مرحلة/تقدم) · onDone(نتيجة أو null، رسالة).
      * لو فيه نسخة ناقصة من وضع الصوت بتكمّل من اللي فاضل (إلا لو fresh).
@@ -109,29 +134,31 @@ object LyricsEngine {
                 val keys = Cfg.allMainKeys()
                 if (keys.isEmpty()) { onDone(null, "مفيش مفتاح Gemini — ضيفه من الإعدادات"); return@Thread }
                 val model = Cfg.str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT }
-                if (m == M_FULL) runFull(app, t, keys, model, hint, onStage, onDone) else runAudio(app, t, keys, model, hint, retry, fresh, onStage, onDone)
+                if (m == M_FULL) runFull(app, t, keys, model, hint, fresh, onStage, onDone) else runAudio(app, t, keys, model, hint, retry, fresh, onStage, onDone)
             } catch (e: Throwable) { LogStore.err("lyrics", e); onDone(null, "فشل: " + shortErr(e)) }
             finally { running.remove(k) }
         }.apply { isDaemon = true }.start()
     }
 
     // ===================== 🎧 تفريغ من الصوت (متوازي + بيتحفظ بعد كل مقطع) =====================
-    private fun runAudio(app: Context, t: Track, keys: List<String>, model: String, hint: Pair<String, String>?, retry: Boolean, fresh: Boolean, onStage: (String) -> Unit, onDone: (LyricsResult?, String) -> Unit) {
+    private fun runAudio(app: Context, t: Track, keys: List<String>, model: String, hint: Pair<String, String>?, retry: Boolean, fresh: Boolean, onStage: (String) -> Unit, onDone: (LyricsResult?, String) -> Unit,
+                         mode: String = M_AUDIO, raw: List<String>? = null) {
         onStage("🔌 بجهّز الملف الصوتي…")
         val src = AudioSources.make(app, Uri.parse(t.uri), null, emptyMap(), 1) { }
         val total0 = src.durationSec().takeIf { it > 0 } ?: (t.durMs / 1000.0)
         val total = Math.ceil(total0 / CHUNK).toInt().coerceAtLeast(1)
-        val prev = if (fresh) null else cached(app, t, M_AUDIO)?.takeIf { !it.complete && it.total == total }
+        val prev = if (fresh) null else cached(app, t, mode)?.takeIf { !it.complete && it.total == total }
         val okSet = HashSet<Int>()
         if (prev != null) { if (prev.ok.isNotEmpty()) okSet.addAll(prev.ok) else okSet.addAll(0 until prev.done) }
         val out = ArrayList<LyricLine>()
         if (prev != null) out.addAll(prev.lines)
         var title = prev?.title ?: ""; var artist = prev?.artist ?: ""
+        if (raw != null && prev == null) save(app, t, mode, LyricsResult(hint?.first ?: t.title, hint?.second ?: t.artist, emptyList(), false, 0, total, emptySet(), "", raw))
         val pending = ConcurrentLinkedQueue<Int>((0 until total).filter { it !in okSet })
         val errs = ConcurrentLinkedQueue<String>()
         val lock = Any(); val srcLock = Any()
         val nThreads = keys.size.coerceIn(1, 3).coerceAtMost(pending.size.coerceAtLeast(1))
-        onStage(if (okSet.isNotEmpty()) "🎧 بكمّل من مقطع ${okSet.size + 1} من $total…" else "🎧 بسمع الأغنية… ($total مقطع، $nThreads مفتاح بالتوازي)")
+        onStage(if (okSet.isNotEmpty()) "🎧 بكمّل من مقطع ${okSet.size + 1} من $total…" else if (raw != null) "⏱ بظبط توقيت الكلمات على الصوت… ($total مقطع، $nThreads مفتاح بالتوازي)" else "🎧 بسمع الأغنية… ($total مقطع، $nThreads مفتاح بالتوازي)")
         val workers = (0 until nThreads).map { wi ->
             Thread {
                 while (true) {
@@ -139,18 +166,18 @@ object LyricsEngine {
                     val a = c * CHUNK; val b = minOf(a + CHUNK, total0.coerceAtLeast(a + 1))
                     val w = try { synchronized(srcLock) { src.wav(a, b) } } catch (e: Throwable) { errs.add("قراءة الصوت: " + shortErr(e)); null }
                     if (w == null) { if (errs.isEmpty()) errs.add("ماقدرتش أقرا المقطع ${c + 1} من الملف"); continue }
-                    if (w.silent) { synchronized(lock) { okSet.add(c); save(app, t, M_AUDIO, LyricsResult(title, artist, tidy(out), false, okSet.size, total, HashSet(okSet))) }; continue }
+                    if (w.silent) { synchronized(lock) { okSet.add(c); save(app, t, mode, LyricsResult(title, artist, tidy(out), false, okSet.size, total, HashSet(okSet), "", raw ?: emptyList())) }; continue }
                     var got: JSONObject? = null
                     for (kk in 0 until keys.size.coerceAtMost(4)) {
                         val key = keys[(c + wi + kk) % keys.size]
                         try {
-                            val r = Api.generate(model, key, audioPrompt(c == 0, hint, retry), w.bytes, 8192, if (retry) 0.3 else 0.0, true)
+                            val r = Api.generate(model, key, if (raw != null) alignPrompt(raw, hint) else audioPrompt(c == 0, hint, retry), w.bytes, 8192, if (retry) 0.3 else 0.0, true)
                             got = jsonOf(r.text); break
                         } catch (e: Throwable) { errs.add(shortErr(e)) }
                     }
                     val g = got ?: continue
                     synchronized(lock) {
-                        if (c == 0 && (hint == null || hint.first.isBlank())) { title = g.optString("title").trim(); artist = g.optString("artist").trim() }
+                        if (raw == null && c == 0 && (hint == null || hint.first.isBlank())) { title = g.optString("title").trim(); artist = g.optString("artist").trim() }
                         val arr = g.optJSONArray("lines")
                         if (arr != null) for (i in 0 until arr.length()) {
                             val x = arr.optJSONObject(i) ?: continue
@@ -161,9 +188,9 @@ object LyricsEngine {
                         }
                         okSet.add(c)
                         if (hint != null && hint.first.isNotBlank()) { title = hint.first; artist = hint.second }
-                        save(app, t, M_AUDIO, LyricsResult(title, artist, tidy(out), false, okSet.size, total, HashSet(okSet)))
+                        save(app, t, mode, LyricsResult(title, artist, tidy(out), false, okSet.size, total, HashSet(okSet), "", raw ?: emptyList()))
                     }
-                    onStage("🎧 اتكتب ${synchronized(lock) { okSet.size }} من $total مقطع (بتتحفظ لوحدها)")
+                    onStage((if (raw != null) "⏱ اتظبط " else "🎧 اتكتب ") + "${synchronized(lock) { okSet.size }} من $total مقطع (بتتحفظ لوحدها)")
                 }
             }.apply { isDaemon = true }
         }
@@ -172,26 +199,35 @@ object LyricsEngine {
         if (hint != null && hint.first.isNotBlank()) { title = hint.first; artist = hint.second }
         val complete = okSet.size >= total
         val clean = tidy(out)
-        val res = LyricsResult(title, artist, clean, complete, okSet.size, total, HashSet(okSet))
         val why = errs.firstOrNull()
+        // (v198) مواءمة الكلمات الرسمية: لو الصوت ماطابقش تقريبًا ولا سطر، نرجع للتوقيت التقريبي بدل ما نسيب الشاشة فاضية
+        if (raw != null && complete && clean.size < (raw.size * 0.35).toInt().coerceAtLeast(3)) {
+            val est = LyricsResult(title, artist, estimate(t, raw), true, total, total, HashSet(okSet), "التوقيت تقريبي", raw)
+            save(app, t, mode, est); onDone(est, "ماقدرتش أظبط التوقيت على الصوت — التوقيت تقريبي (جرّب وضع 🎧 تفريغ من الصوت للدقة)"); return
+        }
+        val res = LyricsResult(title, artist, clean, complete, okSet.size, total, HashSet(okSet), "", raw ?: emptyList())
         if (clean.isEmpty()) {
-            if (complete) { save(app, t, M_AUDIO, res); onDone(res, "ما سمعتش كلام واضح في الأغنية دي — جرّب وضع 📝 كلمات كاملة") }
-            else { save(app, t, M_AUDIO, res); onDone(res, "فشل تفريغ ${total - okSet.size} من $total مقطع" + (if (why != null) " — السبب: $why" else "")) }
+            save(app, t, mode, res)
+            if (complete) onDone(res, "ما سمعتش كلام واضح في الأغنية دي — جرّب وضع 📝 كلمات كاملة")
+            else onDone(res, "فشل تفريغ ${total - okSet.size} من $total مقطع" + (if (why != null) " — السبب: $why" else ""))
         } else {
-            save(app, t, M_AUDIO, res)
+            save(app, t, mode, res)
             onDone(res, if (!complete) "اتكتب الكلام بس ${total - okSet.size} مقطع فشل" + (if (why != null) " ($why)" else "") + " — دوس 🔁 يكمّل" else "")
         }
     }
 
     // ===================== 📝 كلمات كاملة من جيميناي (بالاسم) =====================
-    private fun runFull(app: Context, t: Track, keys: List<String>, model: String, hint: Pair<String, String>?, onStage: (String) -> Unit, onDone: (LyricsResult?, String) -> Unit) {
+    private fun runFull(app: Context, t: Track, keys: List<String>, model: String, hint: Pair<String, String>?, fresh: Boolean, onStage: (String) -> Unit, onDone: (LyricsResult?, String) -> Unit) {
         val name = if (hint != null && hint.first.isNotBlank()) hint.first else t.title
         val by = if (hint != null && hint.second.isNotBlank()) hint.second else t.artist
         val label = "\"$name\"" + (if (by.isNotBlank()) " by $by" else "")
         var lines: List<String> = emptyList(); var notFound = false
         val errs = ArrayList<String>()
+        // لو الكلمات الرسمية اتجابت قبل كده (ومحفوظة) بنكمّل مواءمة الصوت من غير ما نطلبها تاني
+        val saved = if (fresh) null else cached(app, t, M_FULL)?.raw?.takeIf { it.size >= 4 }
+        if (saved != null) { runAudio(app, t, keys, model, hint, false, false, onStage, onDone, M_FULL, saved); return }
         // المرحلة 1: JSON (كلمات + found)
-        onStage("📝 مرحلة 1 من 2: بطلب كلمات $name من جيميناي…")
+        onStage("📝 مرحلة 1 من 3: بطلب كلمات $name من جيميناي…")
         val pr1 = "Give the complete lyrics of the song $label in its original language: every sung line in order, no section labels, no translation, nothing invented. " +
             "If you do not reliably know the full lyrics of this exact song, return found=false and an empty list. Return JSON only: {\"found\":true,\"lines\":[\"\"]}"
         for (kk in 0 until keys.size.coerceAtMost(3)) {
@@ -206,7 +242,7 @@ object LyricsEngine {
         }
         // المرحلة 2: لو الرد اتقطع أو مش JSON → نص عادي سطر سطر
         if (lines.size < 4 && !notFound) {
-            onStage("📝 مرحلة 2 من 2: بطلبها كنص عادي…")
+            onStage("📝 مرحلة 2 من 3: بطلبها كنص عادي…")
             val pr2 = "Write the complete lyrics of the song $label in its original language, one sung line per row, no section labels, no translation, no commentary. " +
                 "If you do not reliably know this exact song's lyrics, reply with exactly: NOT_FOUND"
             for (kk in 0 until keys.size.coerceAtMost(3)) {
@@ -225,11 +261,9 @@ object LyricsEngine {
                       else "ماجاتش كلمات" + (if (errs.isNotEmpty()) " — السبب: " + errs.first() else "") + " — دوس 🔁 تاني"
             onDone(null, msg); return
         }
-        val tot = (t.durMs / 1000.0).coerceAtLeast(30.0)
-        val step = (tot * 0.85) / lines.size; val off = tot * 0.07
-        val res = LyricsResult(name, by, lines.mapIndexed { i, x -> LyricLine(off + i * step, off + (i + 1) * step, x) }, true, 1, 1, emptySet(), "")
-        save(app, t, M_FULL, res)
-        onDone(res, "")
+        // المرحلة 3: مواءمة الكلمات مع الصوت الفعلي (بدل التوزيع بالتساوي اللي كان بيلخبط التوقيت)
+        onStage("⏱ مرحلة 3 من 3: بظبط توقيت الكلمات على الصوت…")
+        runAudio(app, t, keys, model, Pair(name, by), false, true, onStage, onDone, M_FULL, lines)
     }
 
     /** السطر الشغّال دلوقتي عند الوقت ده (آخر سطر بدأ)، أو -1 قبل أول سطر */

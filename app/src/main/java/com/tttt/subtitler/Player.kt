@@ -297,7 +297,6 @@ class PlayerActivity : Activity(), Host {
     lateinit var logDlg: android.app.Dialog
     var chromeShown = false
     var fsOnly: List<View> = emptyList()
-    lateinit var assistMenuV: View
     var lastMem = 0L
     var applyChromeFn: () -> Unit = {}
     var dismissPopFn: () -> Unit = {}
@@ -1043,23 +1042,8 @@ class PlayerActivity : Activity(), Host {
         videoBox.addView(briInd, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL).apply { setMargins(ui.dp(24), 0, 0, 0) })
         val indHide = Runnable { volInd.visibility = View.GONE; briInd.visibility = View.GONE }
         fun indShow(v: VertInd, f: Float) { v.set(f); h.removeCallbacks(indHide); h.postDelayed(indHide, 900) }
-        // فقاعة الأدوات (Assistive Touch): ✦ تفتح عمود دوائر
-        fun roundBtn(t: String, f: () -> Unit) = IconTextView(this).apply {
-            text = t; textSize = 16f; gravity = Gravity.CENTER; includeFontPadding = false
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF2A2140.toInt()); setStroke(ui.dp(2), 0xFF6B4FA0.toInt()) }
-            layoutParams = LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)).apply { setMargins(0, ui.dp(5), 0, ui.dp(5)) }
-            setOnClickListener { f(); showChrome() }
-        }
-        val menu = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; visibility = View.GONE
-            setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)); background = ui.box(0xB814171C.toInt(), 0x2EFFFFFF, 26)
-        }
-        menu.addView(roundBtn("📝") { sentDlg.show() })
-        menu.addView(roundBtn("🕳") { engine.retryFailed(); Notice.show(this, ("بحاول أسد الفجوات").toString(), 2300L) })
-        menu.addView(roundBtn("📥") { doImport() })
-        menu.addView(roundBtn("📂") { doOpen() })
-        videoBox.addView(menu, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, ui.dp(68), 0) })
-        fsOnly = listOf<View>(fsBadge, visBadge); assistMenuV = menu
+        // (v200) فقاعة الأدوات ✦ (📝 🕳 📥 📂) اتشالت — نفس الأوامر موجودة في قايمة 🧰 الأدوات
+        fsOnly = listOf<View>(fsBadge, visBadge)
         val giHide = Runnable { gi.visibility = View.GONE }
         fun giShow(t: String, g: Int) {
             gi.text = t
@@ -2336,7 +2320,6 @@ class PlayerActivity : Activity(), Host {
         videoBoxRef.background = GradientDrawable().apply { setColor(Color.BLACK); cornerRadius = if (f) 0f else ui.dp(14).toFloat() }
         fsBtnLp.setMargins(ui.dp(10), 0, 0, ui.dp(10)); fsBtnV.layoutParams = fsBtnLp
         fsOnly.forEach { it.visibility = if (f) View.VISIBLE else View.GONE }
-        if (!f) assistMenuV.visibility = View.GONE
         st.visibility = if (f) View.GONE else View.VISIBLE
         if (::logDrawer.isInitialized) { (leftCol.layoutParams as FrameLayout.LayoutParams).topMargin = ui.dp(26); logDrawer.visibility = View.VISIBLE; leftCol.requestLayout() }
         @Suppress("DEPRECATION") window.decorView.systemUiVisibility = if (f) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE) else (if (Build.VERSION.SDK_INT >= 23 && th.isLight) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else 0)
@@ -2398,7 +2381,7 @@ class PlayerActivity : Activity(), Host {
             closeSide(); dismissPopFn()
             h.removeCallbacks(hideChrome); chromeShown = false
             extras.visibility = View.GONE; st.visibility = View.GONE; floatBar.visibility = View.GONE; rotBtn.visibility = View.GONE; batchBtn.visibility = View.GONE; trChipV?.visibility = View.GONE; closeBatchPanel(); closeMiniLog(); probDrawer.visibility = View.GONE; logDrawer.visibility = View.GONE; logHandle.visibility = View.GONE
-            fsOnly.forEach { it.visibility = View.GONE }; assistMenuV.visibility = View.GONE; centerPlay.visibility = View.GONE
+            fsOnly.forEach { it.visibility = View.GONE }; centerPlay.visibility = View.GONE
             visOv.showBoxes(emptyList())
             val lp = videoBoxRef.layoutParams as LinearLayout.LayoutParams; lp.height = -1; lp.setMargins(0, 0, 0, 0); videoBoxRef.layoutParams = lp; fsBtnV.visibility = View.GONE
             videoBoxRef.findViewWithTag<View>("chromeFrame")?.visibility = View.GONE

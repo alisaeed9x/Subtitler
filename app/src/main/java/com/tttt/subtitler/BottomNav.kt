@@ -10,6 +10,9 @@ class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, privat
     private val icons = ArrayList<IconTextView>()
     private val labels = ArrayList<IconTextView>()
     val view = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
+    private var rowV: View? = null
+    private var lineV: View? = null
+    private var tinted = false
 
     init {
         val line = View(act).apply { setBackgroundColor(th.border) }
@@ -31,6 +34,7 @@ class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, privat
             icons.add(icon); labels.add(lab)
             row.addView(cell, LinearLayout.LayoutParams(0, ui.dp(58), 1f))
         }
+        rowV = row; lineV = line
         view.addView(line, LinearLayout.LayoutParams(-1, ui.dp(1)))
         view.addView(row, LinearLayout.LayoutParams(-1, -2))
         paint()
@@ -39,11 +43,19 @@ class BottomNav(act: Activity, private val ui: Ui, private val th: Theme, privat
     fun set(i: Int) { active = i; paint() }
     /** (v135) نص تحت أيقونة البوابة (بيتغيّر لـ «المهام (2)» لما فيه مهام شغّالة) */
     fun label(i: Int, t: String) { if (i in labels.indices) labels[i].text = t }
+    /** (v198) لون الشريط وهو مشغّل الموسيقى مفتوح (بيتبع لون الغلاف)؛ null = رجّعه للثيم */
+    fun tint(c: Int?) {
+        tinted = c != null
+        rowV?.setBackgroundColor(c ?: th.card)
+        lineV?.setBackgroundColor(if (c != null) 0x22FFFFFF else th.border)
+        paint()
+    }
     private fun paint() {
         for (i in icons.indices) {
             val on = i == active
-            icons[i].setTextColor(if (on) th.primary else th.muted)
-            labels[i].setTextColor(if (on) th.primary else th.muted)
+            val off = if (tinted) 0xAAFFFFFF.toInt() else th.muted
+            icons[i].setTextColor(if (on) th.primary else off)
+            labels[i].setTextColor(if (on) th.primary else off)
         }
     }
 }

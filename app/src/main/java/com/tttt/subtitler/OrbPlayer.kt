@@ -94,6 +94,11 @@ class OrbView(ctx: Context) : View(ctx) {
     private var dIn = 0f     // مسافة الكاروسيل جوه فتحة الغلاف
     private var gapHalf = 14f
     private var startAng = 104f
+    /** (v198) مركز/نص قطر الحلقة الزجاجية — بيستخدمهم المشغّل عشان ينزّل الدواير من غير ما يصغّرها */
+    val ringCy: Float get() = cy
+    val ringR: Float get() = ro
+    /** لما الكلمات ظاهرة: اللمس بره الحلقة والجنبين يعدّي للكلمات اللي ورا (عشان تتسحب) */
+    var passThrough = false
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         super.onSizeChanged(w, h, ow, oh)
@@ -229,6 +234,7 @@ class OrbView(ctx: Context) : View(ctx) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y; moved = false; dragSeek = false; dragPan = false
                 val r = Math.hypot((e.x - cx).toDouble(), (e.y - cy).toDouble()).toFloat()
+                if (passThrough && r > ro * 1.06f && !(Math.abs(e.y - cy) <= rn * 1.1f && Math.abs(e.x - cx) > ro * 0.55f)) return false
                 downR = r
                 parent?.requestDisallowInterceptTouchEvent(true)
                 if (Math.abs(r - rt) <= 30 * d && r <= ro) { dragSeek = true; lastP = progress; dragProg = angleToProgress(e.x, e.y); lastP = dragProg; invalidate() }
