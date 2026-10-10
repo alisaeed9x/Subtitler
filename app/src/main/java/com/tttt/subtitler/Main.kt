@@ -206,13 +206,14 @@ class MainActivity : Activity() {
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true)
+        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true, "verify" to false)
         val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
             "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
             "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
+            "verify" to "🔁 وضع التأكيد: كل باتش يتبعت لمفتاحين بالتوازي (مفتاح أساسي + مفتاح تاني) والنتيجتين بتتدمج: الجملة اللي في الاتنين بتتاخد مرة واحدة، واللي في واحدة بس بتتضاف — فمفيش كلام ينضاع لو نسخة فاتها. بيستهلك ضعف الطلبات (كوتة أسرع) ومحتاج مفتاحين شغالين على الأقل",
             "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفاتيح تنقيح مخصوصة (البرنامج بيخصّصها لوحده من قايمة المفاتيح، ومفتاح الصور احتياطي لها) من غير ما ياخد من مفاتيح الترجمة؛ وفي الآخر بيحصل تنقيح كامل واحد",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
             "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
@@ -414,7 +415,7 @@ class MainActivity : Activity() {
         val voiceModeChips = ui.chips(listOf(vmLight, vmNeural, vmCombo), { when (VoiceNet.mode()) { "light" -> vmLight; "neural" -> vmNeural; else -> vmCombo } }) {
             Cfg.p.edit().putString("voice_mode", when (it) { vmLight -> "light"; vmNeural -> "neural"; else -> "combo" }).apply()
         }
-        val visCloud = "☁ Gemini (بمفتاح)"; val visLocal = "📴 على الجهاز (ML Kit — من غير مفاتيح)"
+        val visCloud = "☁ Gemini (بمفتاح)"; val visLocal = "📴 على الجهاز: ML Kit يراقب + Gemini يترجم"
         val visEngineChips = ui.chips(listOf(visCloud, visLocal), { if (OfflineVis.enabled()) visLocal else visCloud }) {
             Cfg.p.edit().putBoolean("vis_offline", it == visLocal).apply()
         }
@@ -432,9 +433,9 @@ class MainActivity : Activity() {
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
                 ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming")),
-                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest")),
+                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
                 ui.section("👁 محرك الوضع البصري", false, visEngineChips,
-                    ui.text("على الجهاز: بيقرا النص الظاهر (إنجليزي / ياباني / كوري) ويترجمه للعربي من غير أي مفتاح. أول مرة بينزّل موديل الترجمة (~30MB لكل لغة) وبعدها أوفلاين. لو مفيش مفتاح للوضع البصري بيشتغل على الجهاز تلقائي.", 12f, th.muted)),
+                    ui.text("على الجهاز: ML Kit بيراقب الفيديو طول الوقت (فريم كل ثانية قدّام مكان التشغيل) ويلقط أي نص ظاهر (إنجليزي / ياباني / كوري) ما عدا الجزء السفلي من الشاشة (مكان الهارد ساب). النص بيتبعت لجيميناي بمفتاح الوضع البصري يترجمه، والترجمة بتظهر في مكان النص من أول ما يظهر لحد ما يختفي. لو مفيش مفتاح للوضع البصري (أو جيميناي فشل) بيترجم بموديل ML Kit على الجهاز (~30MB لكل لغة، بيتنزّل مرة واحدة وبعدها أوفلاين).", 12f, th.muted)),
                 ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips,
                     ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted)),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "الموديل · الأداء · الصوت · التصحيح التلقائي · الحفظ"),

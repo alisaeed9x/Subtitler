@@ -11,6 +11,11 @@ package com.tttt.subtitler
 object Speech {
     const val WIN_SEC = 0.25
     const val THRESH = 0.012
+    /** (v177) أرضية الضوضاء (مستوى أصلي) وأقصى نسبة من مستوى كلام المقطع بيتحسب بيها الحد */
+    const val FLOOR = 0.003
+    const val REL = 0.15
+    /** (v177) أبعد مسافة (ثواني) بين جملة وأقرب صوت فعلي تتشال بعدها. كانت 1ث وتوقيت الموديل بيغلط أكتر من كده كتير */
+    const val DROP_FAR_SEC = 3.0
     private const val JOIN_SEC = 0.5
 
     private fun isWav(b: ByteArray) = b.size > 46 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte()
@@ -24,25 +29,37 @@ object Speech {
             val n = (wav.size - 44) / 2
             val win = maxOf(1, (WIN_SEC * rate).toInt())
             // (v143) الصوت بيتضخّم لحد 6x قبل الإرسال؛ لازم الحد يتقاس على المستوى الأصلي وإلا ضوضاء الغرفة تتحسب كلام
-            val thr = THRESH * maxOf(1.0, gain)
-            val out = ArrayList<DoubleArray>()
-            var w = 0; var i = 0
-            var curS = -1.0; var lastEnd = -1.0
-            while (i < n) {
-                val e = minOf(n, i + win)
-                var sq = 0.0
-                for (k in i until e) {
-                    val p = 44 + k * 2
-                    val v = ((wav[p + 1].toInt() shl 8) or (wav[p].toInt() and 0xFF)).toShort().toInt() / 32768.0
-                    sq += v * v
+            val g = maxOf(1.0, gain)
+            // (v177) أول مرور: مستوى كل نافذة. بعدين الحد بيتظبط على مستوى كلام المقطع نفسه: لو الصوت واطي أصلًا (اتضخّم)
+            // الحد الثابت 0.012 كان بيعتبر الكلام الواطي «صمت» فالجمل بتتشال. دلوقتي الحد = أقل من (الثابت، 15% من مستوى الكلام)
+            // ومش بينزل عن أرضية 0.003 بتاعة الضوضاء.
+            val nwin = (n + win - 1) / win
+            val lv = DoubleArray(nwin)
+            run {
+                var i0 = 0; var w0 = 0
+                while (i0 < n) {
+                    val e0 = minOf(n, i0 + win)
+                    var sq0 = 0.0
+                    for (k in i0 until e0) {
+                        val p0 = 44 + k * 2
+                        val v0 = ((wav[p0 + 1].toInt() shl 8) or (wav[p0].toInt() and 0xFF)).toShort().toInt() / 32768.0
+                        sq0 += v0 * v0
+                    }
+                    lv[w0] = Math.sqrt(sq0 / (e0 - i0))
+                    i0 = e0; w0++
                 }
-                val rms = Math.sqrt(sq / (e - i))
+            }
+            val p90 = if (nwin > 0) lv.sortedArray()[(nwin * 0.90).toInt().coerceIn(0, nwin - 1)] else 0.0
+            val thr = maxOf(FLOOR * g, minOf(THRESH * g, REL * p90))
+            val out = ArrayList<DoubleArray>()
+            var curS = -1.0; var lastEnd = -1.0
+            for (w in 0 until nwin) {
+                val i = w * win; val e = minOf(n, i + win)
                 val t0 = i.toDouble() / rate; val t1 = e.toDouble() / rate
-                if (rms > thr) {
+                if (lv[w] > thr) {
                     if (curS < 0) curS = t0 else if (t0 - lastEnd > JOIN_SEC) { out.add(doubleArrayOf(curS, lastEnd)); curS = t0 }
                     lastEnd = t1
                 }
-                i = e; w++
             }
             if (curS >= 0) out.add(doubleArrayOf(curS, lastEnd))
             return out
@@ -75,9 +92,10 @@ object Speech {
         val ov = spansAbs.filter { it.size == 2 && it[1] > s.start && it[0] < s.end }
         val dur = s.end - s.start
         if (ov.isEmpty()) {
-            // (v143) توقيت الموديل بيغلط ~1ث، فالجملة القصيرة/الخافتة القريبة من صوت فعلي تفضل. لكن لو أقرب صوت أبعد من كده تتشال حتى لو خافتة أو قصيرة
+            // (v177) قبل كده: أي جملة ≥1.5ث مفيهاش صوت فوقها بالظبط كانت بتتشال حتى لو الصوت على بعد نص ثانية (الموديل بيغلط في التوقيت ثواني).
+            // دلوقتي بتتشال بس لو أقرب صوت فعلي أبعد من DROP_FAR_SEC (يعني فعلًا فوق صمت).
             val near = spansAbs.filter { it.size == 2 }.minOfOrNull { if (it[0] >= s.end) it[0] - s.end else s.start - it[1] } ?: Double.MAX_VALUE
-            return if (near > 1.0 || (dur >= 1.5 && !s.faint)) null else s
+            return if (near > DROP_FAR_SEC) null else s
         }
         var a = s.start; var b = s.end
         val fs = ov.first()[0] - 0.15; val le = ov.last()[1] + 0.35

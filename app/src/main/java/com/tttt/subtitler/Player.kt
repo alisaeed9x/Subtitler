@@ -1671,7 +1671,7 @@ class PlayerActivity : Activity(), Host {
                 val bar = View(this@PlayerActivity).apply { setBackgroundColor(if (q.gender == "female") SubStyle.FEMALE else SubStyle.MALE) }
                 val col = LinearLayout(this@PlayerActivity).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6)) }
                 col.addView(ui.text(PlayerLogic.clock((q.start * 1000).toLong()), 10f, th.muted))
-                col.addView(ui.text(q.translated.ifEmpty { q.original }, 14f, th.text))
+                col.addView(ui.text(if (q.translated.isEmpty()) q.original else q.withSpeaker(q.translated), 14f, th.text))
                 if (q.original.isNotBlank() && q.original != q.translated) col.addView(ui.text(q.original, 11f, th.muted))
                 row.addView(bar, LinearLayout.LayoutParams(ui.dp(4), -1)); row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
                 row.setBackgroundColor(if (i == curIdx) (th.primary and 0x00FFFFFF) or 0x33000000 else Color.TRANSPARENT)
@@ -1795,7 +1795,7 @@ class PlayerActivity : Activity(), Host {
                 if (now - lastNotifAt >= 1000) { lastNotifAt = now; pushNotif() }
                 if (dirty && now - lastRefresh > 1000) { dirty = false; lastRefresh = now; refreshList(); curIdx = -2 }
                 visNow = (cur - offsetMs) / 1000.0
-                visOv.showBoxes(visual.boxesAt(visNow))
+                visOv.showBoxes(visual.boxesAt(visNow, cur / 1000.0))
                 try { fx?.tick(cur / 1000.0) } catch (_: Throwable) {}
                 val act = PlayerLogic.activeIndices(spStarts, spEnds, cur, offsetMs, 400L, 1).map { spMap[it] }   // (v158) كل متحدث بيظهر لوحده (الأحدث بس)
                 val sact = PlayerLogic.activeIndices(sdStarts, sdEnds, cur, offsetMs, 400L, 2).map { sdMap[it] }
@@ -2826,7 +2826,7 @@ class PlayerActivity : Activity(), Host {
         val d = GDialog(this); d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(14)); background = ui.box(th.card, th.border, 18) }
         box.addView(ui.text("👁 الوضع البصري", 17f, th.primary, true))
-        box.addView(ui.text("بياخد فريم كل ثانيتين قدّام مكان التشغيل ويبعته لـ Gemini، ويعرض النصوص المترجمة في مكانها فوق الفيديو. محتاج مفتاح API وفيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
+        box.addView(ui.text("☁ Gemini: بياخد فريم كل ثانيتين قدّام مكان التشغيل ويبعته لـ Gemini ويعرض النصوص المترجمة في مكانها.\n📴 على الجهاز (من الإعدادات): ML Kit بيراقب الفيديو طول الوقت ويلقط أي نص ظاهر ما عدا الجزء السفلي (هارد ساب)، وجيميناي (مفتاح الوضع البصري) بيترجمه، والترجمة بتظهر في مكان النص من أول ما يظهر لحد ما يختفي. من غير مفتاح بيترجم بـ ML Kit.\nمحتاج فيديو ملف/رابط mp4 (مش m3u8).", 12f, th.muted))
         visual.mode = "scene"
         val st = ui.text(if (visual.running) "الحالة: شغّال — " + visual.status else "الحالة: واقف", 13f, th.text)
         box.addView(st)

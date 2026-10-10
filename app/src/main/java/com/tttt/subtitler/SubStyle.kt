@@ -100,7 +100,7 @@ data class SubStyle(
         // تقسيم الجمل الطويلة بقى بالتتابع في PlayerLogic.splitParts/partIndex (مش سطور فوق بعض)
         var t = if (dual >= 3) s.original.ifBlank { s.translated } else s.translated
         if (s.isContinuation) t += " ⋯"
-        return t
+        return if (dual >= 3) t else s.withSpeaker(t)
     }
     /** مواضع الأسماء/الأماكن جوه النص: (start,end,isPlace) */
     fun highlights(text: String, s: Sub): List<Triple<Int, Int, Boolean>> {

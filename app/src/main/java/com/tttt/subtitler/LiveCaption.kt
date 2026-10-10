@@ -36,7 +36,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * (v162) ترجمة حية فوق أي تطبيق: بنلقط صوت الجهاز (AudioPlaybackCapture — أندرويد 10+) كل 8 ثواني،
+ * (v162) ترجمة حية فوق أي تطبيق: بنلقط صوت الجهاز (AudioPlaybackCapture — أندرويد 10+) ونقطّعه عند وقفات الكلام (2-6 ثواني، v180)،
  * نبعته لجيميناي، ونعرض الترجمة في شريط عايم تقدر تسحبه. الضغطة المطولة عليه بتقفل الخدمة.
  * حدود: تأخير ~10 ثواني (مقطع + طلب)، والتطبيقات اللي بتمنع التقاط الصوت (DRM) هتطلع صمت.
  */
@@ -87,7 +87,6 @@ class LiveCaptionService : Service() {
         private const val CH = "live_caption"
         private const val NID = 4402
         private const val SR = 44100
-        private const val CHUNK_SEC = 8
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -97,9 +96,12 @@ class LiveCaptionService : Service() {
     private var rec: AudioRecord? = null
     private var th: Thread? = null
     @Volatile private var alive = false
-    private val pool = Executors.newFixedThreadPool(2)
+    private val pool = Executors.newFixedThreadPool(3)
     private val inflight = AtomicInteger(0)
-    private val queue = java.util.ArrayDeque<Pair<String, Long>>()
+    // (v180) طابور عرض بيدمج بدل ما يرمي، وترتيب ردود متوازية، وآخر جمل معروضة كسياق
+    private val pending = LiveLogic.Pending()
+    private val order = LiveLogic.Order()
+    private val recent = java.util.ArrayDeque<String>()
     private var showing = false
     @Volatile private var lastWarn = 0L
 
@@ -160,50 +162,49 @@ class LiveCaptionService : Service() {
     }
 
     private fun captureLoop(r: AudioRecord) {
-        val chunk = SR * CHUNK_SEC
-        val buf = ShortArray(chunk)
-        val tmp = ShortArray(4096)
-        var n = 0
+        val seg = LiveLogic.Segmenter(SR)
+        val tmp = ShortArray(2048)
         var zeroRun = 0
         var ki = 0
+        var lastTick = 0L
         try {
             while (alive) {
                 val got = r.read(tmp, 0, tmp.size)
-                if (got <= 0) { Thread.sleep(40); continue }
-                val take = minOf(got, chunk - n)
-                System.arraycopy(tmp, 0, buf, n, take)
-                n += take
-                if (n < chunk) continue
-                n = 0
-                val rms = rms(buf)
-                if (rms < 1.0) {
-                    zeroRun++
-                    if (zeroRun >= 3 && System.currentTimeMillis() - lastWarn > 60_000L) {
+                if (got <= 0) { Thread.sleep(30); continue }
+                // مفيش صوت خالص (مش صمت عادي): غالبًا التطبيق مانع الالتقاط
+                var allZero = true
+                for (q in 0 until got) if (tmp[q].toInt() != 0) { allZero = false; break }
+                if (allZero) {
+                    zeroRun += got
+                    if (zeroRun >= SR * 24 && System.currentTimeMillis() - lastWarn > 60_000L) {
                         lastWarn = System.currentTimeMillis()
                         say("🔇 مفيش صوت ملتقط — ممكن التطبيق مانع التقاط الصوت (نتفليكس وتطبيقات DRM بتمنعه)")
                     }
-                    continue
+                } else zeroRun = 0
+                for (sg in seg.feed(tmp, got)) {
+                    if (sg.silent) continue
+                    if (inflight.get() >= 5) { main.post { say("⚠ النت/الموديل بطيء — بعدّي مقطع") }; continue }
+                    val myKi = ki++
+                    val lvl = LiveLogic.speechLevel(sg.pcm, sg.pcm.size, SR)
+                    val wav = toWav16k(sg.pcm, LiveLogic.gainFor(lvl))
+                    val durSec = sg.pcm.size.toDouble() / SR
+                    inflight.incrementAndGet()
+                    pool.execute {
+                        try { translate(wav, myKi, durSec) } catch (_: Throwable) { deliver(order.skip(myKi, System.currentTimeMillis())) }
+                        finally { inflight.decrementAndGet() }
+                    }
                 }
-                zeroRun = 0
-                if (rms < 30.0) continue   // صمت تقريبًا: مانبعتش
-                if (inflight.get() >= 3) continue
-                val wav = toWav16k(buf)
-                val myKi = ki++
-                inflight.incrementAndGet()
-                pool.execute { try { translate(wav, myKi) } catch (_: Throwable) {} finally { inflight.decrementAndGet() } }
+                val now = System.currentTimeMillis()
+                if (now - lastTick > 1000) { lastTick = now; deliver(order.tick(now)) }
             }
         } catch (_: InterruptedException) {}
         catch (_: Throwable) {}
     }
 
-    private fun rms(b: ShortArray): Double {
-        var s = 0.0
-        for (v in b) s += v.toDouble() * v.toDouble()
-        return Math.sqrt(s / b.size)
-    }
+    private fun deliver(lines: List<String>) { if (lines.isEmpty()) return; main.post { for (t in lines) enqueue(t) } }
 
     /** 44.1kHz mono → WAV 16kHz mono 16-bit (أصغر في الرفع) */
-    private fun toWav16k(src: ShortArray): ByteArray {
+    private fun toWav16k(src: ShortArray, gain: Double = 1.0): ByteArray {
         val n = src.size
         val outN = (n.toLong() * 16000L / SR).toInt()
         val out = ByteArray(44 + outN * 2)
@@ -220,39 +221,43 @@ class LiveCaptionService : Service() {
             val f = p - i0
             val a = src[minOf(i0, n - 1)].toInt()
             val c = src[minOf(i0 + 1, n - 1)].toInt()
-            val v = (a + (c - a) * f).toInt()
+            val v = ((a + (c - a) * f) * gain).toInt().coerceIn(-32768, 32767)
             out[44 + i * 2] = v.toByte(); out[45 + i * 2] = (v shr 8).toByte()
         }
         return out
     }
 
-    private fun translate(wav: ByteArray, ki: Int) {
+    private fun translate(wav: ByteArray, ki: Int, durSec: Double) {
         val keys = Cfg.allMainKeys()
-        if (keys.isEmpty()) return
+        if (keys.isEmpty()) { deliver(order.skip(ki, System.currentTimeMillis())); return }
         val model = Cfg.str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT }
         val lang = Cfg.str("lang", "فصحى"); val style = Cfg.str("style", "حرفي")
-        val prompt = "ده مقطع صوت حوالي $CHUNK_SEC ثواني مسجّل من فيديو شغّال على الجهاز. اكتب ترجمة عربية بلهجة $lang (الأسلوب: $style) لأي كلام مسموع فيه، " +
-            "كجمل قصيرة مناسبة لعرضها كترجمة فورية (حد أقصى حوالي 12 كلمة للسطر). تجاهل الموسيقى والمؤثرات والكلام غير المفهوم، وماتألفش حاجة مش مسموعة.\n" +
-            "لو مفيش كلام: {\"lines\":[]}\nJSON فقط: {\"lines\":[{\"start\":0.0,\"end\":2.5,\"text\":\"...\"}]}"
-        for (n in 0 until minOf(keys.size, 3)) {
-            val key = keys[(ki + n) % keys.size]
-            try {
-                val res = Api.generate(model, key, prompt, wav, 1500, 0.1)
-                val j = Parse.json(res.text) ?: continue
-                val arr = j.optJSONArray("lines") ?: return
-                for (q in 0 until arr.length()) {
-                    val o = arr.optJSONObject(q) ?: continue
-                    val t = o.optString("text").trim()
-                    if (t.isEmpty()) continue
-                    val dur = (o.optDouble("end", 2.0) - o.optDouble("start", 0.0)).let { if (it.isNaN()) 2.0 else it }
-                    val ms = ((dur + 0.5).coerceIn(1.6, 5.0) * 1000).toLong()
-                    main.post { enqueue(t, ms) }
-                }
-                return
-            } catch (e: ApiErr) {
-                if (e.code == 429) continue else return
-            } catch (_: java.io.IOException) { continue }
-        }
+        val ctx = synchronized(recent) { recent.toList() }
+        val prompt = "ده مقطع صوت حوالي ${durSec.toInt()} ثواني مسجّل من فيديو شغّال على الجهاز، وممكن يبدأ أو ينتهي في نص جملة. اكتب ترجمة عربية بلهجة $lang (الأسلوب: $style) لأي كلام مسموع فيه، " +
+            "كجمل قصيرة مناسبة لعرضها كترجمة فورية (حد أقصى حوالي 12 كلمة للسطر). ترجم كل كلام بشري مسموع حتى لو واطي، وتجاهل الموسيقى والمؤثرات، وماتألفش حاجة مش مسموعة.\n" +
+            (if (ctx.isNotEmpty()) "آخر جمل اتعرضت (للسياق بس — ماتكررهاش لو الصوت مفيهوش حاجة جديدة): " + ctx.joinToString(" | ") + "\n" else "") +
+            "لو مفيش كلام: {\"lines\":[]}\nJSON فقط: {\"lines\":[{\"text\":\"...\"}]}"
+        Api.readTimeoutOverride.set(14_000)
+        try {
+            for (n in 0 until minOf(keys.size, 3)) {
+                val key = keys[(ki + n) % keys.size]
+                try {
+                    val res = Api.generate(model, key, prompt, wav, 1500, 0.1)
+                    val j = Parse.json(res.text) ?: continue
+                    val arr = j.optJSONArray("lines") ?: break
+                    val out = ArrayList<String>()
+                    for (q in 0 until arr.length()) {
+                        val t = arr.optJSONObject(q)?.optString("text")?.trim().orEmpty()
+                        if (t.isNotEmpty()) out.add(t)
+                    }
+                    deliver(order.submit(ki, out, System.currentTimeMillis()))
+                    return
+                } catch (e: ApiErr) {
+                    if (e.code == 429) continue else break
+                } catch (_: java.io.IOException) { continue }
+            }
+        } finally { Api.readTimeoutOverride.remove() }
+        deliver(order.skip(ki, System.currentTimeMillis()))
     }
 
     // ===== العرض =====
@@ -261,7 +266,7 @@ class LiveCaptionService : Service() {
         val w = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         wm = w
         val t = TextView(this)
-        t.setTextColor(Color.WHITE); t.textSize = 18f; t.gravity = Gravity.CENTER; t.maxLines = 3
+        t.setTextColor(Color.WHITE); t.textSize = 18f; t.gravity = Gravity.CENTER; t.maxLines = 4
         t.layoutDirection = View.LAYOUT_DIRECTION_RTL
         t.setShadowLayer(4f, 0f, 0f, Color.BLACK)
         val d = resources.displayMetrics.density
@@ -288,25 +293,29 @@ class LiveCaptionService : Service() {
         t.setOnLongClickListener { stopSelf(); true }
         w.addView(t, lp)
         tv = t
-        main.postDelayed({ if (queue.isEmpty() && !showing) tv?.visibility = View.GONE }, 3000)
+        main.postDelayed({ if (pending.size() == 0 && !showing) tv?.visibility = View.GONE }, 3000)
     }
 
-    private fun say(m: String) { main.post { enqueue(m, 3500L) } }
+    private fun say(m: String) { main.post { enqueue(m, false) } }
 
-    private fun enqueue(text: String, ms: Long) {
-        while (queue.size >= 3) queue.pollFirst()
-        queue.addLast(text to ms)
+    private fun enqueue(text: String, asContext: Boolean = true) {
+        val t = text.trim(); if (t.isEmpty()) return
+        if (asContext) {
+            synchronized(recent) { if (recent.peekLast() == t) return }   // تكرار حرفي لآخر جملة
+            synchronized(recent) { recent.addLast(t); while (recent.size > 2) recent.pollFirst() }
+        }
+        pending.add(t)
         if (!showing) next()
     }
 
     private fun next() {
-        val item = queue.pollFirst()
+        val item = pending.poll()
         val t = tv ?: return
         if (item == null) { showing = false; t.visibility = View.GONE; return }
         showing = true
-        t.text = item.first
+        t.text = item
         t.visibility = View.VISIBLE
-        main.postDelayed({ next() }, item.second)
+        main.postDelayed({ next() }, LiveLogic.dwellMs(item, pending.size()))
     }
 
     override fun onDestroy() {

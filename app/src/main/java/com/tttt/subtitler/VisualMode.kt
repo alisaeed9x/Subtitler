@@ -17,7 +17,12 @@ class VisBox(
 )
 class VisFrame(val t: Double, val boxes: List<VisBox>, val dur: Double = VisualMode.STEP + 0.6)
 
-/** الوضع البصري: بياخد فريم كل ثانيتين قدّام مكان التشغيل، يبعته لـ Gemini، ويعرض النصوص المترجمة فوق الفيديو في مكانها */
+/**
+ * الوضع البصري: بياخد فريم كل ثانيتين قدّام مكان التشغيل، يبعته لـ Gemini، ويعرض النصوص المترجمة فوق الفيديو في مكانها.
+ * (v175) وضع «على الجهاز»: ML Kit بيراقب الفيديو طول الوقت (فريم كل ثانية قدّام مكان التشغيل) وبيلقط أي نص ظاهر
+ * ما عدا الجزء السفلي (هارد ساب)، وبيبعت النص لجيميناي (مفتاح الوضع البصري) يترجمه، والترجمة بتتعرض في مكان النص
+ * من وقت ظهوره لحد وقت اختفائه (TextTracker) — مش مدة ثابتة.
+ */
 class VisualMode(
     private val conf: Conf,
     private val position: () -> Double,
@@ -33,6 +38,14 @@ class VisualMode(
         const val AHEAD = 20.0          // أقصى مسافة قدّام مكان التشغيل
         const val WAIT_429 = 30_000L
         const val SNAP_DUR = 6.0        // ثواني عرض نتيجة اللقطة
+        const val WATCH_STEP = 1.0      // (v175) ثانية بين كل لقطتين في وضع المراقبة على الجهاز
+
+        const val PROMPT_TEXTS = "أنت مترجم نصوص ظاهرة على شاشة فيديو (لافتات، عناوين، كتابات على ملابس وأغراض، نصوص شاشات).\n" +
+            "النصوص دي اتقرت من الفيديو بقارئ آلي (OCR) فممكن فيها غلطات قراءة بسيطة — صحّحها بالسياق.\n" +
+            "ترجم كل نص للعربية الفصحى المبسطة وبإيجاز (الترجمة بتتعرض فوق الفيديو في نفس مكان النص، فخليها قصيرة وواضحة).\n" +
+            "العلامات التجارية وأسماء الأعلام: ارجعها كما هي. الأرقام والتواريخ كما هي. لو النص رموز أو مش مفهوم ارجع \"\".\n" +
+            "═ الإخراج JSON فقط ═\n{\"t\":[{\"id\":0,\"tr\":\"الترجمة\"}]}\nلا شرح ولا مقدمة — JSON فقط.\n" +
+            "═ النصوص ═\n"
 
         const val PROMPT_SCENE = "أنت نظام OCR وترجمة بصري متخصص للفيديو. أمامك فريم واحد من فيديو.\n" +
             "🔍 افحص الصورة بأقصى دقة ممكنة — النصوص أحياناً صغيرة ويسهل تفويتها.\n" +
@@ -68,7 +81,21 @@ class VisualMode(
     private var th: Thread? = null
     var sent = 0; private set
 
-    fun clear() { frames.clear(); sent = 0 }
+    // (v175) وضع المراقبة على الجهاز
+    private val tracker = TextTracker(WATCH_STEP)
+    private val scanned = java.util.Collections.synchronizedSet(HashSet<Long>())      // اللقطات اللي اتفحصت (رقم الثانية)
+    private val tcache = java.util.concurrent.ConcurrentHashMap<String, String>()     // نص مطبّع ← ترجمة ("" = مفيش ترجمة صالحة)
+    private val tq = java.util.concurrent.LinkedBlockingQueue<Pair<String, String>>() // (لغة، نص) مستني ترجمة
+    private val queued = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val keyRR = java.util.concurrent.atomic.AtomicInteger(0)
+    private var tth: Thread? = null
+    private var liveKey = ""
+    private var liveList: List<VisBox> = emptyList()
+
+    fun clear() {
+        frames.clear(); sent = 0
+        tracker.clear(); scanned.clear(); tcache.clear(); tq.clear(); queued.clear(); liveKey = ""; liveList = emptyList()
+    }
 
     /** لقطة واحدة: بتتبعت لـ Gemini والنصوص المترجمة بتتعرض على الفيديو في مكانها */
     fun snap(bmp: Bitmap, nowSec: () -> Double, onDone: () -> Unit = {}) {
@@ -82,7 +109,10 @@ class VisualMode(
     private fun offline() = OfflineVis.enabled() || keyList().isEmpty()
     private fun snapWork(bmp: Bitmap, nowSec: () -> Double) {
         if (offline()) {
-            val boxes = try { OfflineVis.detect(bmp, mode == "hardsub", say) } finally { bmp.recycle() }
+            val hard = mode == "hardsub"
+            val dets = try { OfflineVis.scan(bmp, hard) } finally { bmp.recycle() }
+            resolve(dets.map { Pair(it.lang, it.text) })
+            val boxes = dets.mapNotNull { d -> usable(d.text)?.let { OfflineVis.box(d, it, hard) } }
             val t = nowSec()
             frames.removeIf { Math.abs(it.t - t) < 0.5 || it.dur == SNAP_DUR }
             frames.add(VisFrame(t, boxes, SNAP_DUR)); sent++
@@ -119,7 +149,7 @@ class VisualMode(
         stop(); running = true
         th = Thread { active.incrementAndGet(); try { loop() } catch (e: Exception) { status = "⚠ " + (e.message ?: "").take(80); say(status) } finally { running = false; active.decrementAndGet() } }.also { it.isDaemon = true; it.start() }
     }
-    fun stop() { running = false; th?.interrupt(); th = null }
+    fun stop() { running = false; th?.interrupt(); th = null; tth?.interrupt(); tth = null }
 
     /** (v141) الوضع البصري بياخد من «مفتاح الوضع البصري فقط» وبس — مفيش رجوع للاحتياطي ولا الأساسي أبدًا، عشان ما يستهلكش كوتة الترجمة */
     private fun keyList(): List<String> = conf.visKeys.filter { it.length > 10 }.distinct()
@@ -128,6 +158,10 @@ class VisualMode(
         val r = retriever() ?: run { status = "المصدر ده مش مدعوم للوضع البصري (m3u8/ملف غير قابل للقراءة)"; say(status); return }
         val keys = keyList(); val off = offline()
         if (keys.isEmpty() && !off) { say("ضيف مفتاح للوضع البصري (الإعدادات ← مفتاح الوضع البصري فقط)"); return }
+        if (off) {
+            try { watchLoop(r) } catch (_: InterruptedException) {} finally { try { r.release() } catch (_: Exception) {}; tth?.interrupt() }
+            return
+        }
         var next = Math.floor(position())
         var ki = 0
         try {
@@ -137,16 +171,6 @@ class VisualMode(
                 if (next > pos + AHEAD) { Thread.sleep(500); continue }
                 val bmp = try { r.getFrameAtTime((next * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
                 if (bmp == null) { next += STEP; Thread.sleep(200); continue }
-                if (off) {
-                    status = "👁 يحلل ${"%.0f".format(next)}ث…"
-                    val boxes = try { OfflineVis.detect(bmp, mode == "hardsub", say) }
-                        catch (e: InterruptedException) { throw e }
-                        catch (e: Exception) { say("👁 خطأ: " + (e.message ?: "").take(110)); Thread.sleep(1500); emptyList() }
-                        finally { bmp.recycle() }
-                    frames.add(VisFrame(next, boxes)); sent++
-                    status = "👁 $sent فريم | ${boxes.size} نص"
-                    changed(); next += STEP; continue
-                }
                 val jpeg = toJpeg(bmp); bmp.recycle()
                 status = "👁 يحلل ${"%.0f".format(next)}ث…"
                 try {
@@ -210,11 +234,132 @@ class VisualMode(
         return out
     }
 
-    /** الفريم الشغّال عند الثانية دي (آخر فريم بدأ قبلها ولسه ما عدّتش مدته) */
-    fun boxesAt(sec: Double): List<VisBox> {
+    /** (v175) هل النص ده ليه ترجمة صالحة للعرض؟ (مش فاضية ومش نفس الأصل) */
+    private fun usable(text: String): String? {
+        val tr = tcache[TextTracker.norm(text)] ?: return null
+        if (tr.isBlank() || TextTracker.norm(tr) == TextTracker.norm(text)) return null
+        return tr
+    }
+
+    /** نتايج اللقطات اليدوية / وضع Gemini الكامل (فريم + مدة ثابتة) */
+    private fun frameBoxes(sec: Double): List<VisBox> {
         var f: VisFrame? = null
         for (x in frames) if (x.t <= sec + 0.3 && (f == null || x.t > f.t)) f = x
         return if (f != null && sec <= f.t + f.dur) f.boxes else emptyList()
+    }
+
+    /**
+     * اللي يتعرض عند الثانية دي. sec = وقت اللقطات اليدوية (بعد تزامن الترجمة)، media = وقت الفيديو الفعلي
+     * (للنصوص اللي المراقبة لقطتها: بتظهر من أول ما النص يظهر وتختفي لما يختفي).
+     */
+    fun boxesAt(sec: Double, media: Double = sec): List<VisBox> {
+        val base = frameBoxes(sec)
+        if (tracker.tracks.isEmpty()) return base
+        val live = ArrayList<VisBox>(); val sb = StringBuilder()
+        for (k in tracker.activeAt(media)) {
+            val tr = usable(k.text) ?: continue
+            sb.append(k.id).append(':').append((k.x * 1000).toInt()).append(',').append((k.y * 1000).toInt()).append(':').append(tr.length).append(';')
+            live.add(VisBox(k.x, k.y, k.w, k.h, 0f, k.text, tr, Color.BLACK, Color.WHITE, 85, true))
+        }
+        if (live.isEmpty()) return base
+        if (base.isNotEmpty()) return base + live
+        val key = sb.toString()
+        if (key != liveKey) { liveKey = key; liveList = live }
+        return liveList   // نفس القايمة طول ما مفيش تغيير عشان الطبقة ماتعيدش الرسم كل 100ms
+    }
+
+    // ===== (v175) المراقبة المستمرة: ML Kit يلقط ← جيميناي يترجم ← عرض من الظهور للاختفاء =====
+
+    private fun want(lang: String, text: String) {
+        val k = TextTracker.norm(text)
+        if (k.isEmpty() || tcache.containsKey(k) || !queued.add(k)) return
+        tq.offer(Pair(lang, text))
+    }
+
+    private fun watchLoop(r: MediaMetadataRetriever) {
+        tth = Thread { try { transLoop() } catch (_: InterruptedException) {} }.also { it.isDaemon = true; it.start() }
+        var prevSlot = Long.MIN_VALUE
+        while (running) {
+            val pos = position()
+            var s = Math.floor(pos / WATCH_STEP).toLong()
+            val endS = Math.floor((pos + AHEAD) / WATCH_STEP).toLong()
+            while (s <= endS && scanned.contains(s)) s++
+            if (s > endS) { Thread.sleep(400); continue }          // وصلنا لآخر مسافة قدّام التشغيل
+            val t = s * WATCH_STEP
+            val bmp = try { r.getFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) } catch (_: Exception) { null }
+            scanned.add(s)
+            if (bmp == null) { prevSlot = Long.MIN_VALUE; Thread.sleep(150); continue }
+            status = "👁 يراقب ${"%.0f".format(t)}ث…"
+            val dets = try { OfflineVis.scan(bmp, mode == "hardsub") }
+                catch (e: InterruptedException) { throw e }
+                catch (e: Exception) { say("👁 خطأ: " + (e.message ?: "").take(110)); null }
+                finally { bmp.recycle() }
+            if (dets == null) { prevSlot = Long.MIN_VALUE; Thread.sleep(1500); continue }
+            val prevT = if (prevSlot == s - 1) (s - 1) * WATCH_STEP else Double.NaN
+            val fresh = tracker.feed(t, dets, prevT)
+            for (k in fresh) { k.tries = 1; want(k.lang, k.text) }
+            // نص ظاهر من غير ترجمة (الطلب فشل قبل كده) — نعيد الطلب لحد 3 مرات
+            for (k in tracker.tracks) if (k.end.isNaN() && k.tries in 1..2 && !tcache.containsKey(TextTracker.norm(k.text)) && !queued.contains(TextTracker.norm(k.text))) { k.tries++; want(k.lang, k.text) }
+            prevSlot = s; sent++
+            status = "👁 يراقب | $sent لقطة | ${tracker.tracks.size} نص"
+            changed()
+        }
+    }
+
+    /** خيط الترجمة: بيجمّع النصوص الجديدة (لحد 8) في طلب واحد لجيميناي */
+    private fun transLoop() {
+        while (running) {
+            val first = tq.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+            val batch = ArrayList<Pair<String, String>>(); batch.add(first)
+            tq.drainTo(batch, 7)
+            try { resolve(batch) } finally { for (b in batch) queued.remove(TextTracker.norm(b.second)) }
+            changed()
+        }
+    }
+
+    /** بيملا tcache لقايمة (لغة، نص): جيميناي الأول (مفتاح الوضع البصري)، وللي مارجعش ترجمته ← ML Kit على الجهاز */
+    private fun resolve(items: List<Pair<String, String>>) {
+        val todo = items.filter { !tcache.containsKey(TextTracker.norm(it.second)) }.distinctBy { TextTracker.norm(it.second) }
+        if (todo.isEmpty()) return
+        val got = geminiTexts(todo.map { it.second })
+        for ((i, p) in todo.withIndex()) {
+            val k = TextTracker.norm(p.second)
+            val g = got?.getOrNull(i)
+            if (g != null && g.isNotBlank()) { tcache[k] = g; continue }
+            val ml = try { OfflineVis.mlTranslate(p.first, p.second, say) }
+                catch (e: InterruptedException) { throw e }
+                catch (e: Exception) { say("👁 فشلت الترجمة: " + (e.message ?: "").take(90)); null }
+            if (ml != null) tcache[k] = ml      // لو فشلت الاتنين ما بنكتبش حاجة فالمحاولة تتعاد
+        }
+    }
+
+    /** طلب واحد لجيميناي بنصوص الدفعة؛ بيرجّع الترجمات بنفس الترتيب أو null لو فشل (أو مفيش مفتاح) */
+    private fun geminiTexts(texts: List<String>): List<String>? {
+        val keys = keyList(); if (keys.isEmpty()) return null
+        val arr = org.json.JSONArray()
+        for ((i, t) in texts.withIndex()) arr.put(JSONObject().put("id", i).put("text", t))
+        val prompt = PROMPT_TEXTS + arr.toString()
+        var attempts = 0
+        while (!Thread.currentThread().isInterrupted && attempts < keys.size * 2 + 1) {
+            attempts++
+            val key = keys[Math.floorMod(keyRR.getAndIncrement(), keys.size)]
+            try {
+                val res = Api.generate(conf.model, key, prompt, null, 2048, 0.1, true)
+                val a = Parse.json(res.text)?.optJSONArray("t")
+                if (a == null) { say("👁 رد جيميناي مش واضح — بحاول تاني"); continue }
+                val out = arrayOfNulls<String>(texts.size)
+                for (j in 0 until a.length()) {
+                    val o = a.optJSONObject(j) ?: continue
+                    val id = o.optInt("id", -1)
+                    if (id >= 0 && id < out.size) out[id] = o.optString("tr").trim()
+                }
+                return out.map { it ?: "" }
+            } catch (e: ApiErr) {
+                say("👁 خطأ ${e.code} على …${key.takeLast(4)}")
+                if (e.code == 429 || e.code >= 500) Thread.sleep(700)
+            } catch (e: java.io.IOException) { Thread.sleep(500) }
+        }
+        return null
     }
 }
 

@@ -21,11 +21,13 @@ KC="$TOOLS/kotlinc/bin/kotlinc"; AJ="$TOOLS/android34.jar"; STD="$TOOLS/kotlinc/
 OUT="$TOOLS/out"; rm -rf "$OUT" && mkdir -p "$OUT/all" "$OUT/app" "$OUT/t1" "$OUT/t2" "$OUT/t3"
 
 echo "== 1) compile-check للتطبيق كله"
-"$KC" -jvm-target 17 -cp "$AJ" -opt-in=kotlin.RequiresOptIn -d "$OUT/all" "$SRC"/*.kt $(find "$ROOT/dev-tests/stubs" -name '*.kt' -o -name '*.java') 2>&1 | grep -E "error" && { echo "FAIL: compile errors"; exit 1; } || echo "OK"
+# (v177) compile-check الكامل اتشال: الـ stubs (R / ML Kit / ONNX) كانت قديمة والفحص كان بيطلّع OK غلط. البناء الحقيقي بيتعمل بـ Gradle على GitHub Actions.
+echo "OK (skipped)"
 
 echo "== 2) اختبارات JVM (المنطق بدون Android: Core/Store/AudioCore/Engine)"
-NOUI="$SRC/Core.kt $SRC/Store.kt $SRC/AudioCore.kt $SRC/Engine.kt $SRC/Theme.kt $SRC/SubStyle.kt $SRC/PlayerLogic.kt $SRC/Recents.kt $SRC/Models.kt $SRC/ExtrasFlags.kt $SRC/Trim.kt $SRC/Blur.kt $SRC/VideoLib.kt $SRC/Stats.kt $SRC/KeyVault.kt $SRC/Speech.kt $SRC/Coverage.kt"
-"$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep error && exit 1 || true
+# (v177) القايمة القديمة كانت متأخرة عن الكود. دلوقتي: ملفات المنطق + stubs لـ VoiceNet/VisualMode (محتاجين ONNX/ML Kit)
+NOUI="$(for n in Core Store AudioCore Engine Theme SubStyle PlayerLogic Recents Models ExtrasFlags Trim Blur VideoLib Stats KeyVault Speech Coverage Voice AudioEnc LiveLogic; do echo -n "$SRC/$n.kt "; done) $ROOT/dev-tests/logic-stubs/LogicStubs.kt"
+"$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep -E "error:|^ERROR" && exit 1 || true
 CP="$OUT/app:$TOOLS/jsonout:$STD:$AJ"   # jsonout قبل android.jar عشان org.json الحقيقي يتقدم على الـ stubs
 JOPT="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t1" "$ROOT/dev-tests/EngineTest.kt" 2>&1 | grep error && exit 1 || true
@@ -69,3 +71,17 @@ java $JOPT -cp "$OUT/t11:$CP" CoverageTestKt | grep -E "^(PASS|FAIL)|الاخت�
 mkdir -p "$OUT/t12"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t12" "$SRC/GifWriter.kt" "$ROOT/dev-tests/GifTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t12:$CP" GifTestKt | grep -E "^(PASS|FAIL)"
+mkdir -p "$OUT/t13"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t13" "$SRC/TextTracker.kt" "$ROOT/dev-tests/TextTrackerTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t13:$CP" TextTrackerTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
+mkdir -p "$OUT/t14"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t14" "$ROOT/dev-tests/TwinMergeTest.kt" 2>&1 | grep error && exit 1 || true
+java $JOPT -cp "$OUT/t14:$CP" TwinMergeTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
+mkdir -p "$OUT/t15"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t15" "$ROOT/dev-tests/NoLossTest.kt" 2>&1 | grep -E "error:" && exit 1 || true
+java $JOPT -cp "$OUT/t15:$CP" NoLossTestKt | tee /tmp/noloss.out | grep -E "^(PASS|FAIL)|اختبارات"
+grep -q "^FAIL" /tmp/noloss.out && { echo "FAIL: اختبارات عدم الفقد"; exit 1; } || true
+mkdir -p "$OUT/t16"
+"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t16" "$ROOT/dev-tests/LiveTest.kt" 2>&1 | grep -E "error:" && exit 1 || true
+java $JOPT -cp "$OUT/t16:$CP" LiveTestKt | tee /tmp/live.out | grep -E "^(PASS|FAIL)|اختبارات"
+grep -q "^FAIL" /tmp/live.out && { echo "FAIL: اختبارات الترجمة الحية"; exit 1; } || true

@@ -145,7 +145,7 @@ object PlayerLogic {
         val sb = StringBuilder(); var n = 1
         for (q in subs.sortedBy { it.start }) {
             val a = maxOf(0L, (q.start * 1000).toLong() + offsetMs); val b = maxOf(a, (q.end * 1000).toLong() + offsetMs)
-            sb.append("${n++}\n${srtTime(a)} --> ${srtTime(b)}\n${q.translated.ifEmpty { q.original }}\n\n")
+            sb.append("${n++}\n${srtTime(a)} --> ${srtTime(b)}\n${if (q.translated.isEmpty()) q.original else q.withSpeaker(q.translated)}\n\n")
         }
         return sb.toString()
     }

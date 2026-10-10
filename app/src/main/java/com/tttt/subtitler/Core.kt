@@ -21,8 +21,13 @@ data class Sub(
     /** صوت غير كلامي (همهمة، موسيقى بدون كلمات، ضحك، ضوضاء…): بيتعرض كوصف فوق الفيديو منفصل عن الحوار */
     val isSound: Boolean = false,
     /** (v170) كود بصمة الصوت (V1, V2…) من بنك الأصوات؛ أول ما الرد يوصل بيبقى الكود اللي جيميناي كتبه (V# أو new#) */
-    val voice: String = ""
-)
+    val voice: String = "",
+    /** (v179) اسم المتكلم (هاوس، ستيف…) من الحوار/الجدول؛ فاضي لو مش معروف */
+    val speakerName: String = ""
+) {
+    /** النص اللي بيتعرض/بيتصدّر: «الاسم: الجملة» لو الميزة شغالة والاسم معروف */
+    fun withSpeaker(t: String): String = if (Extras.spkNames && !isSound && speakerName.isNotBlank() && t.isNotBlank() && !t.trimStart().startsWith("«") && !t.trimStart().startsWith("[")) "$speakerName: $t" else t
+}
 
 data class Chr(val name: String, val gender: String, val role: String)
 data class Gloss(val term: String, val note: String)
@@ -52,17 +57,19 @@ class Conf(
     /** (v154) تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع سياق قبلها) تتبعت للتنقيح على مفتاح مخصوص (احتياطي، أو مفاتيح الصور لو الوضع البصري مش شغال) */
     val partialRefine: Boolean = true,
     /** (v158) مفاتيح التنقيح (البرنامج بيوزّع المفاتيح لوحده: ترجمة / تنقيح / احتياطي) */
-    val refine: List<String> = emptyList()
+    val refine: List<String> = emptyList(),
+    /** (v176) وضع التأكيد: كل باتش يتبعت لمفتاحين بالتوازي، والجمل من النسختين بتتدمج (اتحاد من غير تكرار) */
+    val verify: Boolean = false
 ) {
     /** نسخة من الإعدادات بلهجة تانية (الباتشات الجديدة بتتبعت باللهجة المختارة مباشرة بدل فصحى ثم تحويل) */
     fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, vad, crossReview, autoChars,
-        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine, refine)
+        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine, refine, verify)
 }
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
-    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest", "prefine",
+    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest", "prefine", "verify",
         "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_two_lines", "sub_punct")
     val INTS = setOf("chunk", "ahead", "hls_ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
@@ -192,7 +199,7 @@ object Cfg {
             parseRoster(str("roster")), str("gloss"),
             bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
             1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("strim", true), bool("gapfill", true),
-            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true), rf
+            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true), rf, bool("verify", false)
         )
     }
 }
@@ -224,6 +231,11 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- 🔴🔴 المقطع ده اتقصّ لأن فيه صوت عالي، بس غالبًا الصوت ده موسيقى أو مؤثرات أو ضوضاء مش كلام. تعليمات \"التغطية الكاملة\" و\"الصوت الخافت\" فوق مش بتنطبق هنا.\n" +
             "- 🔴🔴 اكتب فقط كلام أو غنا بصوت إنسان واضح ومفهوم بتسمعه فعلًا. لو مش متأكد 100% إن فيه كلام: رد {\"subtitles\":[]}. الرد الفاضي هو الإجابة الصحيحة في أغلب الحالات.\n" +
             "- ممنوع faint وممنوع low_confidence وممنوع أي عنصر is_sound (ناس في الخلفية/مذيع) في المقطع ده.\n"
+        /** (v177) ثغرة ملزوقة في كلام اتترجم قبلها/بعدها (نفس المتكلم غالبًا): الرد الفاضي مش هو الافتراضي هنا، وفي كلام واطي/خافت لازم يتسجل */
+        const val HOLE_NEAR_BLOCK = "\n═══ مقطع قصير مُعاد طلبه — كمّل كلام ناقص (الأولوية للتعليمات دي على كل اللي فوق) ═══\n" +
+            "- 🔴🔴 المقطع ده جزء من كلام متصل: الجمل اللي قبله أو بعده اتسجّلت بالفعل، والجزء ده فاتها. غالبًا فيه كلام بشري فعلًا (يمكن واطي أو خافت أو تحت موسيقى).\n" +
+            "- 🔴🔴 اسمعه بتركيز وسجّل كل كلمة بشرية منطوقة حتى لو واطية أو مش واضحة (faint=true / low_confidence=true مسموحين). متلغيش جملة عشان صوتها واطي.\n" +
+            "- ماتألفش كلام مسمعتهوش. رد {\"subtitles\":[]} بس لو فعلًا مفيش نطق بشري خالص (موسيقى/ضوضاء بس).\n"
         const val TERM_BLOCK = "\n═══ شرح المصطلحات الغريبة (بتظهر فوق الفيديو) ═══\n" +
             "- 🔴 لما يتقال في الكلام حاجة أغلب المشاهدين العرب مش هيفهموها: اسم دوا أو علاج، اسم مرض أو حالة طبية، مثل أو تعبير اصطلاحي (إنجليزي أو ياباني أو أي لغة)، إشارة لمسلسل أو فيلم أو شخصية أو حدث أو أغنية أو مشهور — أضف عنصر مستقل بنفس توقيت الجملة و \"is_sound\": true.\n" +
             "- original = المصطلح زي ما اتقال. translated = «المصطلح»: شرح بسيط بالمصري. الدوا: بيتاخد لإيه. المرض: هو إيه باختصار. المثل أو التعبير: المثل المصري اللي يقابله أو معناه. الإشارة: هي إيه والمقصود بيها في الجزء ده. بحد أقصى سطرين قصار.\n" +
@@ -236,6 +248,12 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- التطابق من الصوت نفسه (طبقة الصوت، الخشونة، الجنس، العمر، طريقة النطق والإيقاع) مش من الكلام ولا الاسم. لو مش متأكد إن الصوت هو نفسه اعتبره صوت جديد (new#) أحسن من إنك تلزقه بالغلط في صوت معروف.\n" +
             "- ضيف في الـ JSON الرئيسي (جنب subtitles) مصفوفة \"voices\": عنصر لكل كود ظهر في ردك: {\"id\":\"V1 أو new1\",\"gender\":\"male أو female\",\"age\":\"طفل/مراهق/شاب/بالغ/كبير سن\",\"style\":\"وصف الصوت وطريقة الكلام في 8 كلمات بالكتير (غليظ/رفيع، سريع/بطيء، هادي/عصبي، لهجة…)\",\"name\":\"اسمه بس لو اتقال صراحة إن ده اسم صاحب الصوت ده (بيعرّف نفسه أو حد بيناديه وهو بيرد)، وإلا فاضي\"}.\n" +
             "- جنس وعمر كل متحدث يتحددوا من الصوت نفسه، وحقل gender في كل subtitle لازم يطابق جنس صاحب الكود. لو الصوت اتغيّر كتير بين جملتين (كود مختلف) افصلهم.\n"
+        /** (v179) اسم المتكلم: بيتكتب قبل الجملة في الترجمة */
+        const val SPEAKER_NAME_BLOCK = "\n═══ اسم المتكلم ═══\n" +
+            "- أضف لكل subtitle حقل \"speaker_name\": اسم الشخص اللي بيقول الجملة دي (مثلًا \"هاوس\"، \"ستيف\"، \"د. كاميرون\") مكتوب بالعربي وبشكل ثابت في كل الجمل (نفس الشخص = نفس الكتابة بالظبط).\n" +
+            "- 🔴 لو في جدول شخصيات فوق: استخدم الاسم بالظبط زي ما هو مكتوب هناك لما تتعرف على الشخص. غير كده خد الاسم من الحوار (نداء، تقديم، اسم مكتوب على الشاشة) أو من الصوت لو نفس الصوت اتسمّى قبل كده.\n" +
+            "- 🔴 لو مش متأكد 100% مين المتكلم: اكتب \"\" (فاضي). ماتخمّنش اسم وماتكتبش \"متكلم 1\" ولا \"رجل\" ولا \"امرأة\" ولا جنس/وصف. الاسم بس.\n" +
+            "- ماتحطش الاسم جوه حقل translated ولا original: في حقل speaker_name بس.\n"
         const val SPLIT_BLOCK = "\n═══ تقسيم الجمل عند الوقفات (إلزامي) ═══\n" +
             "- 🔴 كل subtitle = جزء كلام متصل بين وقفتين فعليتين في صوت المتحدث (نَفَس، سكتة قصيرة، تغيير في النبرة، أو نهاية فكرة). لو المتحدث بيتكلم كلام طويل وبيهدى شوية بين الأجزاء، افصل كل جزء في subtitle لوحده.\n" +
             "- 🔴 start = اللحظة الفعلية اللي المتحدث بيبدأ فيها الجزء ده، وend = اللحظة الفعلية اللي بيسكت فيها. الجزء اللي بعده start بتاعه عند بداية كلامه هو، وده بيخلّي الجزء اللي قبله يختفي والجديد يظهر في وقته بالظبط. ممنوع توزيع الوقت بالتساوي أو بعدد الكلمات.\n" +
@@ -352,7 +370,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (!hole) VOICE_BLOCK + voiceText else "") + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (!hole) VOICE_BLOCK + voiceText else "") + (if (Extras.spkNames && !hole) SPEAKER_NAME_BLOCK else "") + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -540,15 +558,28 @@ object Api {
         return when (v) { 0 -> if (three) level else budget; 1 -> if (three) budget else level; else -> "" }
     }
 
+    /** (v177) حد طول رد الباتش: 8192 توكن كان بيتقطع فيه الرد في المقاطع الطويلة/الكتيرة الكلام (كل جملة معاها حقول كتير) فيرجع ناقص من الآخر.
+     *  بيزيد مع طول المقطع (حتى 24576). لو الموديل رفض الرقم الكبير (400) بنرجع لـ 8192 ونفتكر ده للموديل. */
+    fun outTokens(durSec: Double): Int = (durSec * 150).toInt().coerceIn(8192, 24576)
+    private val tokenCap = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** (v180) مهلة قراءة أقصر للخيط الحالي (الترجمة الحية: طلب أبطأ من ~12ث ملوش لازمة). null = الافتراضي 90ث */
+    val readTimeoutOverride = ThreadLocal<Int?>()
+
     fun generate(model: String, key: String, prompt: String, wav: ByteArray? = null,
                  maxTokens: Int = 8192, temp: Double = 0.1, json: Boolean = true, search: Boolean = false): Result {
         Quota.hit(model); Stats.req(model, key)
-        if (search) return generateOnce(model, key, prompt, wav, maxTokens, temp, json, search, "")
+        val mt0 = minOf(maxTokens, tokenCap[model] ?: Int.MAX_VALUE)
+        if (search) return generateOnce(model, key, prompt, wav, mt0, temp, json, search, "")
         var v = thinkVar[model] ?: 0
+        var mt = mt0
         while (true) {
-            try { return generateOnce(model, key, prompt, wav, maxTokens, temp, json, search, thinkCfg(model, v)) }
+            try { return generateOnce(model, key, prompt, wav, mt, temp, json, search, thinkCfg(model, v)) }
             catch (e: ApiErr) {
-                if (e.code != 400 || v >= 2 || !e.raw.contains("think", ignoreCase = true)) throw e
+                val r = e.raw
+                if (e.code == 400 && mt > 8192 && (r.contains("max_output_tokens", true) || r.contains("maxOutputTokens", true) || r.contains("output token", true))) {
+                    mt = 8192; tokenCap[model] = 8192; continue
+                }
+                if (e.code != 400 || v >= 2 || !r.contains("think", ignoreCase = true)) throw e
                 v++; thinkVar[model] = v
             }
         }
@@ -572,7 +603,7 @@ object Api {
 
         val c = URL("$base/models/$model:generateContent").openConnection() as HttpURLConnection
         try {
-            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = 90000
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 20000; c.readTimeout = (readTimeoutOverride.get() ?: 90000)
             c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("x-goog-api-key", key)
             c.setFixedLengthStreamingMode(total)
             c.outputStream.use { os ->
@@ -684,13 +715,16 @@ object Parse {
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
             s.optBoolean("faint", false), false,
             s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - ")),
-            s.optString("voice").trim().take(12)
+            s.optString("voice").trim().take(12),
+            s.optString("speaker_name").trim().replace(Regex("[\\r\\n:：]+"), " ").replace(Regex("\\s+"), " ").trim().take(24).let { if (it.equals("null", true) || it == "-" || it == "؟" || it == "?") "" else it }
         ))
     }
     fun subs(j: JSONObject, off: Double, maxEnd: Double): List<Sub> {
         val arr = j.optJSONArray("subtitles") ?: return emptyList()
         val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { sub(it, off) }
-            .filter { it.end > it.start && it.original.isNotEmpty() && !(Subs.isMusicLabel(it) && !it.isSound) }
+            // (v177) جملة end ≤ start (أو end ناقص) كانت بتتشال بالكامل؛ دلوقتي بنديها مدة على قد كلامها بدل ما نخسرها
+            .map { if (it.end > it.start) it else it.copy(end = it.start + minOf(6.0, maxOf(1.2, 0.45 * maxOf(1, it.translated.trim().split(Regex("\\s+")).size)))) }
+            .filter { it.original.isNotEmpty() && !(Subs.isMusicLabel(it) && !it.isSound) }
             .filter { Extras.deaf || !(it.isSound && it.translated.trim().let { t -> t.startsWith("[") && t.endsWith("]") }) }   // (v105) — (v162) وضع الصم بيسيبهم أوصاف الأصوات [موسيقى] [ضحك] مبقتش بتظهر
         val ok = all.filter { it.start < off + maxEnd + 1.0 }.map { if (it.end > off + maxEnd + 0.3) it.copy(end = off + maxEnd) else it }.filter { it.end > it.start }
         if (ok.isEmpty() && all.isNotEmpty() && off > 1.0) {
@@ -748,8 +782,63 @@ object Subs {
         }
     }
     private fun norm(t: String) = t.replace(Regex("[\\s.,!?؟،«»\"']"), "").trim()
+    /** (v176) تشابه نصين (0..1) بأزواج الحروف — مستقل عن اللغة */
+    private fun twinSim(a: String, b: String): Double {
+        val x = a.lowercase().filter { it.isLetterOrDigit() }; val y = b.lowercase().filter { it.isLetterOrDigit() }
+        if (x.isEmpty() || y.isEmpty()) return 0.0
+        if (x == y) return 1.0
+        if (x.length < 2 || y.length < 2) return 0.0
+        if (x.contains(y) || y.contains(x)) return 0.85
+        val bx = HashMap<String, Int>()
+        for (i in 0 until x.length - 1) { val g = x.substring(i, i + 2); bx[g] = (bx[g] ?: 0) + 1 }
+        var inter = 0
+        for (i in 0 until y.length - 1) { val g = y.substring(i, i + 2); val c = bx[g] ?: 0; if (c > 0) { inter++; bx[g] = c - 1 } }
+        return 2.0 * inter / ((x.length - 1) + (y.length - 1))
+    }
+    /** نفس الجملة اتسمعت في النسختين؟ (تداخل زمني كبير، أو أصل/ترجمة متشابهين وبدايتهم قريبة) */
+    private fun twinSame(a: Sub, b: Sub): Boolean {
+        if (a.isSound != b.isSound || a.faint != b.faint) return false
+        val ov = minOf(a.end, b.end) - maxOf(a.start, b.start)
+        val shorter = maxOf(0.1, minOf(a.end - a.start, b.end - b.start))
+        val so = twinSim(a.original, b.original); val st = twinSim(a.translated, b.translated)
+        val txt = maxOf(so, st)
+        if (ov >= 0.6 * shorter) return true            // نفس الخانة الزمنية = نفس الكلام (مفيش سطرين فوق بعض)
+        if (Math.abs(a.start - b.start) <= 3.0 && txt >= 0.6) return true
+        if (ov > 0 && txt >= 0.45) return true
+        return false
+    }
+    private fun twinScore(s: Sub) = s.original.length + s.translated.length + (if (s.original.isNotBlank() && s.translated.isNotBlank()) 20 else 0)
+    /**
+     * (v176) دمج نتيجتين لنفس الباتش: الاتحاد بدون تكرار.
+     * جملة موجودة في الاتنين = تتاخد مرة واحدة (الأكمل نصًا)؛ جملة في نسخة واحدة بس = تتاخد كمان.
+     * يعني لو واحدة طلّعت 14 والتانية 12 والـ 12 فيهم نص أصلي مش في الـ 14، الناتج 14 + الجمل الزيادة.
+     */
+    fun twinMerge(a: List<Sub>, b: List<Sub>): List<Sub> {
+        if (b.isEmpty()) return a
+        if (a.isEmpty()) return b
+        val out = ArrayList<Sub>(a)
+        for (sb in b) {
+            var hit = -1
+            for (k in out.indices) if (twinSame(out[k], sb)) { hit = k; break }
+            if (hit < 0) out.add(sb)
+            else if (twinScore(sb) > twinScore(out[hit]) + 6) out[hit] = sb
+        }
+        return out.sortedWith(compareBy({ it.start }, { it.end }))
+    }
     /** (v150) جملة أصلها مجرد علامات ترقيم («...») وليها ترجمة = تأليف على صمت — بتتشال */
     private fun emptyOrig(s: Sub) = !s.isSound && !s.isSong && s.original.isNotBlank() && s.original.none { it.isLetterOrDigit() }
+    /** (v179) صوت (voice) معروف اسمه في أغلب جمله بيتملا بيه الجمل اللي اسمها فاضي (≥2 جملة متسمّية و≥70% نفس الاسم). بيشتغل على بصمة الصوت العامة بين المقاطع */
+    fun fillSpeakerNames(l: List<Sub>): List<Sub> {
+        if (l.none { it.speakerName.isBlank() && it.voice.isNotBlank() && !it.isSound }) return l
+        val byVoice = HashMap<String, HashMap<String, Int>>()
+        for (s in l) if (s.voice.isNotBlank() && s.speakerName.isNotBlank()) byVoice.getOrPut(s.voice) { HashMap() }.merge(s.speakerName, 1, Int::plus)
+        if (byVoice.isEmpty()) return l
+        val pick = HashMap<String, String>()
+        for ((v, m) in byVoice) { val tot = m.values.sum(); val top = m.maxByOrNull { it.value }!!; if (tot >= 2 && top.value * 10 >= tot * 7) pick[v] = top.key }
+        if (pick.isEmpty()) return l
+        return l.map { if (it.speakerName.isBlank() && !it.isSound && it.voice in pick) it.copy(speakerName = pick[it.voice]!!) else it }
+    }
+
     fun dedup(subs0: List<Sub>): List<Sub> {
         val subs = if (subs0.any { emptyOrig(it) }) subs0.filter { !emptyOrig(it) } else subs0
         if (subs.size < 2) return subs
@@ -889,7 +978,7 @@ object Subs {
             val cur = sorted[i]; val prev = res.last()
             val gap = cur.start - prev.end
             val pw = words(prev.original); val cw = words(cur.original)
-            val same = prev.gender == cur.gender && prev.addressee == cur.addressee && prev.topicGender == cur.topicGender
+            val same = prev.gender == cur.gender && prev.addressee == cur.addressee && prev.topicGender == cur.topicGender && !(prev.speakerName.isNotBlank() && cur.speakerName.isNotBlank() && prev.speakerName != cur.speakerName)
             if (gap >= 0 && gap < 0.5 && same && prev.isSong == cur.isSong && pw <= 6 && cw <= 6 && pw + cw <= 10 &&
                 !prev.lowConf && !cur.lowConf && !Regex("[.!؟?]\\s*$").containsMatchIn(prev.original.trim()) && !prev.translated.startsWith("«") && !cur.translated.startsWith("«") && !prev.isSound && !cur.isSound) {
                 res[res.size - 1] = prev.copy(end = cur.end, original = "${prev.original} ${cur.original}".trim(), translated = "${prev.translated} ${cur.translated}".trim())
@@ -899,7 +988,7 @@ object Subs {
         val out = ArrayList<Sub>()
         for (s in res) {
             val p = out.lastOrNull()
-            if (p != null && s.end - s.start < 0.6 && s.start - p.end >= -0.05 && s.start - p.end <= 0.35 && p.gender == s.gender && p.addressee == s.addressee &&
+            if (p != null && s.end - s.start < 0.6 && s.start - p.end >= -0.05 && s.start - p.end <= 0.35 && p.gender == s.gender && p.addressee == s.addressee && !(p.speakerName.isNotBlank() && s.speakerName.isNotBlank() && p.speakerName != s.speakerName) &&
                 p.isSong == s.isSong && !p.isSound && !s.isSound && !p.translated.startsWith("«") && !s.translated.startsWith("«") && words(p.translated) + words(s.translated) <= 20) {
                 out[out.size - 1] = p.copy(end = s.end, original = "${p.original} ${s.original}".trim(), translated = "${p.translated} ${s.translated}".trim())
             } else out.add(s)
@@ -912,6 +1001,7 @@ object Subs {
     private fun otherSpeaker(a: Sub, b: Sub): Boolean {
         val ta = a.speakerTag.trim(); val tb = b.speakerTag.trim()
         if (ta.isNotEmpty() && tb.isNotEmpty() && ta != tb) return true
+        if (a.speakerName.isNotBlank() && b.speakerName.isNotBlank() && a.speakerName != b.speakerName) return true
         return a.overlap || b.overlap || a.gender != b.gender
     }
     private fun ovLen(a: Sub, b: Sub) = minOf(a.end, b.end) - maxOf(a.start, b.start)

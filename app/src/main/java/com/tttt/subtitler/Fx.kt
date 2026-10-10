@@ -552,6 +552,11 @@ object ExtrasUi {
         }
         fun idx(g: RadioGroup) = (g.checkedRadioButtonId - 1000).coerceAtLeast(0)
 
+        col.addView(head("🗣 اسم المتكلم"))
+        val cbSpk = CheckBox(act).apply { text = "اكتب اسم المتكلم قبل الجملة (هاوس: الكلام)"; isChecked = Extras.spkNames }
+        col.addView(cbSpk)
+        col.addView(note("بيتطلب من جيميناي في المقاطع الجاية (اللي اتترجمت قبل كده ما بتتغيرش). لو مش متأكد من الاسم بيسيبه فاضي. بيظهر في المشغّل وفي ملف SRT."))
+
         col.addView(head("🔊 وضع الصم — وصف الأصوات"))
         val cbDeaf = CheckBox(act).apply { text = "اكتب [باب بيتفتح] [طلقة نار] [تليفون بيرن]…"; isChecked = Extras.deaf }
         col.addView(cbDeaf)
@@ -592,6 +597,7 @@ object ExtrasUi {
             .setView(ScrollView(act).apply { addView(col) })
             .setPositiveButton("حفظ") { _, _ ->
                 Cfg.put("fx_deaf", if (cbDeaf.isChecked) "1" else "0")
+                Cfg.put("fx_spk", if (cbSpk.isChecked) "1" else "0")
                 Cfg.put("fx_scene", idx(rgScene).toString())
                 Cfg.put("fx_s_viol", if (cbV.isChecked) "1" else "0")
                 Cfg.put("fx_s_int", if (cbI.isChecked) "1" else "0")
