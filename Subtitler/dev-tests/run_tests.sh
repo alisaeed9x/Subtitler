@@ -25,8 +25,8 @@ echo "== 1) compile-check للتطبيق كله"
 echo "OK (skipped)"
 
 echo "== 2) اختبارات JVM (المنطق بدون Android: Core/Store/AudioCore/Engine)"
-# (v177) القايمة القديمة كانت متأخرة عن الكود. دلوقتي: ملفات المنطق + stubs لـ VoiceNet/VisualMode (محتاجين ONNX/ML Kit)
-NOUI="$(for n in Core Store AudioCore Engine Theme SubStyle PlayerLogic Recents Models ExtrasFlags Trim Blur VideoLib Stats KeyVault Speech Coverage Voice AudioEnc LiveLogic; do echo -n "$SRC/$n.kt "; done) $ROOT/dev-tests/logic-stubs/LogicStubs.kt"
+# (v177) القايمة القديمة كانت متأخرة عن الكود. دلوقتي: ملفات المنطق + stubs لـ VisualMode (محتاج ML Kit)
+NOUI="$(for n in Core Store AudioCore Engine Theme SubStyle PlayerLogic Recents Models ExtrasFlags Blur VideoLib Stats KeyVault Speech Coverage AudioEnc LiveLogic; do echo -n "$SRC/$n.kt "; done) $ROOT/dev-tests/logic-stubs/LogicStubs.kt"
 "$KC" -jvm-target 17 -cp "$AJ:$TOOLS/jsonout" -d "$OUT/app" $NOUI 2>&1 | grep -E "error:|^ERROR" && exit 1 || true
 CP="$OUT/app:$TOOLS/jsonout:$STD:$AJ"   # jsonout قبل android.jar عشان org.json الحقيقي يتقدم على الـ stubs
 JOPT="-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8"
@@ -74,9 +74,6 @@ java $JOPT -cp "$OUT/t12:$CP" GifTestKt | grep -E "^(PASS|FAIL)"
 mkdir -p "$OUT/t13"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t13" "$SRC/TextTracker.kt" "$ROOT/dev-tests/TextTrackerTest.kt" 2>&1 | grep error && exit 1 || true
 java $JOPT -cp "$OUT/t13:$CP" TextTrackerTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
-mkdir -p "$OUT/t14"
-"$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t14" "$ROOT/dev-tests/TwinMergeTest.kt" 2>&1 | grep error && exit 1 || true
-java $JOPT -cp "$OUT/t14:$CP" TwinMergeTestKt | grep -E "^(PASS|FAIL)|الاختبارات"
 mkdir -p "$OUT/t15"
 "$KC" -jvm-target 17 -cp "$CP" -d "$OUT/t15" "$ROOT/dev-tests/NoLossTest.kt" 2>&1 | grep -E "error:" && exit 1 || true
 java $JOPT -cp "$OUT/t15:$CP" NoLossTestKt | tee /tmp/noloss.out | grep -E "^(PASS|FAIL)|اختبارات"

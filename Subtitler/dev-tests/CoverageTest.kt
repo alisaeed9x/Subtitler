@@ -89,7 +89,7 @@ fun main() {
     check("spans: فاضية", Coverage.spans(emptyList(), 2.0).isEmpty())
     check("spans: غير مرتبة", Coverage.spans(listOf(sub(20.0, 22.0), sub(0.0, 3.0)), 2.0).size == 2)
     Api.base = "http://127.0.0.1:1/v1beta"
-    val conf = Conf(listOf("KEY_A_1234567"), emptyList(), "gemini-2.5-flash", "مصري", "حرفي", 60, 3, 1, emptyList(), "", false, true, true, true, true)
+    val conf = Conf(listOf("KEY_A_1234567"), emptyList(), "gemini-2.5-flash", "مصري", "حرفي", 60, 3, 1, emptyList(), "", true, true, true)
     val host = object : Host {
         override fun log(s: String) {}
         override fun status(s: String) {}

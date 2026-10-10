@@ -38,7 +38,6 @@ class Engine(
         const val MAX_TRIES = 25
         const val MAX_FAILS = 3          // جولات فشل قبل ما المقطع يتحط كـ "فجوة"
         const val GAP_PASSES = 3         // كام مرة نعيد المحاولة في الفجوات تلقائيًا
-        const val CROSS_MIN_DUR = 90.0   // (v140) كانت 600: الفيديوهات القصيرة (3 دقايق = 4 مقاطع) ماكانتش بتتراجع خالص
         const val PRIOR_CAP = 400        // أقصى عدد جمل قديمة نبعتها للمراجعة
         const val CHAR_MIN_LINES = 12
         const val PRON_MIN_LINES = 20
@@ -108,91 +107,16 @@ class Engine(
     private val perKey get() = conf.parallelPerKey.coerceIn(1, 4)
     private val hedgeBusy = AtomicInteger(0)
     private val recentMs = java.util.concurrent.ConcurrentLinkedDeque<Long>()   // أزمنة آخر باتشات خلصت
-    // ===== (v146) مفتاح/موديل/زمن رد كل باتش + اختبار سرعة الموديلات =====
+    // ===== مفتاح/موديل/زمن رد كل باتش =====
     class KeyRun(val keyNo: Int, val model: String, val ms: Long)
     private val runs = ConcurrentHashMap<Int, KeyRun>()                // آخر تنفيذ ناجح لكل باتش (مفتاح · موديل · زمن)
-    /** الموديل اللي كسب اختبار السرعة: بيتستخدم بدل موديل الإعدادات لحد ما تغيّر الموديل يدوي */
-    @Volatile private var modelOv: String? = null
-    private val speedDone = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val speedLines = java.util.concurrent.CopyOnWriteArrayList<String>()
-    private fun curModel(): String = modelOv ?: conf.model
+    private fun curModel(): String = conf.model
     private fun keyNo(k: String): Int = pool.all().indexOf(k) + 1
     private fun shortModel(m: String) = m.removePrefix("gemini-")
-    private class RaceWin(val key: String, val model: String, val res: Api.Result, val ms: Long)
     private fun fmtSec(ms: Long) = String.format(java.util.Locale.US, "%.1f", ms / 1000.0) + "ث"
-
-    /** (v149) مرشحين الاختبار: الموديل اللي إنت مختاره + flash-lite-latest بس */
-    private fun raceModels(): List<String> = listOf(conf.model, "gemini-flash-lite-latest").distinct()
-
-    /**
-     * أول باتش: بيتبعت على كل مفتاح صالح في نفس اللحظة، كل مفتاح بموديل مختلف. أول رد سليم هو اللي بيتطبّق،
-     * وموديله بيتثبّت لكل الباتشات الجاية. باقي النتايج بتتسجّل في اللوج بأزمنتها. null = مفيش فايز (الإرسال العادي يكمّل).
-     */
-    private fun speedRace(i: Int, w: WavChunk): RaceWin? {
-        val keys = pool.all().filter { pool.ok(it) }
-        if (keys.size < 2) return null
-        try {
-            val cm = Cfg.p.getString("speed_model", "") ?: ""
-            if (cm.isNotEmpty() && (Cfg.p.getString("speed_from", "") ?: "") == conf.model && System.currentTimeMillis() - Cfg.p.getLong("speed_at", 0L) < 3L * 3600_000L) {
-                modelOv = cm; host.log("🏁 الموديل الأسرع (من اختبار قريب): ${shortModel(cm)}"); speedLines.add("🏁 الموديل المثبّت: ${shortModel(cm)} (من اختبار قريب)"); return null
-            }
-        } catch (_: Throwable) {}
-        try { if (System.currentTimeMillis() - Cfg.p.getLong("speed_fail_at", 0L) < 10 * 60_000L) return null } catch (_: Throwable) {}   // (v150) فشل قريب: ماتعيدش الاختبار كل مرة
-        val cands = raceModels()
-        val n = keys.size   // (v149) كل المفاتيح الصالحة بتشارك، والموديلين بيتوزعوا عليها
-        if (n < 2) return null
-        val prompt = buildPrompt(w.durSec, w.startSec, false, i)
-        host.log("🏎 اختبار سرعة: باتش ${i + 1} على $n مفاتيح بالموديلات: ${cands.joinToString(" و ") { shortModel(it) }}…")
-        val winner = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
-        val mainWin = java.util.concurrent.atomic.AtomicReference<RaceWin?>(null)
-        val mainLatch = java.util.concurrent.CountDownLatch(1)
-        val latch = java.util.concurrent.CountDownLatch(1)
-        val left = java.util.concurrent.atomic.AtomicInteger(n)
-        for (x in 0 until n) {
-            val key = keys[x]; val model = cands[x % cands.size]
-            Thread {
-                val t0 = System.currentTimeMillis()
-                var line: String
-                try {
-                    pool.begin(key)
-                    val r = try { Api.generate(model, key, prompt, w.bytes).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
-                    val ms = System.currentTimeMillis() - t0
-                    val j = if (r.text.isBlank()) null else Parse.json(r.text)
-                    val cnt = if (j == null) 0 else Parse.subs(j, w.startSec, w.durSec).size
-                    val valid = (r.finish.isEmpty() || r.finish == "STOP") && (cnt > 0 || (r.text.isBlank() && w.silent))
-                    line = "🔑${keyNo(key)} · ${shortModel(model)}: ${fmtSec(ms)} · $cnt جملة" + if (valid) "" else " ⚠ رد مش سليم"
-                    if (valid && model == conf.model && mainWin.compareAndSet(null, RaceWin(key, model, r, ms))) mainLatch.countDown()
-                    if (valid && winner.compareAndSet(null, RaceWin(key, model, r, ms))) { line += " 🏆"; latch.countDown() }
-                } catch (e: Throwable) {
-                    line = "🔑${keyNo(key)} · ${shortModel(model)}: ❌ " + (e.message ?: e.toString()).take(70)
-                }
-                host.log("🏎 $line"); speedLines.add(line)
-                if (left.decrementAndGet() == 0) { latch.countDown(); mainLatch.countDown() }
-            }.apply { isDaemon = true }.start()
-        }
-        try { latch.await(150, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) { return null }
-        var win: RaceWin? = winner.get()
-        // (v150) flash-lite أضعف: لو الموديل اللي اخترته رد سليم في ≤6ث بعد الأسرع يفضل هو
-        if (win != null && win!!.model != conf.model && cands.contains(conf.model)) {
-            try { mainLatch.await(6, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) {}
-            val mw = mainWin.get(); if (mw != null) win = mw
-        }
-        if (win == null) {
-            try { Cfg.p.edit().putLong("speed_fail_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
-            host.log("🏎 اختبار السرعة: مفيش رد سليم من أي مفتاح — كمّلت بالموديل العادي"); return null
-        }
-        val win0 = win!!
-        modelOv = win0.model
-        try { Cfg.p.edit().putString("speed_model", win0.model).putString("speed_from", conf.model).putLong("speed_at", System.currentTimeMillis()).apply() } catch (_: Throwable) {}
-        host.log("🏁 الموديل الأسرع: ${shortModel(win0.model)} (${fmtSec(win0.ms)} على مفتاح ${keyNo(win0.key)}) — كل المفاتيح اتحوّلت له")
-        host.notice("🏁 الموديل الأسرع: ${shortModel(win0.model)} — كل المفاتيح اتحوّلت له")
-        return win0
-    }
 
     @Volatile private var maxApplied = -1                           // أعلى باتش اتطبّق (لو في باتش قبله لسه شغال يبقى متأخر)
     private val hedgeEx = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
-    /** (v176) وضع التأكيد: الطلب التاني لنفس الباتش على مفتاح تاني */
-    private val twinEx = Executors.newCachedThreadPool { r -> Thread(r).also { it.isDaemon = true } }
     @Volatile private var anyApplied = false
     private val gapTried = Ranges()      // بتتحفظ بين الجلسات
     private val gapSession = Ranges()    // لجلسة التشغيل دي بس (للحد الأقصى)
@@ -205,10 +129,6 @@ class Engine(
     /** (v107) اسم الفيلم/المسلسل من اسم الملف + الفولدر — بنبحث بيه عن الشخصيات مرة واحدة */
     @Volatile var titleHint: String = ""
     @Volatile private var lookupState = 0   // 0 لسه · 1 شغال · 2 خلص
-    /** (v170) بنك بصمات الأصوات: بيفضل طول الفيديو وبيتحفظ مع التقدم، وبيتحوّل لنص في prompt كل مقطع */
-    private val voices = VoiceBank()
-    /** تقسيم آلي مبدئي لكل مقطع قبل الإرسال (المفتاح = بداية المقطع بالسنتي ثانية) */
-    private val voiceHints = ConcurrentHashMap<Long, String>()
     /** (v170) العمل اتعرف عليه (من الاسم أو من الحوار) وشخصياته اتضافت */
     @Volatile private var castFound = false
     private var identTried = false
@@ -217,7 +137,6 @@ class Engine(
     private var charsBusy = false
     private var pronUpTo = 0
     private var pronBusy = false
-    private val reviews = AtomicInteger(0)
     /** لهجة التحويل التلقائي: الترجمة بتتعمل بالفصحى الحرفية وكل ~3 باتشات بتتحوّل للهجة دي. "" = من غير تحويل */
     @Volatile var convDialect: String = ""
     /** أسلوب الترجمة الحي (حرفي/شعبي/جرئ/+18) وشدته (خفيفة/متوسطة/شديدة): بيتحط في أول برومبت كل باتش جديد وكل تحويل لهجة */
@@ -243,8 +162,6 @@ class Engine(
     private fun needsConv(s: Sub) = !s.conv || (Msa.fusha(s) && pk(s) !in msaTried)
     /** باتشات رجعت ناقصة (رد اتقطع / من غير جمل رغم وجود صوت) */
     private val incomplete = ConcurrentHashMap.newKeySet<Int>()
-    /** باتشات المستخدم طلب إعادتها بالإيد: نتخطّى فلتر الصمت (VAD) عليها عشان ماتتعلّمش «خلصت» من غير ما تتبعت */
-    private val forceVad = ConcurrentHashMap.newKeySet<Int>()
     private val bg = Executors.newFixedThreadPool(2) { r -> Thread(r).also { it.isDaemon = true } }
     private val ch get() = conf.chunkSec.toDouble()
     /** عدد المقاطع قدّام = الأكبر بين الإعداد وعدد الطلبات المتوازية، عشان كل المفاتيح تشتغل مع بعض */
@@ -263,7 +180,6 @@ class Engine(
         val fastest = HashMap<Int, Int>()   // الدفعة → رقم الباتش الأسرع
         val byWave = runs.entries.groupBy { it.key / cap }
         for ((wv, es) in byWave) if (es.size >= 2) fastest[wv] = es.minByOrNull { it.value.ms }!!.key
-        if (speedLines.isNotEmpty()) out.add(Pair("🏎 اختبار الموديلات:\n  " + speedLines.joinToString("\n  "), false))
         for (i in maxOf(0, c - 1)..c + window + 1) {
             if (d > 0 && cStart(i) >= d) break
             val mark = when {
@@ -283,7 +199,7 @@ class Engine(
             val r = runs[i]
             var fast = false
             if (mark == "⏳" && k != null) {
-                sb.append(" · 🔑").append(keyNo(k)).append(" ").append(shortModel(modelOv ?: conf.model))
+                sb.append(" · 🔑").append(keyNo(k)).append(" ").append(shortModel(conf.model))
                 startedAt[i]?.let { sb.append(" · ").append(fmtSec(System.currentTimeMillis() - it)) }
             } else if (r != null && (mark == "✅" || mark == "🔇" || mark == "🔁")) {
                 fast = fastest[i / cap] == i
@@ -368,7 +284,7 @@ class Engine(
             autoTries[i] = n + 1; autoAt[i] = now + 12_000L * (n + 1)
             if (announced.add(i)) host.notice(if (zero) "⚠ باتش ${i + 1} رجع من غير جمل — بعيده للتأكد" else if (b.mark == "❌") "❌ باتش ${i + 1} فشل — بعيده تلقائي" else "⚠ باتش ${i + 1} رجع ناقص — بعيده تلقائي")
             host.log("🔁 إعادة تلقائية لباتش ${i + 1} (${n + 1}/$limit)")
-            failed.remove(i); incomplete.remove(i); forceVad.add(i); priorityRetry.add(i)
+            failed.remove(i); incomplete.remove(i); priorityRetry.add(i)
         }
     }
     /** إعادة ترجمة باتش واحد على المفاتيح الاحتياطية */
@@ -510,15 +426,15 @@ class Engine(
     /** باتش ده وبعده كله (بيبدأ منه ويكمل) */
     fun redoFrom(i: Int, keep: Boolean = true) { redo(i, -1, keep); onlyChunks = null; forcedSticky = true; forcedCursor = i; paused = false }
     /** باتش ده لوحده وخلاص */
-    fun redoOnly(i: Int, keep: Boolean = true) { redo(i, i, keep); forceVad.add(i); onlyChunks = i..i; paused = false }
+    fun redoOnly(i: Int, keep: Boolean = true) { redo(i, i, keep); onlyChunks = i..i; paused = false }
     /** من الأول خالص */
     fun redoAll(keep: Boolean = true) { redo(0, -1, keep); onlyChunks = null; forcedSticky = true; forcedCursor = 0; paused = false }
     fun resumeAuto() { onlyChunks = null; paused = false }
     /** كمّل الترجمة من المكان ده (من غير مسح حاجة): بيقفز بالمؤشر لباتش الوقت ده ويلغي الإيقاف */
     fun translateFrom(sec: Double) { onlyChunks = null; forcedSticky = false; forcedCursor = chunkOfSec(sec.coerceAtLeast(0.0)); paused = false; userPaused = false }
-    fun stop() { isClosed = true; running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { twinEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
+    fun stop() { isClosed = true; running = false; bg.shutdownNow(); gapEx.shutdownNow(); exec?.shutdownNow(); try { hedgeEx.shutdownNow() } catch (_: Exception) {}; try { holeEx.shutdownNow() } catch (_: Exception) {}; try { persistEx.shutdownNow() } catch (_: Exception) {} }
     /** (v122) إعدادات اتغيّرت من شاشة الإعدادات (لهجة / أسلوب / موديل / شخصيات…): تتطبّق على الباتشات والتحويلات الجاية من غير إعادة تشغيل المحرك */
-    fun applyConf(c: Conf) { if (c.model != conf.model) { modelOv = null; speedDone.set(true) }; conf = c; dialConf.clear() }
+    fun applyConf(c: Conf) { conf = c; dialConf.clear() }
     fun saveNow() = doPersist(true)
     /** استيراد ترجمة جاهزة (SRT) لفيديو من غير ترجمة */
     fun importSubs(l: List<Sub>) { subs = l }
@@ -556,7 +472,6 @@ class Engine(
             for (r in s.done) done.add(r[0], r[1])
             for (r in s.failed) failed[Math.round(r[0] / ch).toInt()] = MAX_FAILS
             chars.addAll(s.chars); gloss.addAll(s.gloss); tplCache.putAll(s.tpl)
-            voices.fromJson(s.voices)
             srcLang = s.srcLang; detDone = s.detDone; autoCharsAttempts = s.charsTried
             if (s.detDone) anyApplied = true
             pronUpTo = subs.size
@@ -819,8 +734,8 @@ class Engine(
         claimed.remove(i)   // محاولة جديدة للباتش ده من الأول
         val d = currentDur()
         // بنحجز الباتش ونقرا حدوده في خطوة واحدة: لو باتش قبله بيقصّر حدّه بالتوازي ماينفعش يسيب ثغرة
-        val firstTime: Boolean; val rawStart: Double; var rawEnd: Double
-        synchronized(trimLock) { firstTime = prepared.add(i); rawStart = cStart(i); rawEnd = cEnd(i, d) }
+        val rawStart: Double; var rawEnd: Double
+        synchronized(trimLock) { prepared.add(i); rawStart = cStart(i); rawEnd = cEnd(i, d) }
         val start = if (i == 0) 0.0 else maxOf(0.0, rawStart - OVERLAP)
         host.status("⏳ ترجمة المقطع ${i + 1}…")
         val t0 = System.currentTimeMillis()
@@ -836,32 +751,8 @@ class Engine(
             done.add(rawStart, rawEnd); persist(); return null
         }
         host.log("🎧 صوت المقطع ${i + 1}: ${w.bytes.size / 1024}KB في ${System.currentTimeMillis() - t0}ms")
-        val forced = force || forceVad.remove(i)
-        if (conf.vad && w.silent && !forced && !conf.soundTags) { host.log("🔇 المقطع ${i + 1} صامت — اتخطى (لو غلط: «☝ ده بس» بيبعته غصب)"); done.add(rawStart, rawEnd); persist(); return null }
-        val last = d > 0 && rawEnd >= d - 0.01
-        if (conf.silenceTrim && !last && firstTime && !bounds.containsKey(i + 1) && !prepared.contains(i + 1)) {
-            val cut = Silence.findCut(w.bytes)
-            if (cut != null) {
-                val adj = w.startSec + cut
-                if (adj > rawStart + 2.0 && adj < rawEnd - 0.2) {
-                    val took = synchronized(trimLock) { if (!bounds.containsKey(i + 1) && !prepared.contains(i + 1)) { bounds[i + 1] = adj; true } else false }
-                    if (took) {
-                        host.log("🌊 المقطع ${i + 1}: اتقصّر ${"%.1f".format(java.util.Locale.US, rawEnd - adj)}ث لأقرب لحظة صمت")
-                        w = WavChunk(Silence.truncate(w.bytes, cut), w.startSec, cut, w.silent, w.gain)
-                        rawEnd = adj
-                        persist()
-                    }
-                }
-            }
-        }
         // (v166) نضغط الصوت هنا (نفس خيط التجهيز) عشان الرفع يبدأ بحجم أصغر ونشوف النسبة في اللوج
         try { val pk = AudioEnc.pack(w.bytes); host.log("📦 المقطع ${i + 1}: ${pk.srcSize / 1024}KB ← ${pk.bytes.size / 1024}KB (${pk.mime.removePrefix("audio/")})") } catch (_: Throwable) {}
-        // (v170) تقسيم آلي مبدئي بالبصمة المحلية: أي صوت معروف بيتكلم إمتى (تلميح لجيميناي، مش أمر)
-        if (!w.silent) try {
-            val hk = Math.round(w.startSec * 100)
-            val h = VoiceTrack.hint(voices, w)
-            if (h.isNotEmpty()) voiceHints[hk] = h else voiceHints.remove(hk)
-        } catch (_: Throwable) {}
         return Prep(w, rawStart, rawEnd)
     }
 
@@ -877,19 +768,7 @@ class Engine(
             if (nextKey(cur) == null) return null
             throw RehomeEx(cur)
         }
-        var raced: RaceWin? = null
-        if (!hedge && !backupFirst && conf.speedTest && speedDone.compareAndSet(false, true)) raced = try { speedRace(i, w) } catch (e: Exception) { host.log("⚠ اختبار السرعة فشل: " + (e.message ?: e.toString()).take(80)); null }
-        var key = raced?.key ?: firstKey?.takeIf { pool.ok(it) } ?: nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
-        // (v176) وضع التأكيد: نسخة تانية من نفس الباتش بتتبعت بالتوازي على مفتاح تاني، والنتيجتين بتتدمج
-        var twinF: java.util.concurrent.Future<List<Sub>?>? = null
-        if (conf.verify && !hedge && !backupFirst && pool.usableCount() >= 2) {
-            val k2 = listOf(pool.pickBackup(key), pool.pickFree(key, rr.getAndIncrement())).firstOrNull { it != null && it != key }
-            if (k2 != null) {
-                host.log("🔁 باتش ${i + 1}: وضع التأكيد — نسخة تانية على ${pool.tail(k2)}")
-                twinF = try { twinEx.submit<List<Sub>?> { twinCall(i, w, k2, key) } } catch (_: RejectedExecutionException) { null }
-            }
-        }
-        var merged = false
+        var key = firstKey?.takeIf { pool.ok(it) } ?: nextKey(avoidKey) ?: throw Exception("كل المفاتيح معطلة مؤقتًا — راجع المفاتيح")
         var partial = false
         var trunc = 0; var empties = 0; var bad = 0; var net = 0; var tries = 0; var langBad = 0
         while (running && tries++ < MAX_TRIES) {
@@ -898,13 +777,12 @@ class Engine(
             val prompt = buildPrompt(w.durSec, w.startSec, langBad > 0, i)
             try {
                 val t0 = System.currentTimeMillis()
-                val rw = raced; raced = null
-                val mdl = rw?.model ?: curModel()
-                val r = if (rw != null) rw.res else {
+                val mdl = curModel()
+                val r = run {
                     pool.begin(key, i)
                     try { Api.generate(mdl, key, prompt, w.bytes, maxTokens = Api.outTokens(w.durSec)).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
                 }
-                val took = rw?.ms ?: (System.currentTimeMillis() - t0)
+                val took = System.currentTimeMillis() - t0
                 if (isClosed) return   // الإنجن اتقفل أثناء الطلب (خرجت من الفيديو): ارمي الرد
                 if (r.finish == "MAX_TOKENS" && trunc >= 2) partial = true
                 if (r.finish == "MAX_TOKENS" && trunc < 2) { trunc++; host.log("⚠ الرد اتقطع — إعادة المحاولة"); nap(600); continue }
@@ -919,16 +797,6 @@ class Engine(
                     nap(400); continue
                 }
                 if (off.isNotEmpty()) fresh = fixForeign(fresh)
-                twinF?.let { f ->
-                    twinF = null
-                    val t2 = try { f.get(90, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) { f.cancel(true); null }
-                    if (t2 == null) host.log("⚠ باتش ${i + 1}: نسخة التأكيد فشلت — اتكمّل بالنسخة الأولى بس")
-                    else {
-                        val n1 = fresh.size
-                        fresh = Subs.twinMerge(fresh, t2); merged = true
-                        host.log("🔁 باتش ${i + 1}: دمج النسختين — الأولى $n1 جملة · التانية ${t2.size} · الناتج ${fresh.size} (من غير تكرار)")
-                    }
-                }
                 if (fresh.isEmpty() && empties < (if (w.silent) 1 else 3)) {
                     empties++
                     if (!w.silent) host.log("⚠ المقطع ${i + 1} رجع من غير جمل رغم وجود صوت — إعادة محاولة ($empties/3)")
@@ -940,7 +808,7 @@ class Engine(
                 if (!claimed.add(i)) { host.log("↩ باتش ${i + 1}: نسخة تانية خلصته قبلها — اتجاهلت دي"); return }
                 if (i > maxApplied) maxApplied = i
                 runs[i] = KeyRun(keyNo(key), mdl, took)
-                applyChunk(i, rawStart, rawEnd, w, if (merged && j != null) JSONObject(j.toString()).also { it.remove("voices") } else j, fresh, prior)
+                applyChunk(i, rawStart, rawEnd, w, j, fresh, prior)
                 startedAt[i]?.let { recentMs.addLast(System.currentTimeMillis() - it); while (recentMs.size > 8) recentMs.pollFirst() }
                 if (hedge) { inflight.remove(i); host.log("⚡ باتش ${i + 1}: النسخة الاحتياطية خلصت الأول") }
                 scheduleHoleFill(i, rawStart, rawEnd, w, key)   // برّه خانة الباتش: الباتش الجاي مايستناش سدّ الثغرات
@@ -976,32 +844,6 @@ class Engine(
         if (running) throw Exception("استنفدت المحاولات")
     }
 
-    /** (v176) الطلب التاني في وضع التأكيد: محاولتين بالكتير، أي فشل = null والباتش يكمّل بالنسخة الأولى */
-    private fun twinCall(i: Int, w: WavChunk, k0: String, primary: String): List<Sub>? {
-        var key = k0
-        for (attempt in 0 until 3) {
-            if (!running || isClosed) return null
-            val t0 = System.currentTimeMillis()
-            try {
-                val prompt = buildPrompt(w.durSec, w.startSec)
-                pool.begin(key)
-                val r = try { Api.generate(curModel(), key, prompt, w.bytes, maxTokens = Api.outTokens(w.durSec)).also { pool.end(key, System.currentTimeMillis() - t0, true) } } catch (e: Throwable) { pool.end(key, 0, false); throw e }
-                if (r.text.isBlank()) return emptyList()
-                val j = Parse.json(r.text) ?: continue
-                var fresh = Parse.subs(j, w.startSec, w.durSec)
-                if (LangGuard.foreignOf(fresh).isNotEmpty()) fresh = fixForeign(fresh)
-                return fresh
-            } catch (e: ApiErr) {
-                val invalid = e.code == 401 || e.code == 403
-                if (e.code == 429) pool.block(key, 60_000) else if (invalid) pool.block(key, 3_600_000)
-                else if (e.code < 500) return null
-                key = listOf(pool.pickBackup(key), pool.pickFree(key, rr.getAndIncrement())).firstOrNull { it != null && it != primary && it != key } ?: return null
-            } catch (_: Unsupported) { return null
-            } catch (_: Exception) { nap(1500) }
-        }
-        return null
-    }
-
     /** لهجة الباتش اللي بيتبعت: لو اتختارت لهجة، الباتش بيتترجم بيها مباشرة (من غير فصحى ثم تحويل — توفير على المفاتيح) */
     private val dialOf = ConcurrentHashMap<Int, String>()
     private val dialConf = ConcurrentHashMap<String, Conf>()
@@ -1011,8 +853,7 @@ class Engine(
         val c = if (dl.isEmpty() || dl == conf.lang) conf else dialConf.getOrPut(dl) { conf.withLang(dl) }
         val case = pb.caseOf(srcLang, detDone)
         val tf = if (case == "other") synchronized(tplCache) { tplCache[tplKey(pb.templateId(c, "other"))] } else null
-        val vt = if (hole) "" else voices.promptBlock() + (voiceHints[Math.round(start * 100)] ?: "")
-        val built = toneBlock() + pb.build(c, srcLang, detDone, durSec, if (hole) "" else Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict, hole, vt)
+        val built = toneBlock() + pb.build(c, srcLang, detDone, durSec, if (hole) "" else Subs.prevContext(subs, start), effectiveChars(), effectiveGloss(), tf, strict, hole)
         return if (hole && holeNear) built.replace(PromptBuilder.HOLE_BLOCK, PromptBuilder.HOLE_NEAR_BLOCK) else built
     }
 
@@ -1049,7 +890,7 @@ class Engine(
 
     private fun applyChunk(i: Int, rawStart: Double, rawEnd: Double, w: WavChunk, j: JSONObject?, fresh0: List<Sub>, prior: List<Sub>) {
         if (isClosed) return
-        val fresh = voiceStep(w, j, fresh0)
+        val fresh = fresh0
         if (j != null && !detDone) {
             val d = j.optString("detected_source_language", "").trim()
             if (d.isNotEmpty()) { srcLang = d; detDone = true; host.log("🌐 لغة الفيديو الأصلية: $d"); maybeTranslateTemplate() }
@@ -1058,16 +899,6 @@ class Engine(
         val spansAbs = Speech.activeSpans(w.bytes, w.gain)?.let { Speech.absolute(it, w.startSec) }
         val direct = dialOf[i]?.let { it == convDialect } ?: false
         var tagged = Subs.splitAll(fresh).map { Subs.capPace(it).copy(chunk = i, conv = direct) }
-        // (v183) مواءمة التوقيت: لو توقيت الجمل كلها متزحلق (إزاحة/تمدّد) عن الصوت الفعلي بنرجّعه — الجملة الظاهرة كانت بتسبق أو بتتأخر عن المتكلم
-        if (spansAbs != null && spansAbs.isNotEmpty() && Cfg.bool("talign", true)) {
-            try {
-                Speech.align(tagged, spansAbs, w.startSec, w.startSec + w.durSec)?.let { al ->
-                    val L = java.util.Locale.US
-                    host.log("🎯 المقطع ${i + 1}: توقيت الجمل اتظبط على الصوت (إزاحة ${"%+.2f".format(L, al.shift)}ث · مقياس ${"%.2f".format(L, al.scale)} · تطابق ${"%.2f".format(L, al.before)} ← ${"%.2f".format(L, al.after)})")
-                    tagged = al.subs
-                }
-            } catch (_: Throwable) {}
-        }
         // (v177) لو الكاشف ماطلّعش ولا مجال صوت والمقطع مش صامت (صوت واطي جدًا) ماينفعش نشيل جمل على أساسه
         if (spansAbs != null && (spansAbs.isNotEmpty() || w.silent)) {
             val n0 = tagged.size
@@ -1079,8 +910,7 @@ class Engine(
             tagged = Subs.dropOverlapZone(tagged, subs.filter { it.chunk != i }, rawStart)
             val keep = subs.filter { it.chunk != i && !(it.chunk == -1 && it.start >= rawStart && it.start < rawEnd) && !Subs.inMyZone(it, tagged, i, rawEnd) }
             subs = Subs.merge(Subs.dedup(keep + tagged)).sortedBy { it.start }
-            // (v181) تعبئة الأسماء من بصمة الصوت بتشتغل بس لو المحرك العصبي شغّال (البصمة الخفيفة بتغلط)؛ الباقي بيتحسب بس
-            subs = if (try { VoiceNet.useNet() } catch (_: Throwable) { false }) Subs.fillSpeakerNames(subs) else subs.also { Subs.refreshMain(it) }
+            Subs.refreshMain(subs)
         }
         // (v177) دفتر الفقد: لو جمل رجعت من Gemini واختفت بعد التنضيف (تكرار/تداخل) نسجّل العدد عشان أي رجوع للمشكلة يبان في اللوج
         try {
@@ -1096,27 +926,6 @@ class Engine(
         persist()
         afterChunk(w, fresh, prior)
         maybeConvert(false)
-    }
-
-    /** (v170) بعد رد جيميناي: بصمة كل جملة من الصوت نفسه → كود صوت ثابت عبر المقاطع + تصحيح الجنس من جنس الصوت */
-    private fun voiceStep(w: WavChunk, j: JSONObject?, fresh: List<Sub>): List<Sub> {
-        voiceHints.remove(Math.round(w.startSec * 100))
-        if (fresh.isEmpty()) return fresh
-        return try {
-            val r = VoiceTrack.apply(voices, w, fresh, j?.optJSONArray("voices"))
-            if (r.matched + r.newVoices > 0) host.log("🎙 بصمة الصوت: ${r.matched} جملة اتطابقت · ${r.newVoices} صوت جديد · ${voices.size()} صوت في البنك" + (if (r.genderFixed > 0) " · اتصحّح جنس ${r.genderFixed} جملة" else ""))
-            syncVoiceCast()
-            r.subs
-        } catch (e: Throwable) { host.log("⚠ بصمة الصوت: " + (e.message ?: e.toString()).take(80)); fresh }
-    }
-
-    /** أي صوت اتسمّى (بيعرّف نفسه أو حد بيناديه) وظهر 3 مرات على الأقل بيدخل جدول الشخصيات بجنس صوته */
-    private fun syncVoiceCast() {
-        if (conf.manualChars.isNotEmpty()) return
-        val nv = voices.namedVoices(); if (nv.isEmpty()) return
-        synchronized(lock) {
-            for ((name, g, _) in nv) if (chars.none { it.name == name }) chars.add(Chr(name, g, ""))
-        }
     }
 
     private fun applyPrevCorrections(j: JSONObject) {
@@ -1145,12 +954,6 @@ class Engine(
     // ===== المهام الخلفية بعد كل مقطع =====
     private fun afterChunk(w: WavChunk, fresh: List<Sub>, prior: List<Sub>) {
         if (isClosed) return
-        if (conf.crossReview && currentDur() >= CROSS_MIN_DUR && prior.isNotEmpty() && fresh.isNotEmpty() && reviews.get() < 2) {
-            reviews.incrementAndGet()
-            val off = w.startSec
-            try { bg.submit { try { crossReview(prior, fresh, off) } catch (e: Exception) { host.log("⚠ المراجعة بين المقاطع فشلت: " + (e.message ?: "").take(100)) } finally { reviews.decrementAndGet() } } }
-            catch (_: Exception) { reviews.decrementAndGet() }
-        }
         synchronized(lock) { chunksDone++ }
         maybeAnalyze()
         maybePronouns()
@@ -1304,7 +1107,6 @@ class Engine(
         host.log("🔎 مفيش اسم عمل واضح — بحاول أتعرّف عليه من الحوار نفسه (${snap.size} جملة)…")
         val prompt = "ده حوار من فيديو (فيلم أو مسلسل أو أنمي؟) اتسمع واتترجم. لغة الصوت: ${srcLang.ifEmpty { "غير محددة" }}. اسم الملف/الفولدر (ممكن يكون ناقص أو عام): «${hint.ifEmpty { "مفيش" }}».\n" +
             "أسماء ظهرت في الحوار: ${names.ifEmpty { "مفيش" }}\n" + (if (known.isNotEmpty()) "شخصيات معروفة عندنا: $known\n" else "") +
-            voices.promptBlock() +
             "\nمقتطفات من الحوار (متكلم + الأصل + الترجمة):\n$lines\n\n" +
             "مهمتك: تتعرّف على العمل ده، وتدوّر عليه في جوجل وتتأكد إنه عمل حقيقي وإن أسماء الشخصيات والأحداث دي بتاعته فعلًا.\n" +
             "🔴 ممنوع التخمين: لو مش متأكد بثقة عالية (أسماء شخصيات وأحداث متطابقة مع مصدر موثوق)، أو لقيت أكتر من عمل محتمل، أو ده شكله فيديو يوتيوب/مقطع شخصي/برنامج/بودكاست — رجّع found=false وخلاص.\n" +
@@ -1414,47 +1216,6 @@ class Engine(
             if (n > 0) subs = cur
         }
         return n
-    }
-
-    // --- المراجعة بين المقاطع (reviewCrossChunkContext) ---
-    private fun crossReview(prior: List<Sub>, fresh: List<Sub>, offsetSec: Double) {
-        nap(4500)
-        if (!running) return
-        val base = if (prior.size > PRIOR_CAP) prior.size - PRIOR_CAP else 0
-        val capped = prior.subList(base, prior.size)
-        val newList = JSONArray()
-        for ((k, s) in fresh.withIndex()) newList.put(JSONObject().put("idx", k)
-            .put("start", Math.round((s.start - offsetSec) * 100) / 100.0).put("end", Math.round((s.end - offsetSec) * 100) / 100.0)
-            .put("original", s.original).put("translated", s.translated))
-        val priorList = JSONArray()
-        for ((k, s) in capped.withIndex()) priorList.put(JSONObject().put("idx", k).put("original", s.original).put("translated", s.translated)
-            .put("gender", s.gender).put("addressee", s.addressee).put("topic_gender", s.topicGender))
-        val east = "   طبّق نفس قواعد تحديد الجنس الآسيوية دي في المراجعة:\n" + pb.read("prompts/east_asian.txt")
-        val prompt = pb.read("prompts/review_cross.txt").replace("§NEW§", newList.toString()).replace("§PRIOR§", priorList.toString()).replace("§EAST§", east)
-        val r = bgCall(prompt, 6144, 0.1, true, (offsetSec / ch).toInt())
-        val j = Parse.json(r.text) ?: return
-        val arr = j.optJSONArray("corrections") ?: return
-        var n = 0
-        synchronized(lock) {
-            val cur = subs.toMutableList()
-            for (q in 0 until arr.length()) {
-                val c = arr.optJSONObject(q) ?: continue
-                if (!c.has("idx")) continue
-                val idx = c.optInt("idx", -1)
-                if (idx < 0 || idx >= capped.size) continue
-                val target = capped[idx]
-                val at = cur.indexOfFirst { Math.abs(it.start - target.start) < 0.05 && it.original == target.original }
-                if (at < 0) continue
-                var s = cur[at]; val before = s
-                c.optString("gender").lowercase().takeIf { it == "male" || it == "female" }?.let { s = s.copy(gender = it) }
-                c.optString("addressee").lowercase().takeIf { it in listOf("male", "female", "plural", "unknown") }?.let { s = s.copy(addressee = it) }
-                c.optString("topic_gender").lowercase().takeIf { it in listOf("male", "female", "plural", "none") }?.let { s = s.copy(topicGender = it) }
-                c.optString("translated").trim().takeIf { it.isNotEmpty() }?.let { s = s.copy(translated = it) }
-                if (s != before) { cur[at] = s; n++ }
-            }
-            if (n > 0) subs = cur
-        }
-        if (n > 0) { host.log("🔎 مراجعة بين المقاطع: صححت $n جملة قديمة"); host.changed(); persist() }
     }
 
     // ===== (v109) تنقيح الترجمة بالسياق — (v140) اتحسّن: بيشتغل كل مقطعين بعدّاد مش بباقي القسمة (كان بيفوّت لما مقطعين يخلصوا مع بعض)،
@@ -1638,7 +1399,7 @@ class Engine(
     fun correctPronounsNow(report: (String) -> Unit, done: (Int) -> Unit) {
         if (toolBusy != null) { report("في عملية شغالة: " + toolBusy); return }
         val cs = effectiveChars()
-        if (cs.isEmpty()) { report("مفيش جدول شخصيات — ضيف شخصيات من الإعدادات ← الشخصيات الأول"); done(0); return }
+        if (cs.isEmpty()) { report("مفيش شخصيات متحللة لسه — شغّل الترجمة لحد ما تتحلل الأول"); done(0); return }
         toolBusy = "تصحيح الضمائر"
         Thread {
             var fixed = 0
@@ -2097,7 +1858,7 @@ class Engine(
         if (isClosed && !force) return   // خيط متأخر من إنجن اتقفل: ممنوع يكتب
         val saved = synchronized(lock) {
             val fr = failed.filter { it.value >= MAX_FAILS }.keys.sorted().map { doubleArrayOf(cStart(it), cStart(it + 1)) }
-            Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list(), voices.toJson())
+            Saved(conf.chunkSec, srcLang, detDone, subs, done.list(), fr, chars.toList(), gloss.toList(), synchronized(tplCache) { HashMap(tplCache) }, host.position(), autoCharsAttempts, HashMap(bounds), gapTried.list())
         }
         try { st.save(saved) } catch (e: Exception) { host.log("⚠ تعذر حفظ التقدم: " + (e.message ?: "").take(80)) }
     }

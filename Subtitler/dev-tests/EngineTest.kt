@@ -109,7 +109,7 @@ fun main() {
     val tmp = File.createTempFile("prog", "").also { it.delete(); it.mkdirs() }
     val store = Store(tmp, Store.keyFor("f:test.mp4:123"))
     fun conf() = Conf(listOf("KEY_A_1234567", "KEY_B_1234567"), listOf("KEY_C_1234567"), "gemini-2.5-flash", "مصري", "حرفي",
-        60, 3, 1, emptyList(), "", false, true, true, true, true)
+        60, 3, 1, emptyList(), "", true, true, true)
 
     println("=== مرحلة 1: ترجمة من البداية + 429 + مقطع بيفشل ===")
     val host = FakeHost()

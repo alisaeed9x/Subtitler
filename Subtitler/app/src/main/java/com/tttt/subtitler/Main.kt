@@ -103,7 +103,6 @@ class MainActivity : Activity() {
         if (fromPlayer) requestedOrientation = if (intent?.getBooleanExtra("land", false) == true) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT   // الإعدادات من المشغّل: بنفس اتجاه المشغّل
         UiWatchdog.start()
         Cfg.init(this); CrashLog.install(this)
-        try { NeuralEngine.auto(this) } catch (_: Throwable) {}   // (v181) تحميل المحرك العصبي في الخلفية أول مرة
         val th = Themes.byId(Cfg.str("theme", "mx"))
         val ui = Ui(this, th)
         applyBars(th)
@@ -241,18 +240,14 @@ class MainActivity : Activity() {
         val atrack = ui.input("رقم مسار الصوت (لو الفيديو فيه أكتر من لغة)", Cfg.str("atrack", "1"))
         val roster = ui.input("جدول الشخصيات: اسم:male أو female:وصف (سطر لكل شخصية). لو فاضي والتحليل التلقائي شغال هيتعبّى لوحده", Cfg.str("roster"), 3)
         val gloss = ui.input("مسرد مصطلحات ثابت (كل سطر: الكلمة = ترجمتها)", Cfg.str("gloss"), 3)
-        val flags = linkedMapOf("vad" to false, "cross" to true, "autochars" to true, "autopron" to true, "autotpl" to true, "strim" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "speedtest" to true, "prefine" to true, "verify" to false, "talign" to true)
-        val flagText = mapOf("vad" to "تخطي المقاطع الصامتة (فلتر الصمت)", "cross" to "مراجعة بين المقاطع (للفيديوهات أطول من 10 دقايق)",
+        val flags = linkedMapOf("autochars" to true, "autopron" to true, "autotpl" to true, "gapfill" to true, "hitiming" to false, "autosrt" to true, "soundtags" to true, "prefine" to true)
+        val flagText = mapOf(
             "autochars" to "تحليل الشخصيات تلقائيًا", "autopron" to "تصحيح الضمائر تلقائيًا", "autotpl" to "ترجمة قالب الـ prompt للغات اللي ملهاش قالب جاهز",
-            "strim" to "تقصير حدود المقطع لأقرب لحظة صمت (بيقلل الجمل المقطوعة بين مقطعين)",
             "gapfill" to "سدّ الفجوات تلقائيًا أثناء المشاهدة (بمفاتيح المراقبين/الاحتياطي، والجمل المستردة بين «»)",
             "autosrt" to "حفظ ملف SRT جنب الفيديو تلقائي لما الترجمة تخلص (محتاج «إدارة كل الملفات»)",
-            "speedtest" to "اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح (الموديل المختار وflash-lite-latest) والأسرع يتثبّت للباقي — بيستهلك كام طلب زيادة مرة واحدة كل 3 ساعات",
-            "verify" to "🔁 وضع التأكيد: كل باتش يتبعت لمفتاحين بالتوازي (مفتاح أساسي + مفتاح تاني) والنتيجتين بتتدمج: الجملة اللي في الاتنين بتتاخد مرة واحدة، واللي في واحدة بس بتتضاف — فمفيش كلام ينضاع لو نسخة فاتها. بيستهلك ضعف الطلبات (كوتة أسرع) ومحتاج مفتاحين شغالين على الأقل",
             "prefine" to "تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع 25 جملة قبلها كسياق) بتتبعت بنصها الأصلي وترجمتها للتنقيح وتتصحّح الترجمة الحرفية — على مفاتيح تنقيح مخصوصة (البرنامج بيخصّصها لوحده من قايمة المفاتيح، ومفتاح الصور احتياطي لها) من غير ما ياخد من مفاتيح الترجمة؛ وفي الآخر بيحصل تنقيح كامل واحد",
-            "talign" to "🎯 مواءمة التوقيت بالصوت: لو توقيت جمل المقطع متزحلق عن الكلام الفعلي (الجملة الظاهرة سابقة أو متأخرة) بيتظبط من الصوت نفسه — مابيلمسش المقطع السليم",
             "hitiming" to "دقة توقيت أعلى (بيفك الصوت من قبل البداية بـ 3 ثواني — أبطأ شوية)",
-            "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو (بيعطّل تخطي المقاطع الصامتة)")
+            "soundtags" to "التقاط الأصوات الخلفية والهمهمات والموسيقى وعرضها كسطر وصف فوق الفيديو")
         val flagViews = flags.map { (k, d) -> ui.switchRow(flagText[k]!!, Cfg.bool(k, d)) { } }
         val modes = KeyModes.parse(Cfg.str("keymodes")).toMutableList()
         val modesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -447,10 +442,6 @@ class MainActivity : Activity() {
             Cfg.put(AudioEnc.PRESET_KEY, if (it == apNormal) AudioEnc.NORMAL else AudioEnc.FAST); apDesc()
         }
         apDesc()
-        val vmLight = "🪶 خفيفة فقط"; val vmNeural = "🧠 عصبي فقط"; val vmCombo = "🤝 الاتنين معًا"
-        val voiceModeChips = ui.chips(listOf(vmLight, vmNeural, vmCombo), { when (VoiceNet.mode()) { "light" -> vmLight; "neural" -> vmNeural; else -> vmCombo } }) {
-            Cfg.p.edit().putString("voice_mode", when (it) { vmLight -> "light"; vmNeural -> "neural"; else -> "combo" }).apply()
-        }
         val vf1 = "1 فريم/ث"; val vf2 = "2 فريم/ث"; val vf3 = "3 فريم/ث"
         val visFpsChips = ui.chips(listOf(vf1, vf2, vf3), { when (VisualMode.fps()) { 1 -> vf1; 3 -> vf3; else -> vf2 } }) {
             Cfg.put("vis_fps", when (it) { vf1 -> "1"; vf3 -> "3"; else -> "2" })
@@ -459,20 +450,6 @@ class MainActivity : Activity() {
         val visSrcChips = ui.chips(listOf(vsClip, vsFrames), { if (VisualMode.useClip()) vsClip else vsFrames }) { Cfg.put("vis_src", if (it == vsFrames) "frames" else "clip") }
         val vaOn = "⚡ تلقائي مع كل فيديو"; val vaOff = "✋ يدوي (من زرار 👁)"
         val visAutoChips = ui.chips(listOf(vaOn, vaOff), { if (VisualMode.auto()) vaOn else vaOff }) { Cfg.put("vis_auto", if (it == vaOn) "1" else "0") }
-        val neuralStatus = ui.text(NeuralEngine.status(this), 12f, th.muted)
-        val actNeural = this
-        fun neuralTick() { neuralStatus.text = NeuralEngine.status(actNeural); if (neuralStatus.isAttachedToWindow) neuralStatus.postDelayed({ neuralTick() }, 1500L) }
-        neuralStatus.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) { neuralTick() }
-            override fun onViewDetachedFromWindow(v: View) {}
-        })
-        val neuralDl = ui.button("⬇ تحميل المحرك العصبي (26MB)") {
-            NeuralEngine.manual(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
-            try { Notice.show(actNeural, "⬇ بيتحمّل — تابعه من ⚙️ ← ⏳ المهام", 2600L) } catch (_: Throwable) {}
-        }
-        val neuralDel = ui.button("🗑 حذف المحرك العصبي (يرجّع 26MB)") {
-            NeuralEngine.delete(actNeural); neuralStatus.text = NeuralEngine.status(actNeural)
-        }
         // (v198) إعدادات مشغّل الموسيقى
         val lyrFontChips = ui.chips(SubStyle.fonts.map { it.label }, { (SubStyle.fonts.firstOrNull { f -> f.id == Cfg.str("lyr_font", "Noto Sans Arabic") } ?: SubStyle.fonts[0]).label }) { l ->
             SubStyle.fonts.firstOrNull { f -> f.label == l }?.let { f -> Cfg.put("lyr_font", f.id) }
@@ -516,7 +493,7 @@ class MainActivity : Activity() {
                                 ui.section("🏎 اختبار سرعة رد الـ AI", false,
                     ui.text("بيبعت طلب صغير على كل مفتاح بالموديل المختار وflash-lite-latest ويوريك زمن الرد والأسرع (🏆). بيستهلك طلبات قليلة.", 12f, th.muted), speedBtn, speedOut, speedUseBtn),
                                 ui.section("⏱ الأداء والتقطيع", false, chunk, ahead, hlsAhead, atrack),
-                                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "cross", "gapfill", "prefine", "speedtest", "verify")),
+                                ui.section("🧠 الذكاء التلقائي والمراجعة", false, *fl("autochars", "autopron", "autotpl", "gapfill", "prefine")),
                 ui.section("💾 الحفظ", false, *fl("autosrt"))), false, "اللهجة · الأسلوب · الموديل · السرعة · الأداء · التصحيح التلقائي · الحفظ", group = "🎞 مشغّل الفيديو"),
             TabDef("look", "🎬 شكل الترجمة", listOf<View>(
                 ui.section("🔤 الخطوط", true, *sp.fonts.toTypedArray()),
@@ -528,10 +505,8 @@ class MainActivity : Activity() {
                                 ui.section("👁 مفتاح الوضع البصري فقط", false,
                     ui.text("الوضع البصري (👁) بيشتغل بالمفاتيح اللي هنا بس، ومش بياخد أبدًا من مفاتيح الترجمة. لو سبتها فاضية الوضع البصري مش هيشتغل. ولما الوضع البصري مايكونش شغّال المفتاح ده بيشتغل كمفتاح احتياطي للترجمة والتنقيح.", 12f, th.muted), visKeysUi)), false, "تلقائي/يدوي · مقاطع أو فريمات · الكثافة · مفتاح الوضع البصري", group = "🎞 مشغّل الفيديو"),
             TabDef("audio", "🔊 الصوت والبصمة", listOf<View>(
-                                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "vad", "strim", "hitiming", "talign")),
-                                ui.section("🎙 محرك بصمة الصوت", false, voiceModeChips, neuralStatus, neuralDl, neuralDel,
-                    ui.text("خفيفة: معادلات بسيطة (طبقة + ألوان الصوت) · عصبي: موديل WeSpeaker لوحده · الاتنين معًا: متوسط المقياسين. التغيير بيسري على الفيديو الجاي (البصمات القديمة المحفوظة بتفضل زي ما هي).", 12f, th.muted))), false, "جودة الصوت · كشف الكلام · التوقيت · بصمة المتكلم", group = "🎞 مشغّل الفيديو"),
-            TabDef("chars", "🧑 الشخصيات", listOf<View>(ui.charactersEditor(this, roster, gloss)), false, "جدول الشخصيات والمسرد", group = "🎞 مشغّل الفيديو"),
+                                ui.section("🔊 الصوت والتوقيت", false, audioPresetTitle, audioPresetChips, audioPresetDesc, *fl("soundtags", "hitiming"))), false, "جودة الصوت · الأصوات الخلفية · دقة التوقيت", group = "🎞 مشغّل الفيديو"),
+            TabDef("gloss", "📖 المسرد", listOf<View>(ui.text("مسرد المصطلحات (كل سطر: الكلمة = ترجمتها)", 13f, th.muted), gloss), false, "مسرد المصطلحات الثابت", group = "🎞 مشغّل الفيديو"),
             TabDef("music", "🎵 مشغّل الموسيقى", listOf<View>(
                 ui.section("📝 الكلمات", true,
                                         ui.text("📝 الكلمات: جيميناي يجيب الكلمات الكاملة بالاسم، والتطبيق نفسه يحدّد من الصوت امتى المغني بيبدأ يغني ويوزّع السطور على لحظات الغنا (بيتخطى المقدمة والفواصل). 🎤 زرار «صوت / موسيقى / الكل» في المشغّل يفصل الصوت عن الموسيقى (تقريبي، للاستريو بس).", 12f, th.muted),
@@ -541,12 +516,7 @@ class MainActivity : Activity() {
                     ui.text("الحجم:", 12f, th.muted), lyrSizeChips),
                 ui.section("🎵 المكتبة", false,
                     ui.text("لو أغاني جديدة ماظهرتش في صفحة الموسيقى، أعد الفحص:", 12f, th.muted),
-                    ui.button("🔄 إعادة فحص الأغاني") { try { musicUi?.reload(true) } catch (_: Throwable) {}; Notice.show(this, "🔄 بفحص الأغاني…", 1600L) })), false, "الكلمات (جيميناي) · الخط والحجم · الكلمات التلقائية · فحص الأغاني", group = "🎵 مشغّل الموسيقى"),
-            TabDef("credits", "🙏 شكر وتقدير", listOf<View>(
-                ui.text("موديل بصمة الصوت (التعرف على المتكلم) المستخدم في التطبيق:", 13f, th.text, true),
-                ui.text("WeSpeaker · voxceleb_resnet34_LM (ResNet34 متدرّب على VoxCeleb) — من مشروع WeSpeaker مفتوح المصدر. الشكر لفريق WeSpeaker ولمنشور الموديل على Hugging Face. رخصة الموديل وشروطه حسب صفحته الأصلية.", 12f, th.muted),
-                ui.button("🔗 صفحة الموديل") { try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM"))) } catch (_: Exception) {} },
-                ui.text("تشغيل الموديل على الجهاز: ONNX Runtime (Microsoft).", 12f, th.muted)), false, "مصادر الموديلات والمكتبات المستخدمة", group = "ℹ️ أخرى")
+                    ui.button("🔄 إعادة فحص الأغاني") { try { musicUi?.reload(true) } catch (_: Throwable) {}; Notice.show(this, "🔄 بفحص الأغاني…", 1600L) })), false, "الكلمات (جيميناي) · الخط والحجم · الكلمات التلقائية · فحص الأغاني", group = "🎵 مشغّل الموسيقى")
         ), sp.holder) { save(); refreshChip(); if (fromPlayer) finish() }
         // رابط مباشر + المحفوظة (نافذة سفلية): حقل الرابط بيتحط هنا
         link.hint = "الصق أي لينك: فيديو مباشر / يوتيوب / صفحة فيها فيديو"; link.layoutDirection = View.LAYOUT_DIRECTION_LTR

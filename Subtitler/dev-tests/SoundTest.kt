@@ -20,8 +20,8 @@ fun main() {
     chk("LangGuard يتجاهل الصوت", !LangGuard.foreign(a.copy(translated = "[humming]")))
     // 6) prompt: كتلة الأصوات بتتحط بس لو الإعداد شغال
     val pb = PromptBuilder { File(System.getenv("SUBTITLER_ASSETS") ?: "app/src/main/assets", it).readText(Charsets.UTF_8) }
-    val on = Conf(listOf("k"), emptyList(), "m", "مصري", "حرفي", 60, 3, 1, emptyList(), "", false, true, true, true, true, soundTags = true)
-    val off = on.let { Conf(it.keys, it.backup, it.model, it.lang, it.style, 60, 3, 1, emptyList(), "", false, true, true, true, true, soundTags = false) }
+    val on = Conf(listOf("k"), emptyList(), "m", "مصري", "حرفي", 60, 3, 1, emptyList(), "", true, true, true, soundTags = true)
+    val off = on.let { Conf(it.keys, it.backup, it.model, it.lang, it.style, 60, 3, 1, emptyList(), "", true, true, true, soundTags = false) }
     chk("prompt فيه كتلة الأصوات لما شغال", pb.build(on, "", false, 60.0, "", emptyList(), emptyList()).contains("is_sound"))
     chk("prompt من غير كتلة الأصوات لما مقفول", !pb.build(off, "", false, 60.0, "", emptyList(), emptyList()).contains("is_sound"))
     // 7) الحفظ والتحميل

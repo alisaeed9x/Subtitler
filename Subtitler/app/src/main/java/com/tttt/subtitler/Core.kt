@@ -38,38 +38,32 @@ class Conf(
     val lang: String, val style: String,
     val chunkSec: Int, val ahead: Int, val audioTrack: Int,
     val manualChars: List<Chr>, val manualGloss: String,
-    val vad: Boolean, val crossReview: Boolean, val autoChars: Boolean,
+    val autoChars: Boolean,
     val autoPronouns: Boolean, val autoTemplate: Boolean,
     /** طلبات متوازية لكل مفتاح (1–4) */
     val parallelPerKey: Int = 1,
     /** دقة توقيت أعلى: فك الصوت من قبل نقطة البداية بـ 3 ثواني */
     val hiTiming: Boolean = false,
-    /** تعديل حدود المقطع لأقرب لحظة صمت */
-    val silenceTrim: Boolean = true,
     /** سدّ الفجوات تلقائيًا أثناء المشاهدة */
     val gapFill: Boolean = false,
     /** التقاط الأصوات غير الكلامية والخلفية (همهمة/موسيقى/ضحك…) كسطر وصف فوق الفيديو */
     val soundTags: Boolean = true,
     /** مفاتيح خاصة بالوضع البصري بس (لو موجودة الوضع البصري مايستخدمش غيرها) */
     val visKeys: List<String> = emptyList(),
-    /** (v146) اختبار سرعة الموديلات: أول باتش يتبعت على كل المفاتيح، كل مفتاح بموديل مختلف، والأسرع يتثبّت للباقي */
-    val speedTest: Boolean = true,
     /** (v154) تنقيح جزئي أثناء الترجمة: كل مقطع يخلص، الجمل الجديدة (مع سياق قبلها) تتبعت للتنقيح على مفتاح مخصوص (احتياطي، أو مفاتيح الصور لو الوضع البصري مش شغال) */
     val partialRefine: Boolean = true,
     /** (v158) مفاتيح التنقيح (البرنامج بيوزّع المفاتيح لوحده: ترجمة / تنقيح / احتياطي) */
-    val refine: List<String> = emptyList(),
-    /** (v176) وضع التأكيد: كل باتش يتبعت لمفتاحين بالتوازي، والجمل من النسختين بتتدمج (اتحاد من غير تكرار) */
-    val verify: Boolean = false
+    val refine: List<String> = emptyList()
 ) {
     /** نسخة من الإعدادات بلهجة تانية (الباتشات الجديدة بتتبعت باللهجة المختارة مباشرة بدل فصحى ثم تحويل) */
-    fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, vad, crossReview, autoChars,
-        autoPronouns, autoTemplate, parallelPerKey, hiTiming, silenceTrim, gapFill, soundTags, visKeys, speedTest, partialRefine, refine, verify)
+    fun withLang(l: String): Conf = Conf(keys, backup, model, l, style, chunkSec, ahead, audioTrack, manualChars, manualGloss, autoChars,
+        autoPronouns, autoTemplate, parallelPerKey, hiTiming, gapFill, soundTags, visKeys, partialRefine, refine)
 }
 
 // ===== ترميز الإعدادات (نقي — متختبر) =====
 object CfgCodec {
     /** مفاتيح بتتخزن Boolean / Int فعليًا بعد الهجرة */
-    val BOOLS = setOf("vad", "cross", "autochars", "autopron", "autotpl", "hitiming", "strim", "gapfill", "soundtags", "speedtest", "prefine", "verify", "talign",
+    val BOOLS = setOf("autochars", "autopron", "autotpl", "hitiming", "gapfill", "soundtags", "prefine", 
         "sub_nobg", "sub_plain", "sub_uni_on", "sub_split_on", "sub_two_lines", "sub_punct")
     val INTS = setOf("chunk", "ahead", "hls_ahead", "atrack", "parallel", "sub_scale", "sub_bgopa", "sub_blur", "sub_aspeed", "sub_dual", "sub_split")
     const val VERSION = 2
@@ -130,7 +124,7 @@ object Cfg {
         Stats.save = { p.edit().putString("stats", it).apply() }
         migrate()
         try { KeyVault.attach(c.applicationContext) } catch (_: Exception) {}
-        try { VoiceNet.init(c.applicationContext) } catch (_: Throwable) {}
+        
         try { Extras.load() } catch (_: Throwable) {}
         // (v158) مرة واحدة: كل المفاتيح (أساسي/إضافي/احتياطي) تتجمّع في قايمة واحدة والبرنامج بيوزّعها لوحده
         if (!p.getBoolean("keys_unified_v158", false)) {
@@ -196,10 +190,10 @@ object Cfg {
             main, bk, str("model", Models.DEFAULT).trim().ifEmpty { Models.DEFAULT },
             str("lang", "فصحى"), str("style", "حرفي"),
             int("chunk", 60).coerceIn(10, 600), int("ahead", 3).coerceIn(0, 50), int("atrack", 1).coerceAtLeast(1),
-            parseRoster(str("roster")), str("gloss"),
-            bool("vad", false), bool("cross", true), bool("autochars", true), bool("autopron", true), bool("autotpl", true),
-            1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("strim", true), bool("gapfill", true),
-            bool("soundtags", true), keys("viskeys"), bool("speedtest", true), bool("prefine", true), rf, bool("verify", false)
+            emptyList() /* جدول الشخصيات اليدوي اتشال — الشخصيات بتتحلل تلقائيًا */, str("gloss"),
+            bool("autochars", true), bool("autopron", true), bool("autotpl", true),
+            1 /* (v141) طلب واحد لكل مفتاح */, bool("hitiming", false), bool("gapfill", true),
+            bool("soundtags", true), keys("viskeys"), bool("prefine", true), rf
         )
     }
 }
@@ -241,13 +235,6 @@ class PromptBuilder(private val readAsset: (String) -> String) {
             "- original = المصطلح زي ما اتقال. translated = «المصطلح»: شرح بسيط بالمصري. الدوا: بيتاخد لإيه. المرض: هو إيه باختصار. المثل أو التعبير: المثل المصري اللي يقابله أو معناه. الإشارة: هي إيه والمقصود بيها في الجزء ده. بحد أقصى سطرين قصار.\n" +
             "- الترجمة الأساسية للجملة تفضل عادية زي ما هي، والشرح عنصر إضافي بس.\n" +
             "- اشرح الحاجات الغريبة فعلًا بس، مش المعروفة. لو مش متأكد من المعنى ماتشرحوش ماتخمّنش. ماتزودش عن مصطلح كل نص دقيقة تقريبًا.\n"
-        /** (v170) بصمة الصوت: ربط المتحدثين بين المقاطع (المقاطع بتتبعت لمفاتيح مختلفة ومفيش واحد فيهم سمع الفيديو كله) */
-        const val VOICE_BLOCK = "\n═══ بصمة الصوت (ربط المتحدثين بين المقاطع) ═══\n" +
-            "- 🔴 المقطع ده بيتبعت لوحده، وقبله وبعده مقاطع بتتبعت لمفاتيح تانية ومحدش بيسمع الفيديو كله. عشان كده الأصوات بتتربط بكود: لو في جدول «بصمات الأصوات المعروفة» تحت فاستخدمه، ولو في «تقسيم آلي تقريبي» فاستعين بيه.\n" +
-            "- أضف لكل subtitle حقل \"voice\": لو الصوت بيطابق صوت معروف اكتب كوده بالظبط (V1، V2…). لو صوت جديد مش في الجدول اكتب كود مؤقت للمقطع ده بس: new1، new2… (نفس الشخص = نفس الكود في كل جمله جوه المقطع). ممنوع تخترع كود V جديد.\n" +
-            "- التطابق من الصوت نفسه (طبقة الصوت، الخشونة، الجنس، العمر، طريقة النطق والإيقاع) مش من الكلام ولا الاسم. لو مش متأكد إن الصوت هو نفسه اعتبره صوت جديد (new#) أحسن من إنك تلزقه بالغلط في صوت معروف.\n" +
-            "- ضيف في الـ JSON الرئيسي (جنب subtitles) مصفوفة \"voices\": عنصر لكل كود ظهر في ردك: {\"id\":\"V1 أو new1\",\"gender\":\"male أو female\",\"age\":\"طفل/مراهق/شاب/بالغ/كبير سن\",\"style\":\"وصف الصوت وطريقة الكلام في 8 كلمات بالكتير (غليظ/رفيع، سريع/بطيء، هادي/عصبي، لهجة…)\",\"name\":\"اسمه بس لو اتقال صراحة إن ده اسم صاحب الصوت ده (بيعرّف نفسه أو حد بيناديه وهو بيرد)، وإلا فاضي\"}.\n" +
-            "- جنس وعمر كل متحدث يتحددوا من الصوت نفسه، وحقل gender في كل subtitle لازم يطابق جنس صاحب الكود. لو الصوت اتغيّر كتير بين جملتين (كود مختلف) افصلهم.\n"
         /** (v179) اسم المتكلم: بيتكتب قبل الجملة في الترجمة */
         const val SPEAKER_NAME_BLOCK = "\n═══ اسم المتكلم ═══\n" +
             "- أضف لكل subtitle حقل \"speaker_name\": اسم الشخص اللي بيقول الجملة دي (مثلًا \"هاوس\"، \"ستيف\"، \"د. كاميرون\") مكتوب بالعربي وبشكل ثابت في كل الجمل (نفس الشخص = نفس الكتابة بالظبط).\n" +
@@ -359,7 +346,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
      * @param translatedFixed نسخة مترجمة من الجزء الثابت (للغات اللي ملهاش قالب جاهز) أو null
      */
     fun build(c: Conf, srcLang: String, detectDone: Boolean, durSec: Double, prev: String,
-              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null, strict: Boolean = false, hole: Boolean = false, voiceText: String = ""): String {
+              chars: List<Chr>, gloss: List<Gloss>, translatedFixed: String? = null, strict: Boolean = false, hole: Boolean = false): String {
         val case = caseOf(srcLang, detectDone)
         val id = templateId(c, case)
         val raw = read("prompts/$id.txt")
@@ -371,7 +358,7 @@ class PromptBuilder(private val readAsset: (String) -> String) {
         val ctxBlock = if (prev.isNotBlank()) read("prompts/ctx.txt").replace("§PREV§", prev) else ""
         val glossBlock = customBlock(c.manualGloss)
         val tailFinal = if (tail.isEmpty()) "" else tail.substring(1)
-        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (!hole) VOICE_BLOCK + voiceText else "") + (if (Extras.spkNames && !hole) SPEAKER_NAME_BLOCK else "") + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
+        return (fixed + "\n" + SPLIT_BLOCK + EXTRA_BLOCK + (if (Extras.spkNames && !hole) SPEAKER_NAME_BLOCK else "") + TERM_BLOCK + (if (c.soundTags && !hole) SOUND_BLOCK else "") + (if (Extras.deaf && !hole) Extras.SFX_BLOCK else "") + glossBlock + tailFinal + langLock(c, strict) + NO_INVENT_BLOCK + (if (hole) HOLE_BLOCK else ""))
             .replace("\u0001", ctxBlock)
             .replace("{{DUR}}", String.format(java.util.Locale.US, "%.1f", durSec))
     }
@@ -776,7 +763,7 @@ object Parse {
             s.optBoolean("is_continuation", false), s.optString("translated_en_pivot").trim(),
             s.optBoolean("faint", false), false,
             s.optBoolean("is_sound", false) || (tr.length >= 3 && tr.startsWith("[") && tr.endsWith("]") && !tr.contains(" - ")),
-            s.optString("voice").trim().take(12),
+            "",
             s.optString("speaker_name").trim().replace(Regex("[\\r\\n:：]+"), " ").replace(Regex("\\s+"), " ").trim().take(24).let { if (it.equals("null", true) || it == "-" || it == "؟" || it == "?") "" else it }
         ))
     }
@@ -843,70 +830,13 @@ object Subs {
         }
     }
     private fun norm(t: String) = t.replace(Regex("[\\s.,!?؟،«»\"']"), "").trim()
-    /** (v176) تشابه نصين (0..1) بأزواج الحروف — مستقل عن اللغة */
-    private fun twinSim(a: String, b: String): Double {
-        val x = a.lowercase().filter { it.isLetterOrDigit() }; val y = b.lowercase().filter { it.isLetterOrDigit() }
-        if (x.isEmpty() || y.isEmpty()) return 0.0
-        if (x == y) return 1.0
-        if (x.length < 2 || y.length < 2) return 0.0
-        if (x.contains(y) || y.contains(x)) return 0.85
-        val bx = HashMap<String, Int>()
-        for (i in 0 until x.length - 1) { val g = x.substring(i, i + 2); bx[g] = (bx[g] ?: 0) + 1 }
-        var inter = 0
-        for (i in 0 until y.length - 1) { val g = y.substring(i, i + 2); val c = bx[g] ?: 0; if (c > 0) { inter++; bx[g] = c - 1 } }
-        return 2.0 * inter / ((x.length - 1) + (y.length - 1))
-    }
-    /** نفس الجملة اتسمعت في النسختين؟ (تداخل زمني كبير، أو أصل/ترجمة متشابهين وبدايتهم قريبة) */
-    private fun twinSame(a: Sub, b: Sub): Boolean {
-        if (a.isSound != b.isSound || a.faint != b.faint) return false
-        val ov = minOf(a.end, b.end) - maxOf(a.start, b.start)
-        val shorter = maxOf(0.1, minOf(a.end - a.start, b.end - b.start))
-        val so = twinSim(a.original, b.original); val st = twinSim(a.translated, b.translated)
-        val txt = maxOf(so, st)
-        if (ov >= 0.6 * shorter) return true            // نفس الخانة الزمنية = نفس الكلام (مفيش سطرين فوق بعض)
-        if (Math.abs(a.start - b.start) <= 3.0 && txt >= 0.6) return true
-        if (ov > 0 && txt >= 0.45) return true
-        return false
-    }
-    private fun twinScore(s: Sub) = s.original.length + s.translated.length + (if (s.original.isNotBlank() && s.translated.isNotBlank()) 20 else 0)
-    /**
-     * (v176) دمج نتيجتين لنفس الباتش: الاتحاد بدون تكرار.
-     * جملة موجودة في الاتنين = تتاخد مرة واحدة (الأكمل نصًا)؛ جملة في نسخة واحدة بس = تتاخد كمان.
-     * يعني لو واحدة طلّعت 14 والتانية 12 والـ 12 فيهم نص أصلي مش في الـ 14، الناتج 14 + الجمل الزيادة.
-     */
-    fun twinMerge(a: List<Sub>, b: List<Sub>): List<Sub> {
-        if (b.isEmpty()) return a
-        if (a.isEmpty()) return b
-        val out = ArrayList<Sub>(a)
-        for (sb in b) {
-            var hit = -1
-            for (k in out.indices) if (twinSame(out[k], sb)) { hit = k; break }
-            if (hit < 0) out.add(sb)
-            else if (twinScore(sb) > twinScore(out[hit]) + 6) out[hit] = sb
-        }
-        return out.sortedWith(compareBy({ it.start }, { it.end }))
-    }
     /** (v150) جملة أصلها مجرد علامات ترقيم («...») وليها ترجمة = تأليف على صمت — بتتشال */
     private fun emptyOrig(s: Sub) = !s.isSound && !s.isSong && s.original.isNotBlank() && s.original.none { it.isLetterOrDigit() }
-    /** (v179) صوت (voice) معروف اسمه في أغلب جمله بيتملا بيه الجمل اللي اسمها فاضي (≥2 جملة متسمّية و≥70% نفس الاسم). بيشتغل على بصمة الصوت العامة بين المقاطع */
     /** (v181) بيحسب الشخصيات الأساسية (الاسم اتكرر MAIN_MIN مرات فأكتر) */
     fun refreshMain(l: List<Sub>) {
         val cnt = HashMap<String, Int>()
         for (s in l) if (!s.isSound && s.speakerName.isNotBlank()) cnt.merge(s.speakerName, 1, Int::plus)
         Extras.mainNames = cnt.filter { it.value >= Extras.MAIN_MIN }.keys.toSet()
-    }
-    fun fillSpeakerNames(l: List<Sub>): List<Sub> {
-        val r = fillSpeakerNames0(l); refreshMain(r); return r
-    }
-    private fun fillSpeakerNames0(l: List<Sub>): List<Sub> {
-        if (l.none { it.speakerName.isBlank() && it.voice.isNotBlank() && !it.isSound }) return l
-        val byVoice = HashMap<String, HashMap<String, Int>>()
-        for (s in l) if (s.voice.isNotBlank() && s.speakerName.isNotBlank()) byVoice.getOrPut(s.voice) { HashMap() }.merge(s.speakerName, 1, Int::plus)
-        if (byVoice.isEmpty()) return l
-        val pick = HashMap<String, String>()
-        for ((v, m) in byVoice) { val tot = m.values.sum(); val top = m.maxByOrNull { it.value }!!; if (tot >= 2 && top.value * 10 >= tot * 7) pick[v] = top.key }
-        if (pick.isEmpty()) return l
-        return l.map { if (it.speakerName.isBlank() && !it.isSound && it.voice in pick) it.copy(speakerName = pick[it.voice]!!) else it }
     }
 
     fun dedup(subs0: List<Sub>): List<Sub> {

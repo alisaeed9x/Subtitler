@@ -16,9 +16,7 @@ class Saved(
     /** حدود المقاطع بعد تعديلها لأقرب صمت: رقم المقطع -> بدايته بالثواني */
     val bounds: Map<Int, Double> = emptyMap(),
     /** الفجوات اللي اتحاولت قبل كده (عشان متتعادش كل جلسة) */
-    val gapTried: List<DoubleArray> = emptyList(),
-    /** (v170) بنك بصمات الأصوات (JSON) */
-    val voices: String = ""
+    val gapTried: List<DoubleArray> = emptyList()
 )
 
 class Store(private val dir: File, key: String) {
@@ -60,7 +58,7 @@ class Store(private val dir: File, key: String) {
 
     fun save(s: Saved) {
         val j = JSONObject().put("v", 2).put("chunkSec", s.chunkSec).put("srcLang", s.srcLang).put("detDone", s.detDone)
-            .put("pos", s.pos).put("charsTried", s.charsTried).put("voices", s.voices)
+            .put("pos", s.pos).put("charsTried", s.charsTried)
         val subs = JSONArray(); for (x in s.subs) subs.put(subJ(x)); j.put("subs", subs)
         j.put("done", ranges(s.done)).put("failed", ranges(s.failed))
         val ch = JSONArray(); for (c in s.chars) ch.put(JSONObject().put("n", c.name).put("g", c.gender).put("r", c.role)); j.put("chars", ch)
@@ -94,7 +92,7 @@ class Store(private val dir: File, key: String) {
             try { Subs.refreshMain(subs) } catch (_: Throwable) {}
             Saved(j.optInt("chunkSec", 60), j.optString("srcLang"), j.optBoolean("detDone"), subs,
                 rangesOf(j.optJSONArray("done")), rangesOf(j.optJSONArray("failed")), chars, gloss, tp,
-                j.optDouble("pos", 0.0), j.optInt("charsTried", 0), bnd, rangesOf(j.optJSONArray("gapTried")), j.optString("voices"))
+                j.optDouble("pos", 0.0), j.optInt("charsTried", 0), bnd, rangesOf(j.optJSONArray("gapTried")))
         } catch (e: Exception) {
             try { f.renameTo(File(dir, f.name + ".bad")) } catch (_: Exception) {}
             null

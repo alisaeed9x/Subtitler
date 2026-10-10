@@ -71,8 +71,8 @@ fun main() {
     Api.base = "http://127.0.0.1:${srv.address.port}/v1beta"
     val assets = File(System.getenv("SUBTITLER_ASSETS") ?: "app/src/main/assets")
     val pb = PromptBuilder { File(assets, it).readText(Charsets.UTF_8) }
-    fun conf(par: Int, keys: List<String> = listOf("KEY_A_1234567", "KEY_B_1234567"), strim: Boolean = true, gap: Boolean = false, hi: Boolean = false, ahead: Int = 6) =
-        Conf(keys, emptyList(), "gemini-2.5-flash", "مصري", "حرفي", 60, ahead, 1, emptyList(), "", false, false, false, false, false, par, hi, strim, gap)
+    fun conf(par: Int, keys: List<String> = listOf("KEY_A_1234567", "KEY_B_1234567"), gap: Boolean = false, hi: Boolean = false, ahead: Int = 6) =
+        Conf(keys, emptyList(), "gemini-2.5-flash", "مصري", "حرفي", 60, ahead, 1, emptyList(), "", false, false, false, par, hi, gap)
 
     println("=== أوضاع المفاتيح / الإعدادات / الأدوات النقية ===")
     val all = listOf("k1aaaaaaaaaa", "k2aaaaaaaaaa", "k3aaaaaaaaaa")
@@ -84,7 +84,7 @@ fun main() {
     check2("أوضاع المفاتيح: دورة both→backup→both", KeyModes.next("both") == "backup" && KeyModes.next("backup") == "both")
     check2("CfgCodec: نص/Boolean/Int", CfgCodec.bool("1", false) && CfgCodec.bool(true, false) && !CfgCodec.bool("0", true) && CfgCodec.int("60", 1) == 60 && CfgCodec.int(7, 1) == 7 && CfgCodec.int("x", 9) == 9)
     check2("CfgCodec: القراءة النصية لـ Boolean", CfgCodec.str(true, "") == "1" && CfgCodec.str(false, "") == "0" && CfgCodec.str(5, "") == "5")
-    check2("CfgCodec: typed حسب المفتاح", CfgCodec.typed("vad", "1") == true && CfgCodec.typed("chunk", "120") == 120 && CfgCodec.typed("lang", "مصري") == "مصري")
+    check2("CfgCodec: typed حسب المفتاح", CfgCodec.typed("autochars", "1") == true && CfgCodec.typed("chunk", "120") == 120 && CfgCodec.typed("lang", "مصري") == "مصري")
     check2("كلمة تأكيد: ! / لاتيني كبير / حرف مكرر", SubStyle.isEmphasis("لأ!") && SubStyle.isEmphasis("NO") && SubStyle.isEmphasis("لأأأ") && !SubStyle.isEmphasis("عادي") && !SubStyle.isEmphasis("OK1"))
     check2("حجم تلقائي حسب عدد الكلمات", SubStyle.sizeMult(1) == 1.18f && SubStyle.sizeMult(4) == 1.08f && SubStyle.sizeMult(7) == 1f && SubStyle.sizeMult(10) == 0.9f && SubStyle.sizeMult(20) == 0.82f)
     check2("الخطوط: كل الـ 22 ليهم ملفات", SubStyle.fonts.size == 22 && SubStyle.fonts.all { it.file != null })
@@ -100,16 +100,6 @@ fun main() {
     check2("pickIdle: كل باتش على مفتاح لوحده (والتالت يستنى)", i1 != null && i2 != null && i1 != i2 && i3 == null)
     pI.begin(i1!!, 0); pI.unreserve(1)
     check2("pickIdle: المفتاح الشغّال والمفتاح اللي فشل مستبعدين", pI.pickIdle(5, i2, 1) == null && pI.pickIdle(6, i1, 1) == i2)
-
-    println("=== كشف الصمت وتقصير المقطع ===")
-    val w1 = makeWav(60.0, 53.0, 54.0)
-    val cut = Silence.findCut(w1)
-    check2("findCut بيلاقي الصمت (53–54)", cut != null && cut in 53.0..54.1, "cut=$cut")
-    check2("findCut: كلام متصل → null", Silence.findCut(makeWav(60.0)) == null)
-    check2("findCut: مقطع قصير → null", Silence.findCut(makeWav(1.5, 0.5, 1.0)) == null)
-    check2("findCut: مش WAV → null", Silence.findCut("CHUNK:1.0".toByteArray()) == null)
-    val tr = Silence.truncate(w1, 10.0)
-    check2("truncate: الطول والهيدر صح", tr.size == 44 + 10 * 16000 * 2 && ((tr[40].toInt() and 255) or ((tr[41].toInt() and 255) shl 8) or ((tr[42].toInt() and 255) shl 16)) == 10 * 16000 * 2)
 
     println("=== كشف الفجوات ===")
     fun sb(s: Double, e: Double) = Sub(s, e, "a", "b", "male", "unknown", "none", emptyList(), emptyList(), false, false)
@@ -130,24 +120,6 @@ fun main() {
     check2("طلبات متوازية فعلًا (أكتر من واحد في نفس الوقت)", maxLive.get() >= 2, "max=${maxLive.get()}")
     check2("التوازي أسرع من التسلسل (6 مقاطع × 400ms)", el < 2400 + 2500, "ms=$el")
     check2("مفيش جمل مكررة والترتيب سليم", e.subs.map { it.original }.toSet().size == e.subs.size && e.subs.zipWithNext().all { it.first.start <= it.second.start })
-    e.stop(); t.join(5000)
-
-    println("=== مرحلة E: تقصير المقطع لأقرب صمت ===")
-    reqs.clear()
-    src = Src(600.0) { a, b -> if (a == 0.0) makeWav(b - a, 53.0, 54.0) else makeWav(b - a) }
-    h = H()
-    e = Engine(conf(1, listOf("KEY_A_1234567"), strim = true, ahead = 2), { src }, null, h, pb)
-    t = Thread { e.run() }.apply { isDaemon = true; start() }
-    check2("المقطع الأول اتقصّر", waitFor2(15000) { h.logs.any { it.contains("اتقصّر") } }, h.logs.take(5).joinToString(" | "))
-    check2("المقطع التاني بيبدأ من نقطة القطع - 4ث (مش من 56)", waitFor2(15000) { src.asked.size >= 2 } && src.asked[1][0] in 48.0..51.0, src.asked.joinToString { "[${it[0]},${it[1]}]" })
-    e.stop(); t.join(5000)
-
-    println("=== مرحلة E: strim مطفي ===")
-    src = Src(600.0) { a, b -> makeWav(b - a, 53.0, 54.0) }
-    h = H()
-    e = Engine(conf(1, listOf("KEY_A_1234567"), strim = false, ahead = 2), { src }, null, h, pb)
-    t = Thread { e.run() }.apply { isDaemon = true; start() }
-    check2("من غير تقصير: المقطع التاني من 56", waitFor2(15000) { src.asked.size >= 2 } && Math.abs(src.asked[1][0] - 56.0) < 0.01 && h.logs.none { it.contains("اتقصّر") }, src.asked.joinToString { "[${it[0]},${it[1]}]" })
     e.stop(); t.join(5000)
 
     println("=== مرحلة E: دقة التوقيت العالية ===")

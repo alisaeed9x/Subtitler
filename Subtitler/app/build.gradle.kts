@@ -8,7 +8,7 @@ android {
     }
     namespace = "com.tttt.subtitler"
     compileSdk = 36
-    defaultConfig { applicationId = "com.tttt.subtitler"; minSdk = 26; targetSdk = 34; versionCode = 203; versionName = "2.03"
+    defaultConfig { applicationId = "com.tttt.subtitler"; minSdk = 26; targetSdk = 34; versionCode = 204; versionName = "2.04"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }   // (v181) معماريات الموبايل بس: بتصغّر مكتبة onnxruntime
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -22,5 +22,4 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.10.1")
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("com.github.bumptech.glide:glide:4.16.0")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")   // (v172) موديل بصمة الصوت العصبي (اختياري)
 }

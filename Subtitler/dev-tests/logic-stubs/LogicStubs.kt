@@ -1,11 +1,3 @@
 package com.tttt.subtitler
-// stubs للاختبارات على JVM بس: الحاجات اللي محتاجة أندرويد/ONNX/ML Kit (مش جزء من منطق الترجمة)
-object VoiceNet {
-    fun init(c: android.content.Context) {}
-    fun mode() = "light"
-    fun useNet() = false
-    fun dist(a: FloatArray, b: FloatArray) = 0.0
-    fun norm(a: FloatArray) = a
-    fun embed(pcm: ShortArray, a: Double, b: Double): FloatArray? = null
-}
+// stubs للاختبارات على JVM بس: الحاجات اللي محتاجة أندرويد/ML Kit (مش جزء من منطق الترجمة)
 object VisualMode { fun anyActive() = false }

@@ -7,7 +7,7 @@ fun main() {
     val chars = listOf(Chr("منى","female","البطلة"), Chr("علي","male",""))
     val gloss = listOf(Gloss("سينسي","معلم"))
     for (l in langs) for (s in styles) for ((src, det) in listOf("" to false, "يابانية" to true, "إنجليزية" to true, "كورية" to true)) {
-        val c = Conf(listOf("k"), emptyList(), "m", l, s, 60, 3, 1, emptyList(), "ليلى = Layla", false, true, true, true, true)
+        val c = Conf(listOf("k"), emptyList(), "m", l, s, 60, 3, 1, emptyList(), "ليلى = Layla", true, true, true)
         for (tf in listOf<String?>(null, "TR §ROSTER§ END")) {
             val p = pb.build(c, src, det, 61.5, "- [متكلم:أنثى] مرحبا", chars, gloss, tf)
             n++
