@@ -38,19 +38,24 @@ object MusicEngine {
     private var resumeOnFocus = false
     val listeners = CopyOnWriteArrayList<() -> Unit>()
 
-    // (v193) وضع التكرار: 0 بدون تكرار · 1 تكرار الكل · 2 تكرار أغنية واحدة · 3 عشوائي
+    // (v195) التكرار: 0 بدون تكرار · 1 تكرار الكل · 2 تكرار أغنية واحدة — والعشوائي (shuffle) زرار لوحده
     @Volatile var mode = 0; private set
+    @Volatile var shuffle = false; private set
+    private var pendingNext = -1          // الأغنية العشوائية الجاية (متحددة قبل الضغط عشان الشاشة تعرض غلافها)
     private val history = ArrayList<Int>()
     private val rnd = java.util.Random()
-    fun cycleMode(): Int { setMode((mode + 1) % 4); return mode }
-    fun setMode(m: Int) { mode = m.coerceIn(0, 3); try { Cfg.put("music_mode", mode.toString()) } catch (_: Throwable) {}; changed() }
+    fun cycleMode(): Int { setMode((mode + 1) % 3); return mode }
+    fun setMode(m: Int) { mode = m.coerceIn(0, 2); try { Cfg.put("music_mode", mode.toString()) } catch (_: Throwable) {}; changed() }
+    fun toggleShuffle(): Boolean { shuffle = !shuffle; pendingNext = -1; try { Cfg.put("music_shuffle", if (shuffle) "1" else "0") } catch (_: Throwable) {}; changed(); return shuffle }
 
     // (v193) الصوت: 0..100 صوت عادي · 100..200 تضخيم (LoudnessEnhancer لحد +15dB) — نفس فكرة مشغّل الفيديو
     @Volatile var volPct = 100; private set
     private var loud: android.media.audiofx.LoudnessEnhancer? = null
     fun loadPrefs() {
         try {
-            mode = (Cfg.str("music_mode", "0").toIntOrNull() ?: 0).coerceIn(0, 3)
+            val raw = Cfg.str("music_mode", "0").toIntOrNull() ?: 0
+            mode = if (raw >= 3) 0 else raw.coerceIn(0, 2)                    // (v193 القديم: 3 = عشوائي)
+            shuffle = raw == 3 || Cfg.str("music_shuffle", "0") == "1"
             volPct = (Cfg.str("music_vol", "100").toIntOrNull() ?: 100).coerceIn(0, 200)
         } catch (_: Throwable) {}
     }
@@ -109,7 +114,7 @@ object MusicEngine {
         app = ctx.applicationContext
         if (!fromHistory && queue === q && idx in q.indices && idx != i) { history.add(idx); if (history.size > 50) history.removeAt(0) }
         if (queue !== q) history.clear()
-        queue = q; idx = i; ready = false; wantPlay = true
+        queue = q; idx = i; ready = false; wantPlay = true; pendingNext = -1
         release()
         MusicService.start(ctx.applicationContext)
         gainFocus()
@@ -127,18 +132,28 @@ object MusicEngine {
         } catch (e: Exception) { LogStore.err("music-play", e) }
         changed()
     }
-    private fun randomOther(): Int {
+    private fun peekRandom(): Int {
         if (queue.size <= 1) return 0
+        if (pendingNext in queue.indices && pendingNext != idx) return pendingNext
         var n = rnd.nextInt(queue.size)
         if (n == idx) n = (n + 1) % queue.size
+        pendingNext = n
         return n
+    }
+    private fun randomOther(): Int { val n = peekRandom(); pendingNext = -1; return n }
+    /** (v195) الأغنية اللي هتشتغل لو داس التالي (d=1) أو السابق (d=-1) — للعرض بس (الغلاف على جنب الأسطوانة) */
+    fun neighbor(d: Int): Track? {
+        if (queue.size < 2 || idx !in queue.indices) return null
+        if (shuffle) return if (d > 0) queue.getOrNull(peekRandom()) else history.lastOrNull()?.let { queue.getOrNull(it) }
+        val n = idx + d
+        return queue.getOrNull(if (n in queue.indices) n else if (d > 0) 0 else queue.size - 1)
     }
     /** التالي/السابق بالزرار — بيلف دايمًا (حتى لو التكرار مقفول) */
     fun step(d: Int) {
         if (queue.isEmpty()) return
         val a = app ?: return
         if (d < 0 && posMs > 3000) { seekTo(0); return }   // السابق بعد 3 ثواني = من أول الأغنية
-        if (mode == 3) {
+        if (shuffle) {
             if (d < 0 && history.isNotEmpty()) { play(a, queue, history.removeAt(history.size - 1), true); return }
             play(a, queue, randomOther()); return
         }
@@ -149,10 +164,10 @@ object MusicEngine {
     private fun onEnded() {
         val a = app ?: return
         if (queue.isEmpty()) return
-        when (mode) {
-            2 -> { try { mp?.seekTo(0); mp?.start() } catch (_: Throwable) {}; changed() }
-            3 -> play(a, queue, randomOther())
-            1 -> play(a, queue, if (idx + 1 in queue.indices) idx + 1 else 0)
+        when {
+            mode == 2 -> { try { mp?.seekTo(0); mp?.start() } catch (_: Throwable) {}; changed() }
+            shuffle -> play(a, queue, randomOther())
+            mode == 1 -> play(a, queue, if (idx + 1 in queue.indices) idx + 1 else 0)
             else -> if (idx + 1 in queue.indices) play(a, queue, idx + 1) else { wantPlay = false; try { mp?.pause(); mp?.seekTo(0) } catch (_: Throwable) {}; changed() }
         }
     }

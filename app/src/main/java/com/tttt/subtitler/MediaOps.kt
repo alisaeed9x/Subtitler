@@ -237,7 +237,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
     // ===== حذف =====
     fun delete(v: VideoItem) {
         if (busy(v)) return
-        GAlert(act).setTitle("🗑 حذف الفيديو").setMessage("هتمسح «${v.name}» من الجهاز نهائيًا (ومعاه الترجمة المحفوظة له). متأكد؟")
+        GAlert(act).setTitle("🗑 حذف الملف").setMessage("هتمسح «${v.name}» من الجهاز نهائيًا (ومعاه الترجمة/الكلمات المحفوظة له). متأكد؟")
             .setPositiveButton("احذف") { _, _ ->
                 val uri = Uri.parse(v.uri)
                 val cleanup = {
@@ -305,7 +305,7 @@ class MediaOps(private val act: Activity, private val ui: Ui, private val th: Th
             act.runOnUiThread {
                 if (act.isDestroyed) return@runOnUiThread
                 val tv = IconTextView(act).apply { this.text = body; textSize = 13f; setTextColor(th.text); setTextIsSelectable(true); layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(10)) }
-                GAlert(act).setTitle("ℹ تفاصيل الفيديو").setView(ScrollView(act).apply { addView(tv) })
+                GAlert(act).setTitle("ℹ تفاصيل الملف").setView(ScrollView(act).apply { addView(tv) })
                     .setPositiveButton("تمام", null)
                     .setNeutralButton("نسخ المسار") { _, _ ->
                         val p = (if (v.folderKey.startsWith("/")) v.folderKey else v.folderPath) + "/" + v.name

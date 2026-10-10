@@ -569,7 +569,7 @@ class MainActivity : Activity() {
                 .setMessage("هترجم ${todo.size} فيديو ورا بعض (واحد واحد). ده بيستهلك كوتة المفاتيح. تكمّل؟")
                 .setPositiveButton("ابدأ") { _, _ -> startBg(todo) }.setNegativeButton("إلغاء", null).show()
         }
-        val ops = MediaOps(this, ui, th) { VideoScan.cache = null; scanFn() }
+        val ops = MediaOps(this, ui, th) { VideoScan.cache = null; scanFn(); if (MusicScan.items != null) { MusicScan.invalidate(); musicUi?.reload() } }
         mediaOps = ops
         lib.onRename = { v -> ops.rename(v) }
         lib.onMove = { v -> ops.move(v, lib.allFolders()) }
@@ -628,6 +628,17 @@ class MainActivity : Activity() {
         val tasksUi = TasksUi(this, ui, th) { k -> pickTool(k) }; tasksUiRef = tasksUi
         val music = MusicUi(this, ui, th); musicUi = music; music.root.visibility = View.GONE
         music.onGrant = { requestPermissions(arrayOf(MusicScan.permission()), 12) }
+        // (v194) صفحة الموسيقى = نفس كلاس صفحة الفيديوهات: نفس الإعدادات والعمليات (إعادة تسمية/نقل/مشاركة/حذف/تفاصيل) والبوابة بتاعة المخفي
+        music.lib.onSettings = lib.onSettings
+        music.lib.gate = { open -> lk.gate(open) }
+        music.lib.onRename = { v -> ops.rename(v) }
+        music.lib.onMove = { v -> ops.move(v, music.lib.allFolders()) }
+        music.lib.onShare = { v -> ops.share(v) }
+        music.lib.onShareMany = { vs -> ops.shareMany(vs) }
+        music.lib.onDelete = { v -> ops.delete(v) }
+        music.lib.onRenameFolder = { f -> ops.renameFolder(f) }
+        music.lib.onDeleteFolder = { f -> ops.deleteFolder(f) }
+        music.lib.onDetails = { v -> ops.details(v, null) }
         // (v189) البوابات: 0 الفيديوهات · 1 الموسيقى · 2 المتصفح (صفحة المهام بقت زرار ⏳ في المشغّل + قايمة ⚙️ في المكتبة)
         showTabFn = { i ->
             if (i == 0) { curTab = 0; lib.root.visibility = View.VISIBLE; music.root.visibility = View.GONE; navUi?.set(0) }
@@ -991,7 +1002,7 @@ class MainActivity : Activity() {
         if (!fromPlayer) CrashLog.showIfAny(this)
         if (!fromPlayer) ModelWatch.maybeCheck(this)   // (v141) فحص يومي لموديل flash-lite أحدث
         // المخفي بيتقفل تاني لو التطبيق قعد في الخلفية أكتر من دقيقة
-        if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) libUi?.relock()
+        if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) { libUi?.relock(); musicUi?.lib?.relock() }
         stoppedAt = 0L
         if (!fromPlayer && libStarted) libUi?.let { if (it.hasData) it.render() else scanFn() }
         if (!fromPlayer && curTab == 1) ytUi?.refresh()

@@ -10,7 +10,8 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * (v193) غلاف الأغنية (البوستر) من قواعد بيانات مجانية من غير مفتاح: iTunes Search أولًا، وبعدها Deezer.
+ * (v193) غلاف الأغنية (البوستر) من قواعد بيانات مجانية من غير مفتاح.
+ * (v195) الترتيب: ويكيبيديا (غلاف صفحة الأغنية) ← iTunes ← Deezer ← صورة الفنان نفسه من ويكيبيديا (لو الأغنية ملهاش غلاف خالص).
  * بيدوّر باسم الأغنية + الفنان، ولازم اسم النتيجة يطابق اسمنا (عشان ما نجيبش غلاف غلط). الغلاف بيتخزن على الجهاز؛
  * ولو ما لقيناش حاجة بنفتكر ده 7 أيام عشان ما نكرّرش الطلب.
  */
@@ -39,16 +40,75 @@ object Poster {
     private fun http(url: String, max: Int = 2_000_000): ByteArray? {
         val c = URL(url).openConnection() as HttpURLConnection
         return try {
-            c.connectTimeout = 8000; c.readTimeout = 10000; c.setRequestProperty("User-Agent", "Subtitler/1.93")
+            c.connectTimeout = 8000; c.readTimeout = 10000; c.setRequestProperty("User-Agent", "Subtitler/1.95 (Android; Arabic subtitle app)")
             if (c.responseCode !in 200..299) null else c.inputStream.use { it.readBytes() }.takeIf { it.size in 1..max }
         } catch (_: Throwable) { null } finally { try { c.disconnect() } catch (_: Throwable) {} }
     }
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
-    /** كل الأغلفة المطابقة بالترتيب (iTunes ثم Deezer) */
+    // ===== (v195) ويكيبيديا =====
+    private fun hasArabic(s: String) = s.any { it in '\u0600'..'\u06FF' }
+    private fun wikiLangs(vararg texts: String): List<String> = if (texts.any { hasArabic(it) }) listOf("ar", "en") else listOf("en", "ar")
+    private val songWords = Regex("song|single|track|ballad|أغنية|اغنية|سينجل|ألبوم|البوم|كليب")
+    private val personWords = Regex("singer|musician|rapper|band|producer|songwriter|composer|actor|actress|disc jockey|\\bdj\\b|vocalist|duo|group|مغني|مغنية|مطرب|مطربة|ممثل|ممثلة|ملحن|فنان|فنانة|فرقة|منتج|موسيقي|مؤلف")
+
+    /** بحث ويكيبيديا: صفحات (بالترتيب) فيها العنوان + مقدمة قصيرة + صورة مصغّرة لو موجودة */
+    private fun wikiSearch(lang: String, q: String): List<JSONObject> {
+        val url = "https://$lang.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=6&gsrsearch=${enc(q)}" +
+            "&prop=pageimages%7Cextracts&piprop=thumbnail&pithumbsize=600&exintro=1&explaintext=1&exsentences=3&exlimit=6&redirects=1"
+        val txt = http(url, 600_000)?.toString(Charsets.UTF_8) ?: return emptyList()
+        val pages = JSONObject(txt).optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
+        val out = ArrayList<JSONObject>()
+        val ks = pages.keys(); while (ks.hasNext()) pages.optJSONObject(ks.next())?.let { out.add(it) }
+        out.sortBy { it.optInt("index", 99) }
+        return out
+    }
+    private fun thumbOf(pg: JSONObject): String = pg.optJSONObject("thumbnail")?.optString("source").orEmpty()
+    private fun stripParen(t: String) = t.replace(Regex("\\s*\\([^)]*\\)\\s*$"), "").trim()
+    private fun artistTokens(artist: String): List<String> = artist.split(Regex("[^\\p{L}\\p{N}]+")).map { norm(it) }.filter { it.length >= 3 }
+
+    /** غلاف صفحة الأغنية في ويكيبيديا (الاسم لازم يطابق، والفنان لازم يتذكر في المقدمة) */
+    private fun wikiSongUrls(title: String, artist: String): List<String> {
+        val out = ArrayList<String>()
+        val toks = artistTokens(artist)
+        for (lang in wikiLangs(title, artist)) {
+            try {
+                val q = (title + " " + artist + " " + (if (lang == "ar") "أغنية" else "song")).trim()
+                for (pg in wikiSearch(lang, q)) {
+                    val u = thumbOf(pg); if (u.isBlank() || u in out) continue
+                    if (!matches(stripParen(pg.optString("title")), title)) continue
+                    val ex = norm(pg.optString("extract"))
+                    val ok = if (toks.isNotEmpty()) toks.any { ex.contains(it) } else songWords.containsMatchIn(pg.optString("extract").lowercase())
+                    if (ok) out.add(u)
+                }
+            } catch (_: Throwable) {}
+            if (out.isNotEmpty()) break
+        }
+        return out
+    }
+    /** صورة الفنان من ويكيبيديا (لو الأغنية ملهاش غلاف) */
+    private fun wikiArtistUrls(artist: String): List<String> {
+        val out = ArrayList<String>()
+        if (artist.length < 2) return out
+        for (lang in wikiLangs(artist)) {
+            try {
+                for (pg in wikiSearch(lang, artist)) {
+                    val u = thumbOf(pg); if (u.isBlank() || u in out) continue
+                    if (!matches(stripParen(pg.optString("title")), artist)) continue
+                    if (!personWords.containsMatchIn(pg.optString("extract").lowercase())) continue
+                    out.add(u)
+                }
+            } catch (_: Throwable) {}
+            if (out.isNotEmpty()) break
+        }
+        return out
+    }
+
+    /** كل الأغلفة المطابقة بالترتيب (ويكيبيديا ثم iTunes ثم Deezer ثم صورة الفنان من ويكيبيديا) */
     private fun findUrls(title: String, artist: String): List<String> {
         val q = (artist + " " + title).trim()
         val out = ArrayList<String>()
+        wikiSongUrls(title, artist).forEach { if (it !in out) out.add(it) }
         try {
             val txt = http("https://itunes.apple.com/search?media=music&entity=song&limit=15&term=${enc(q)}", 500_000)?.toString(Charsets.UTF_8)
             val arr = txt?.let { JSONObject(it).optJSONArray("results") }
@@ -71,6 +131,7 @@ object Poster {
                 if (u.isNotBlank() && u !in out) out.add(u)
             }
         } catch (_: Throwable) {}
+        wikiArtistUrls(artist).forEach { if (it !in out) out.add(it) }
         return out
     }
 

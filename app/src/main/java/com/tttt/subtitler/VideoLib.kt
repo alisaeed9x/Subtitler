@@ -9,12 +9,14 @@ class VideoItem(
     val id: Long, val uri: String, val name: String,
     val folderKey: String, val folderName: String, val folderPath: String,
     val size: Long, val durMs: Long, val added: Long, val modified: Long,
-    val w: Int = 0, val h: Int = 0
+    val w: Int = 0, val h: Int = 0,
+    /** (v194) للصوت: عنوان الأغنية من التاج (لو فاضي بنستخدم اسم الملف) والفنان */
+    val label: String = "", val artist: String = ""
 ) {
     /** نفس مفتاح PlayerActivity.videoId() — عشان نعرف التقدم المحفوظ للفيديو */
     val videoId: String get() = "f:$name:$size"
     val ext: String get() = name.substringAfterLast('.', "").lowercase()
-    val title: String get() = name.substringBeforeLast('.', name)
+    val title: String get() = if (label.isNotEmpty()) label else name.substringBeforeLast('.', name)
     val dateMs: Long get() = (if (modified > 0) modified else added) * 1000L
     /** لاند سكيب إلا لو الفيديو معروف إنه طولي */
     val landscape: Boolean get() = !(w > 0 && h > w)

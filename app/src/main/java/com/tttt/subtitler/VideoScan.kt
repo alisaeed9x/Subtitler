@@ -115,6 +115,13 @@ object Thumbs {
         val r = MediaMetadataRetriever()
         return try {
             r.setDataSource(ctx, u)
+            // (v194) ملف صوت: الغلاف المدمج في الملف
+            r.embeddedPicture?.let { b ->
+                val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size, o)
+                var ss = 1; while (o.outWidth / ss > 400 || o.outHeight / ss > 400) ss *= 2
+                android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = ss })?.let { return it }
+            }
             val t = if (v.durMs > 6000) 3_000_000L else 0L
             val f = r.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: r.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             f?.let { if (it.width > 384) Bitmap.createScaledBitmap(it, 384, (it.height * 384f / it.width).toInt().coerceAtLeast(1), true) else it }
