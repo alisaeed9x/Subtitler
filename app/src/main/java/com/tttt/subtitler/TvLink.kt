@@ -233,6 +233,8 @@ object TvLink {
             "/player" -> playerCmd(r)
             "/music" -> musicCmd(r)
             "/open" -> open(r)
+            "/recent" -> recentList()           // (v678) آخر المشغّلة على التلفزيون (لقايمة الريموت)
+            "/recent/play" -> recentPlay(r)     // (v678) تشغيل واحد منها على التلفزيون
             "/cosurf" -> coSurf(r)   // (v646) مزامنة المتصفح
             "/clear" -> clearHist(r)
             "/type" -> typeText(r)
@@ -527,6 +529,40 @@ object TvLink {
             try { BrowserStore.clearHistory(app) } catch (e: Throwable) { LogStore.err("TvLink:clearBr", e) }
             h.post { TvActivity.live?.get()?.onRemoteCleared() }
         } catch (e: Throwable) { LogStore.err("TvLink:clearBrH", e) }
+    }
+
+    /** (v678) آخر الفيديوهات المشغّلة على التلفزيون (نفس ترتيب رئيسية التلفزيون) — الموبايل بيعرضها جنب قايمته */
+    private fun recentList(): HttpRes {
+        val l = try { Recents.parse(java.io.File(app.filesDir, "recent.json").readText()) } catch (_: Exception) { emptyList() }
+        val a = JSONArray()
+        for (r in l.take(40)) a.put(JSONObject().put("id", r.id).put("title", r.title.ifBlank { Recents.titleOf(r.id) })
+            .put("pos", r.posSec).put("dur", r.durSec).put("yt", Recents.ytIdOf(r) != null).put("local", r.uri.isNotEmpty()))
+        return ok(JSONObject().put("items", a))
+    }
+
+    /** (v678) تشغيل عنصر من آخر المشغّلة (بالـid) — نفس سلوك الدوسة عليه في رئيسية التلفزيون */
+    private fun recentPlay(r: HttpReq): HttpRes {
+        val j = try { JSONObject(r.bodyText()) } catch (_: Exception) { return err(403, "bad") }
+        val id = j.optString("id")
+        val found: Recent? = try { Recents.parse(java.io.File(app.filesDir, "recent.json").readText()).firstOrNull { x -> x.id == id } } catch (_: Exception) { null }
+        val rc: Recent = found ?: return err(404, "nf")
+        val yid = Recents.ytIdOf(rc)
+        when {
+            rc.uri.isNotEmpty() -> h.post {
+                try {
+                    val a = top?.get()
+                    val ni = Intent(a ?: app, PlayerActivity::class.java)
+                        .addFlags((if (a == null) Intent.FLAG_ACTIVITY_NEW_TASK else 0) or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        .setData(android.net.Uri.parse(rc.uri))
+                        .putExtra("landscape", true).putExtra("fresh", false).putExtra("nosub", false).putExtra("autotr", false).putExtra("ask", false)
+                    (a ?: app).startActivity(ni)
+                } catch (e: Throwable) { LogStore.err("TvLink:recentPlay", e) }
+            }
+            yid != null -> openJson(JSONObject().put("url", YtNp.watchUrl(yid)).put("title", rc.title).put("how", Links.VIDEO))
+            rc.url.isNotEmpty() -> openJson(JSONObject().put("url", rc.url).put("title", rc.title).put("how", Links.VIDEO))
+            else -> return err(404, "nf")
+        }
+        return ok(JSONObject().put("title", rc.title))
     }
 
     /** (v543 م3) tv://<id> ← فيديو من مكتبة التلفزيون نفسه: يفتح المشغّل على ملفه (الترجمة بإيد الشخص، مش أوتوماتيك) */

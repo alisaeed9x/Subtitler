@@ -3,6 +3,7 @@ package com.tttt.subtitler
 import android.app.Activity
 import android.app.Dialog
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -18,6 +19,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.abs
@@ -32,7 +34,7 @@ import kotlin.math.min
  *  - خروج بره الدايرة بمقدار 50% أو أكتر من نصف قطرها = حركة (فوق/تحت/يمين/شمال) فورًا، وكل ما تبعد أكتر السرعة تزيد.
  *  - لو اتحرّكت (خطوة اتبعتت) ورجعت جوه الدايرة ورفعت صباعك: مفيش OK (عشان الحركة ما تنقلبش OK بالغلط).
  */
-class JoystickView(ctx: Context, private val onKey: (String) -> Unit) : View(ctx) {
+class JoystickView(ctx: Context, private val onKey: (String) -> Unit, private val onLong: (() -> Unit)? = null) : View(ctx) {
     private val h = Handler(Looper.getMainLooper())
     private val den = resources.displayMetrics.density
     private val pBase = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0xFF1A2230.toInt() }
@@ -49,6 +51,13 @@ class JoystickView(ctx: Context, private val onKey: (String) -> Unit) : View(ctx
     private var strength = 0f
     private var fired = false      // اتبعتت حركة في الدوسة دي ← مفيش OK عند الرفع
     private var down = false
+    private var longDone = false   // (v679) ضغطة طويلة على دايرة OK = ميكروفون (مش OK)
+    private val longRun = Runnable {
+        if (down && !fired && dir == null && onLong != null) {
+            longDone = true; performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); invalidate()
+            try { onLong.invoke() } catch (_: Throwable) {}
+        }
+    }
 
     private val repeat = object : Runnable {
         override fun run() {
@@ -68,12 +77,14 @@ class JoystickView(ctx: Context, private val onKey: (String) -> Unit) : View(ctx
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
-                fired = false; down = true
+                fired = false; down = true; longDone = false
+                h.removeCallbacks(longRun)
+                if (onLong != null) h.postDelayed(longRun, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                 update(e.x, e.y)
             }
             MotionEvent.ACTION_MOVE -> update(e.x, e.y)
             MotionEvent.ACTION_UP -> {
-                val isOk = down && !fired
+                val isOk = down && !fired && !longDone
                 stop()
                 if (isOk) { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); onKey("ok") }
             }
@@ -83,7 +94,7 @@ class JoystickView(ctx: Context, private val onKey: (String) -> Unit) : View(ctx
     }
 
     private fun stop() {
-        h.removeCallbacks(repeat); dir = null; kx = 0f; ky = 0f; strength = 0f; down = false; invalidate()
+        h.removeCallbacks(repeat); h.removeCallbacks(longRun); dir = null; kx = 0f; ky = 0f; strength = 0f; down = false; invalidate()
     }
 
     private fun update(x: Float, y: Float) {
@@ -102,7 +113,7 @@ class JoystickView(ctx: Context, private val onKey: (String) -> Unit) : View(ctx
         invalidate()
     }
 
-    override fun onDetachedFromWindow() { h.removeCallbacks(repeat); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() { h.removeCallbacks(repeat); h.removeCallbacks(longRun); super.onDetachedFromWindow() }
 
     override fun onDraw(c: Canvas) {
         val cx = width / 2f; val cy = height / 2f; val r = rad(); val ok = okRad()
@@ -199,6 +210,19 @@ class PadIcon(ctx: Context, private val kind: String, private val tint: Int = Co
                 if (kind == "ch_up") { ln(12f, 18f, 12f, 12f); poly(false, 9f, 14.8f, 12f, 11.8f, 15f, 14.8f) }
                 else { ln(12f, 11.5f, 12f, 17.5f); poly(false, 9f, 14.7f, 12f, 17.7f, 15f, 14.7f) }
             }
+            "recent" -> {
+                cv.drawCircle(12f * u, 12f * u, 8.5f * u, p)
+                ln(12f, 7f, 12f, 12f); ln(12f, 12f, 15.6f, 14.2f)
+            }
+            "youtube" -> {
+                box(2.5f, 5.5f, 21.5f, 18.5f, 4.5f)
+                poly(true, 10f, 9f, 10f, 15f, 15.5f, 12f)
+            }
+            "globe" -> {
+                cv.drawCircle(12f * u, 12f * u, 9f * u, p)
+                rc.set(7.6f * u, 3f * u, 16.4f * u, 21f * u); cv.drawOval(rc, p)
+                ln(3f, 12f, 21f, 12f)
+            }
             "eye" -> { path.reset(); path.moveTo(2f * u, 12f * u); path.quadTo(12f * u, 3f * u, 22f * u, 12f * u); path.quadTo(12f * u, 21f * u, 2f * u, 12f * u); cv.drawPath(path, p); cv.drawCircle(12f * u, 12f * u, 3.2f * u, p) }
             "mic" -> { box(9f, 3f, 15f, 14f, 3f); poly(false, 5.5f, 11f, 5.5f, 12f); path.reset(); path.moveTo(5.5f * u, 11f * u); path.quadTo(5.5f * u, 18f * u, 12f * u, 18f * u); path.quadTo(18.5f * u, 18f * u, 18.5f * u, 11f * u); cv.drawPath(path, p); ln(12f, 18f, 12f, 21f) }
         }
@@ -208,7 +232,7 @@ class PadIcon(ctx: Context, private val kind: String, private val tint: Int = Co
 
 /** (v590) شاشة كنترولر التلفزيون — (v670) اتغيّر الترتيب والحجم عشان يبقى زي ريموت Morph TV:
  *  تبديل (أزرار الاتجاهات | لوحة اللمس) ← دايرة كبيرة فيها 4 أزرار اتجاهات + «موافق» في النص ← ⚙ الإعدادات عرض كامل ←
- *  صف (رجوع · الرئيسية · المداخل) ← صف (خفض الصوت · كتم · رفع الصوت) ← صف (تشغيل · إيقاف مؤقت · قناة + · قناة −).
+ *  صف (رجوع · الرئيسية · آخر المشغّل) ← صف (خفض الصوت · كتم · رفع الصوت) ← صف (تشغيل · إيقاف مؤقت · يوتيوب · متصفح). (v678: «آخر المشغّل» مكان «المداخل»، ويوتيوب/متصفح مكان قناة ±)
  *  «لوحة اللمس» = الجويستيك القديم بالظبط. الشاشة بتتسحب (ScrollView) والإغلاق بزرار/إيماءة الرجوع. */
 object ControllerPad {
     fun show(act: Activity, onClose: (() -> Unit)? = null) {
@@ -222,6 +246,20 @@ object ControllerPad {
             val hh = Handler(Looper.getMainLooper())
 
             fun sendKey(k: String) { RemoteClient.key(k) }
+            var stRef: TextView? = null
+            fun say(t: String, c: Int = 0xFFB0BEC5.toInt()) { stRef?.let { it.text = t; it.setTextColor(c) } }
+            var voice: PadVoice? = null
+            /** (v679) بحث صوتي: التسجيل بيبدأ على الموبايل فورًا (مش بيستنى التلفزيون يفتح)، والنص بيتبعت للتلفزيون يبحث بيه */
+            fun startVoice() {
+                voice?.stop()
+                voice = PadVoice(act, { t -> say(t) }) { q ->
+                    say("📺 بحث: $q", 0xFF66BB6A.toInt())
+                    Thread {
+                        val ok = try { RemoteClient.ensureConnected(act.applicationContext, 6000L) && RemoteClient.postJson("/type", org.json.JSONObject().put("text", q).put("search", true)).first == 200 } catch (_: Throwable) { false }
+                        act.runOnUiThread { if (!ok) say("⚠ ما قدرتش أبعت البحث للتلفزيون", 0xFFFFB74D.toInt()) }
+                    }.also { it.isDaemon = true }.start()
+                }.also { it.start() }
+            }
             fun safe(tag: String, fn: () -> Unit) { try { fn() } catch (e: Throwable) { LogStore.err(tag, e) } }
 
             /** دوسة عادية، أو (repeat=true) دوسة بتتكرر وإنت ماسك */
@@ -287,17 +325,11 @@ object ControllerPad {
                 setPadding(dp(24), dp(36), dp(24), dp(28))
             }
 
-            // ── شريط الحالة + 🎤 بحث صوتي (صغير فوق) ──
+            // ── شريط الحالة (v679: زرار 🎤 اتشال — بقى ضغطة طويلة على OK) ──
             val top = android.widget.LinearLayout(act).apply { orientation = android.widget.LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             val st = TextView(act).apply { text = "📺 بتوصّل…"; textSize = 14f; setTextColor(0xFFB0BEC5.toInt()); gravity = Gravity.CENTER_VERTICAL }
+            stRef = st
             top.addView(st, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
-            val mic = FrameLayout(act).apply {
-                contentDescription = "بحث صوتي"
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFFE53935.toInt()) }
-            }
-            mic.addView(PadIcon(act, "mic"), FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
-            bind(mic, false) { RemoteClient.cmd("mic") }
-            top.addView(mic, android.widget.LinearLayout.LayoutParams(dp(40), dp(40)))
             col.addView(top, android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
             // ── التبديل: أزرار الاتجاهات | لوحة اللمس ──
@@ -341,9 +373,10 @@ object ControllerPad {
             okB.addView(TextView(act).apply { text = "موافق"; textSize = 17f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; includeFontPadding = false },
                 android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
             bind(okB, false) { sendKey("ok") }
+            okB.setOnLongClickListener { okB.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); startVoice(); true }   // (v679) ضغطة واحدة = موافق · ضغطة طويلة = ميكروفون
             dpad.addView(okB, FrameLayout.LayoutParams(dp(69), dp(69), Gravity.CENTER))
 
-            val joy = JoystickView(act) { k -> sendKey(k) }
+            val joy = JoystickView(act, { k -> sendKey(k) }, { startVoice() })
             padBox.addView(dpad, FrameLayout.LayoutParams(padSize, padSize, Gravity.CENTER))
             padBox.addView(joy, FrameLayout.LayoutParams(padSize, padSize, Gravity.CENTER))
 
@@ -366,14 +399,14 @@ object ControllerPad {
                 card("الإعدادات", "gear", 0xFF3B8DFF.toInt(), 0xFF1D4ED8.toInt()) { RemoteClient.cmd("open_settings") }
             ), android.widget.LinearLayout.LayoutParams(-1, -2))
 
-            // ── صف: رجوع · الرئيسية · المداخل (من اليمين) ──
+            // ── صف: رجوع · الرئيسية · آخر المشغّل (من اليمين) ──
             col.addView(row(
-                card("المداخل", "inputs", 0xFF7C4DBB.toInt(), 0xFF5B3A9B.toInt(), dashed = true) { sendKey("inputs") },
+                card("آخر المشغّل", "recent", 0xFF7C4DBB.toInt(), 0xFF5B3A9B.toInt(), fs = 14f) { RecentPicker.show(act) },   // (v678) مكان «المداخل»: قايمتين جنب بعض (موبايلي | التلفزيون)
                 card("الرئيسية", "home", 0xFF0FA3B1.toInt(), 0xFF0B7285.toInt()) { sendKey("home") },
                 card("رجوع", "back", 0xFFF97316.toInt(), 0xFFC2410C.toInt()) { sendKey("back") }
             ), android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
-            // ── (v672) سلايدر الصوت بالعرض (شريط رفيع فوق صف الصوت) — اسحب يمين = أعلى، شمال = أوطى ──
+            // ── (v672) سلايدر الصوت بالعرض (شريط رفيع فوق صف الصوت) — (v678) اسحب شمال = أعلى، يمين = أوطى ──
             val volBar = VolumeBar(act) { p -> RemoteClient.setVolume(p) }
             col.addView(volBar, android.widget.LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(12) })
             val volSync = object : Runnable {   // لو الصوت اتغيّر من ريموت التلفزيون نفسه: السلايدر يلحق (إلا وإنت ماسكه)
@@ -392,10 +425,10 @@ object ControllerPad {
                 card("خفض الصوت", "vol_minus", 0xFF16A068.toInt(), 0xFF0F7A4F.toInt(), repeat = true) { RemoteClient.cmd("vol_down") }
             ), android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
-            // ── صف: تشغيل · إيقاف مؤقت · قناة + · قناة − (من اليمين) ──
+            // ── صف: تشغيل · إيقاف مؤقت · يوتيوب · متصفح (من اليمين) ──
             col.addView(row(
-                card("قناة −", "ch_down", 0xFF5560B8.toInt(), 0xFF3F4A9E.toInt(), dashed = true, fs = 14f) { sendKey("ch_down") },
-                card("قناة +", "ch_up", 0xFF5560B8.toInt(), 0xFF3F4A9E.toInt(), dashed = true, fs = 14f) { sendKey("ch_up") },
+                card("متصفح", "globe", 0xFF0EA5E9.toInt(), 0xFF0369A1.toInt(), fs = 14f) { d.dismiss(); openOnPhone(act, false) },   // (v678) مكان قناة −
+                card("يوتيوب", "youtube", 0xFFE53935.toInt(), 0xFFB71C1C.toInt(), fs = 14f) { d.dismiss(); openOnPhone(act, true) },   // (v678) مكان قناة +
                 card("إيقاف مؤقت", "pause", 0xFFD99A12.toInt(), 0xFFB45309.toInt(), fs = 14f) { sendKey("pause") },
                 card("تشغيل", "play", 0xFF14A58A.toInt(), 0xFF0F766E.toInt(), fs = 14f) { sendKey("play") }
             ), android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
@@ -406,7 +439,7 @@ object ControllerPad {
             var connectFn: () -> Unit = {}
 
             d.setContentView(root)
-            d.setOnDismissListener { hh.removeCallbacksAndMessages(null); try { onClose?.invoke() } catch (_: Throwable) {} }
+            d.setOnDismissListener { try { voice?.stop() } catch (_: Throwable) {}; hh.removeCallbacksAndMessages(null); try { onClose?.invoke() } catch (_: Throwable) {} }
             d.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             d.show()
 
@@ -423,12 +456,29 @@ object ControllerPad {
             connectFn()
         } catch (e: Throwable) { LogStore.err("ControllerPad:show", e) }
     }
+
+    /**
+     * (v678) يوتيوب / المتصفح بتوع الموبايل: بتدوّر وتختار على الموبايل والفيديو بيتشغّل على التلفزيون.
+     * لو وضع التلفزيون مش شغّال وفي تلفزيون متصل بنشغّله هنا (كل الإرسال في التطبيق بيعدّي على PlayTarget.enabled()).
+     */
+    fun openOnPhone(act: Activity, youtube: Boolean) {
+        try {
+            try { RemoteClient.init(act) } catch (_: Throwable) {}
+            if (!PlayTarget.enabled()) {
+                if (RemoteClient.lastTv() != null) { Cfg.put(PlayTarget.KEY, "1"); try { TvModeFab.refresh() } catch (_: Throwable) {} }
+                else Notice.show(act, "📺 مفيش تلفزيون متصل — الفيديو هيتشغّل على الموبايل", 3600L)
+            }
+            val i = if (youtube) Intent(act, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("tab", "youtube")
+                    else Intent(act, BrowserActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            act.startActivity(i)
+        } catch (e: Throwable) { LogStore.err("ControllerPad:openOnPhone", e) }
+    }
 }
 
 
 
 
-/** (v672) سلايدر صوت أفقي رفيع: اسحب يمين يعلّي وشمال يوطّي. onChange(0..100) متخفّفة أثناء السحب وعند الرفع */
+/** (v672) سلايدر صوت أفقي رفيع — (v678) معكوس: اسحب شمال يعلّي ويمين يوطّي. onChange(0..100) متخفّفة أثناء السحب وعند الرفع */
 class VolumeBar(ctx: Context, private val onChange: (Int) -> Unit) : View(ctx) {
     private val den = resources.displayMetrics.density
     private val pBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0xFF14203A.toInt() }
@@ -446,9 +496,9 @@ class VolumeBar(ctx: Context, private val onChange: (Int) -> Unit) : View(ctx) {
 
     private fun left() = 46f * den
     private fun right() = width - 50f * den
-    private fun fromX(x: Float): Int {
+    private fun fromX(x: Float): Int {   // (v678) الاتجاه معكوس: شمال = أعلى، يمين = أوطى
         val l = left(); val r = right()
-        return Math.round(((x - l) / (r - l).coerceAtLeast(1f)).coerceIn(0f, 1f) * 100f)
+        return Math.round((1f - ((x - l) / (r - l).coerceAtLeast(1f)).coerceIn(0f, 1f)) * 100f)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -471,12 +521,205 @@ class VolumeBar(ctx: Context, private val onChange: (Int) -> Unit) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat(); val cy = h / 2f
         rect.set(den, den, w - den, h - den); c.drawRoundRect(rect, 22f * den, 22f * den, pBg); c.drawRoundRect(rect, 22f * den, 22f * den, pStroke)
-        c.drawText(if (value == 0) "🔇" else "🔊", 24f * den, cy + 5f * den, pTxt)
-        c.drawText(value.toString(), w - 25f * den, cy + 5f * den, pTxt)
+        c.drawText("🔊", 24f * den, cy + 5f * den, pTxt)   // (v678) طرف الصوت العالي = شمال
+        c.drawText(if (value == 0) "🔇" else value.toString(), w - 25f * den, cy + 5f * den, pTxt)
         val l = left(); val r = right(); val th = 10f * den
         rect.set(l, cy - th / 2, r, cy + th / 2); c.drawRoundRect(rect, th / 2, th / 2, pTrack)
-        val kx = l + (r - l) * value / 100f
-        rect.set(l, cy - th / 2, kx, cy + th / 2); c.drawRoundRect(rect, th / 2, th / 2, pFill)
+        val kx = l + (r - l) * (100 - value) / 100f
+        rect.set(kx, cy - th / 2, r, cy + th / 2); c.drawRoundRect(rect, th / 2, th / 2, pFill)
         c.drawCircle(kx, cy, if (dragging) 13f * den else 10f * den, pKnob)
     }
+}
+
+
+/**
+ * (v678) «آخر المشغّل»: قايمتين جنب بعض — آخر فيديوهات اتشغّلت على الموبايل (يمين) وآخر فيديوهات اتشغّلت على التلفزيون (شمال).
+ * دوسة على أي فيديو منهم = يتشغّل على التلفزيون: فيديو الموبايل بيتبعت (ملف محلي ← التلفزيون يسحبه، لينك/يوتيوب ← يتفتح عليه)،
+ * وفيديو التلفزيون بيتفتح عنده بنفس دوسة رئيسية التلفزيون (/recent/play).
+ */
+object RecentPicker {
+    private class Item(val id: String, val title: String, val pos: Double, val dur: Double, val yt: Boolean, val local: Boolean, val rec: Recent?)
+
+    fun show(act: Activity) {
+        try {
+            try { RemoteClient.init(act) } catch (_: Throwable) {}
+            val dm = act.resources.displayMetrics
+            fun dp(v: Int) = (v * dm.density).toInt()
+            fun dpf(v: Float) = v * dm.density
+            val d = Dialog(act, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+            val root = LinearLayout(act).apply {
+                orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_LTR
+                setBackgroundColor(0xFF0F1830.toInt()); setPadding(dp(12), dp(34), dp(12), dp(12))
+            }
+            // ── الراس: العنوان + ✕ ──
+            val head = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val close = TextView(act).apply {
+                text = "✕"; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; contentDescription = "إغلاق"
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFF1E2F4D.toInt()) }
+                setOnClickListener { d.dismiss() }
+            }
+            head.addView(close, LinearLayout.LayoutParams(dp(40), dp(40)))
+            head.addView(TextView(act).apply {
+                text = "🕘 آخر المشغّل"; textSize = 19f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                typeface = android.graphics.Typeface.DEFAULT_BOLD; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            head.addView(View(act), LinearLayout.LayoutParams(dp(40), dp(40)))   // توازن مع ✕
+            root.addView(head, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+
+            // ── العمودين (شمال: التلفزيون · يمين: الموبايل) ──
+            val cols = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR }
+            fun column(title: String, color: Int): Triple<LinearLayout, LinearLayout, TextView> {
+                val box = LinearLayout(act).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dpf(18f); setColor(0xFF14203A.toInt()); setStroke(dp(1), 0xFF2B3C60.toInt()) }
+                    setPadding(dp(6), dp(8), dp(6), dp(6))
+                }
+                box.addView(TextView(act).apply {
+                    text = title; textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(0, dp(7), 0, dp(7))
+                    background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dpf(12f); setColor(color) }
+                }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+                val status = TextView(act).apply { textSize = 13f; setTextColor(0xFFB0BEC5.toInt()); gravity = Gravity.CENTER; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(dp(4), dp(10), dp(4), dp(10)) }
+                val list = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
+                list.addView(status, LinearLayout.LayoutParams(-1, -2))
+                val sv = ScrollView(act).apply { isFillViewport = false; overScrollMode = View.OVER_SCROLL_NEVER; addView(list, FrameLayout.LayoutParams(-1, -2)) }
+                box.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
+                return Triple(box, list, status)
+            }
+            val (tvBox, tvList, tvStatus) = column("📺 على التلفزيون", 0xFF2563EB.toInt())
+            val (phBox, phList, phStatus) = column("📱 على موبايلي", 0xFF0F766E.toInt())
+            cols.addView(tvBox, LinearLayout.LayoutParams(0, -1, 1f).apply { rightMargin = dp(5) })
+            cols.addView(phBox, LinearLayout.LayoutParams(0, -1, 1f).apply { leftMargin = dp(5) })
+            root.addView(cols, LinearLayout.LayoutParams(-1, 0, 1f))
+
+            fun row(itm: Item, onTap: () -> Unit): View {
+                val r = LinearLayout(act).apply {
+                    orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+                    background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dpf(12f); setColor(0xFF1B2C47.toInt()) }
+                    setPadding(dp(9), dp(8), dp(9), dp(8))
+                    setOnClickListener { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); try { onTap() } catch (e: Throwable) { LogStore.err("RecentPicker:tap", e) } }
+                }
+                val ic = if (itm.yt) "▶ " else if (itm.local) "🎞 " else "🌐 "
+                r.addView(TextView(act).apply { text = ic + itm.title; textSize = 13.5f; setTextColor(Color.WHITE); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; typeface = android.graphics.Typeface.DEFAULT_BOLD })
+                val sub = if (itm.pos > 1.0) "وقف عند " + PlayerLogic.clock((itm.pos * 1000).toLong()) + (if (itm.dur > 1.0) " من " + PlayerLogic.clock((itm.dur * 1000).toLong()) else "") else ""
+                if (sub.isNotEmpty()) r.addView(TextView(act).apply { text = sub; textSize = 11f; setTextColor(0xFF8FA0BC.toInt()) }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
+                val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
+                r.layoutParams = lp
+                return r
+            }
+
+            // ── قايمة الموبايل: recent.json بتاع الموبايل نفسه ──
+            val phone: List<Item> = try {
+                Recents.parse(java.io.File(act.filesDir, "recent.json").readText()).take(40)
+                    .map { Item(it.id, it.title.ifBlank { Recents.titleOf(it.id) }, it.posSec, it.durSec, Recents.ytIdOf(it) != null, it.uri.isNotEmpty(), it) }
+            } catch (_: Throwable) { emptyList() }
+            fun playPhone(r: Recent) {
+                val yid = Recents.ytIdOf(r)
+                val spec = when {
+                    r.uri.isNotEmpty() -> MediaSpec(uri = r.uri, title = r.title)
+                    yid != null -> MediaSpec(ytid = yid, title = r.title, how = Links.VIDEO)
+                    else -> MediaSpec(url = r.url, title = r.title, startMs = (r.posSec * 1000).toLong(), how = Links.VIDEO)
+                }
+                if (PlayTarget.force(act, spec)) d.dismiss() else Notice.show(act, "📺 ما اتبعتش للتلفزيون", 3000L)
+            }
+            if (phone.isEmpty()) phStatus.text = "مفيش فيديوهات اتشغّلت على الموبايل لسه"
+            else { phList.removeView(phStatus); phone.forEach { it0 -> phList.addView(row(it0) { it0.rec?.let { rr -> playPhone(rr) } }) } }
+
+            d.setContentView(root)
+            d.show()
+
+            // ── قايمة التلفزيون: من التلفزيون نفسه (/recent) ──
+            tvStatus.text = "⏳ بجيب من التلفزيون…"
+            Thread {
+                var items: List<Item>? = null; var err: String? = null
+                try {
+                    if (!RemoteClient.ensureConnected(act.applicationContext, 8000L)) err = "⚠ مش متصل بالتلفزيون"
+                    else {
+                        val (c, b) = RemoteClient.getText("/recent", 10000)
+                        if (c == 200) {
+                            val a = org.json.JSONObject(b).optJSONArray("items") ?: org.json.JSONArray()
+                            items = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
+                                Item(it.optString("id"), it.optString("title"), it.optDouble("pos", 0.0), it.optDouble("dur", 0.0), it.optBoolean("yt"), it.optBoolean("local"), null)
+                            }.filter { it.id.isNotEmpty() }
+                        } else err = if (c == 404) "⚠ التلفزيون محتاج التحديث الجديد عشان القايمة دي" else "⚠ فشل ($c)"
+                    }
+                } catch (e: Throwable) { LogStore.err("RecentPicker:tv", e); err = "⚠ حصلت مشكلة" }
+                act.runOnUiThread {
+                    if (!d.isShowing) return@runOnUiThread
+                    val l = items
+                    when {
+                        l == null -> tvStatus.text = err ?: "⚠ حصلت مشكلة"
+                        l.isEmpty() -> tvStatus.text = "مفيش فيديوهات اتشغّلت على التلفزيون لسه"
+                        else -> {
+                            tvList.removeView(tvStatus)
+                            l.forEach { it0 ->
+                                tvList.addView(row(it0) {
+                                    Thread {
+                                        val ok = try { RemoteClient.postJson("/recent/play", org.json.JSONObject().put("id", it0.id)).first == 200 } catch (_: Throwable) { false }
+                                        act.runOnUiThread { if (ok) d.dismiss() else Notice.show(act, "⚠ ما قدرتش أشغّله على التلفزيون", 3000L) }
+                                    }.also { t -> t.isDaemon = true }.start()
+                                })
+                            }
+                        }
+                    }
+                }
+            }.also { it.isDaemon = true }.start()
+
+        } catch (e: Throwable) { LogStore.err("RecentPicker:show", e) }
+    }
+}
+
+
+/**
+ * (v679) تعرّف صوتي على الموبايل نفسه (SpeechRecognizer) لبحث التلفزيون.
+ * المشكلة القديمة: الزرار كان بيبعت للتلفزيون يفتح التسجيل عنده، والتلفزيون بياخد وقت لحد ما يفتح، فالكلام بتاعك (على الموبايل) كان بيضيع والتسجيل بيتقفل.
+ * دلوقتي التسجيل بيبدأ فورًا على الموبايل، ولما تخلّص كلام بيتبعت النص للتلفزيون (/type بـ search=true) فيفتح البحث بيه.
+ * بنطوّل مهلة الصمت عشان التسجيل ما يتقفلش وإنت لسه بتفكّر.
+ */
+class PadVoice(private val act: Activity, private val onState: (String) -> Unit, private val onText: (String) -> Unit) {
+    private var sr: android.speech.SpeechRecognizer? = null
+    private var done = false
+
+    fun start() {
+        try {
+            if (!android.speech.SpeechRecognizer.isRecognitionAvailable(act)) { onState("⚠ مفيش خدمة تعرّف على الصوت على الموبايل (محتاج تطبيق Google)"); return }
+            if (act.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                try { act.requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 92) } catch (_: Throwable) {}
+                onState("🎤 اسمح بالميكروفون وبعدها اضغط OK ضغطة طويلة تاني"); return
+            }
+            val r = android.speech.SpeechRecognizer.createSpeechRecognizer(act); sr = r
+            r.setRecognitionListener(object : android.speech.RecognitionListener {
+                override fun onReadyForSpeech(p: android.os.Bundle?) { onState("🎤 اتكلّم دلوقتي…") }
+                override fun onBeginningOfSpeech() { onState("🎤 سامعك…") }
+                override fun onRmsChanged(v: Float) {}
+                override fun onBufferReceived(b: ByteArray?) {}
+                override fun onEndOfSpeech() { onState("⏳ بفهم الكلام…") }
+                override fun onEvent(t: Int, p: android.os.Bundle?) {}
+                override fun onPartialResults(p: android.os.Bundle?) {
+                    val t = p?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
+                    if (!t.isNullOrEmpty() && !done) onState("🎤 $t")
+                }
+                override fun onError(e: Int) {
+                    if (done) return
+                    onState(if (e == android.speech.SpeechRecognizer.ERROR_NO_MATCH || e == android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT) "⚠ ما سمعتش حاجة — اضغط OK ضغطة طويلة تاني" else "⚠ البحث الصوتي فشل (كود $e)")
+                }
+                override fun onResults(b: android.os.Bundle?) {
+                    if (done) return
+                    val q = b?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
+                    if (q.isNullOrEmpty()) { onState("⚠ ما سمعتش حاجة — اضغط OK ضغطة طويلة تاني"); return }
+                    done = true; onText(q)
+                }
+            })
+            r.startListening(Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toLanguageTag())
+                putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+            })
+        } catch (e: Throwable) { LogStore.err("PadVoice:start", e); onState("⚠ البحث الصوتي مش متاح") }
+    }
+
+    fun stop() { done = true; try { sr?.cancel(); sr?.destroy() } catch (_: Throwable) {}; sr = null }
 }

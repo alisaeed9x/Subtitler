@@ -9,6 +9,48 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:scaleType="fitXY" />
+    <!-- (v679) عدّاد الصلاة القادمة (ساعات:دقايق:ثواني): النظام نفسه بيعدّه تنازليًا كل ثانية. مكانه بيتحدد من الكود (setViewPadding).
+         A = الرقم كامل بالأبيض · B = نفس الرقم بلون تاني جوه إطار عرضه ثانيتين بيقص كل حاجة ما عدا الثواني (الأحرف monospace فعرضها ثابت) -->
+    <FrameLayout
+        android:id="@+id/w_p_cd_wrap"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+        <FrameLayout
+            android:layout_width="88dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|left">
+            <Chronometer
+                android:id="@+id/w_p_cd_a"
+                android:layout_width="88dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|right"
+                android:gravity="right"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:textSize="18dp"
+                android:singleLine="true"
+                android:includeFontPadding="false"
+                android:textColor="#FFFFFFFF" />
+            <FrameLayout
+                android:layout_width="25dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|right">
+                <Chronometer
+                    android:id="@+id/w_p_cd_b"
+                    android:layout_width="88dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top|right"
+                    android:gravity="right"
+                    android:fontFamily="monospace"
+                    android:textStyle="bold"
+                    android:textSize="18dp"
+                    android:singleLine="true"
+                    android:includeFontPadding="false"
+                    android:textColor="#FF5EEAD4" />
+            </FrameLayout>
+        </FrameLayout>
+    </FrameLayout>
     <Chronometer
         android:id="@+id/w_p_age"
         android:layout_width="wrap_content"

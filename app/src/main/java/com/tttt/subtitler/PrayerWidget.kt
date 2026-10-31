@@ -70,8 +70,28 @@ class PrayerWidget : AppWidgetProvider() {
             rv.setInt(root, "setBackgroundColor", 0)
             val (w, h) = sizeOf(c, mgr, id)
             val dark = (c.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-            val bmp = PrayerCard.render(c, w, h, data, dark, System.currentTimeMillis())
+            val geo = PrayerCard.Geo()
+            val bmp = PrayerCard.render(c, w, h, data, dark, System.currentTimeMillis(), geo)
             rv.setImageViewBitmap(WidgetHub.rid(c, "id", "w_p_img"), bmp)
+            // (v679) عدّاد الصلاة القادمة: ساعات:دقايق:ثواني بيعدّه النظام كل ثانية (Chronometer تنازلي) فوق الكارت؛ الثواني بلون مختلف
+            val cdWrap = WidgetHub.rid(c, "id", "w_p_cd_wrap")
+            if (geo.ok) {
+                val den = c.resources.displayMetrics.density
+                val hrs = geo.leftMs / 3_600_000L
+                val chars = if (hrs >= 10L) 8 else if (hrs >= 1L) 7 else 5
+                val textW = chars * 10.8f                      // monospace 18dp ← حرف = 10.8dp
+                val sx = w.toFloat() / geo.wDp; val sy = h.toFloat() / geo.hDp   // الكارت بيتمدّد fitXY على مقاس الويدجت الفعلي
+                val left = ((geo.cx + textW / 2f - 88f) * sx).coerceAtLeast(0f)
+                val top = (geo.top * sy).coerceAtLeast(0f)
+                rv.setViewVisibility(cdWrap, android.view.View.VISIBLE)
+                rv.setViewPadding(cdWrap, (left * den).toInt(), (top * den).toInt(), 0, 0)
+                val base = SystemClock.elapsedRealtime() + geo.leftMs
+                for (nm in arrayOf("w_p_cd_a", "w_p_cd_b")) {
+                    val cid = WidgetHub.rid(c, "id", nm)
+                    try { rv.setChronometerCountDown(cid, true) } catch (_: Throwable) {}
+                    rv.setChronometer(cid, base, "%s", true)
+                }
+            } else rv.setViewVisibility(cdWrap, android.view.View.GONE)
             // (v666) مؤشر «الودجت شغّالة ولا فاصلة»: عدّاد ثواني بيعدّه النظام نفسه (مش تطبيقنا) من آخر تحديث. شغّالة = بيرجع لـ 00:00 كل دقيقة تقريبًا؛ لو عدّى دقيقتين ← التحديث واقف (دوس على الودجت)
             val age = WidgetHub.rid(c, "id", "w_p_age")
             rv.setViewVisibility(age, if (h >= 150) android.view.View.VISIBLE else android.view.View.GONE)
@@ -283,7 +303,10 @@ internal object PrayerCard {
         cv.drawRect(0f, 0f, w, h, p)
     }
 
-    fun render(c: Context, wIn: Int, hIn: Int, data: PrayerTimes.Data?, dark: Boolean, now: Long): Bitmap {
+    /** (v679) مكان العدّاد فوق الكارت (بالـdp على مقاس الصورة): المركز الأفقي + أعلى العدّاد + المتبقي بالمللي + مقاس الصورة */
+    class Geo { var ok = false; var cx = 0f; var top = 0f; var leftMs = 0L; var wDp = 1f; var hDp = 1f }
+
+    fun render(c: Context, wIn: Int, hIn: Int, data: PrayerTimes.Data?, dark: Boolean, now: Long, geo: Geo? = null): Bitmap {
         val wDp = wIn.coerceIn(110, 700).toFloat()
         val hDp = hIn.coerceIn(70, 700).toFloat()
         var d = c.resources.displayMetrics.density
@@ -421,13 +444,14 @@ internal object PrayerCard {
         val f = (ph / 66f).coerceIn(0.72f, 1.5f)
         val nameS = RLM + PrayerTimes.ar(next.first)
         val timeS = hm12(times[next.first] ?: "")
-        val leftS = RLM + "متبقي " + leftHM(left)
+        val clkS = RLM + "الساعة " + timeS
         val showLabel = tall && ph >= 84f
         val labelH = if (showLabel) 13f else 0f
         val nameSz = (if (showLabel) 22f else 12.5f) * f
-        val timeSz = (if (showLabel) 22f else 23f) * f
-        val leftSz = 10.5f * f
-        val total = labelH + nameSz * 1.1f + timeSz * 1.05f + leftSz * 1.25f
+        val cdH = 22f                                   // (v679) العدّاد ثابت 18dp (Chronometer) ← ارتفاعه ~22
+        val clkSz = 10.5f * f.coerceIn(0.9f, 1.3f)
+        val showClk = ph >= 58f
+        val total = labelH + nameSz * 1.1f + cdH + (if (showClk) clkSz * 1.35f else 0f)
         var y = py0 + (ph - total) / 2f
         if (showLabel) {
             val lp = txt(0xFFD5DEEE.toInt(), 10.5f, false, Paint.Align.RIGHT)
@@ -440,14 +464,14 @@ internal object PrayerCard {
         val iconR = nameSz * 0.52f
         prayerIcon(cv, next.first, prx - iconR, y - nameSz * 0.34f, iconR, GOLD)
         cv.drawText(nameS, prx - iconR * 2f - 5f, y, np2)
-        y += timeSz * 1.05f
-        val tp2 = txt(WHITE, timeSz, true, Paint.Align.CENTER)
-        fit(tp2, timeS, pw - 16f)
-        cv.drawText(timeS, pcx, y, tp2)
-        y += leftSz * 1.25f
-        val lp2 = txt(0xFFE3E9F5.toInt(), leftSz, false, Paint.Align.CENTER)
-        fit(lp2, leftS, pw - 16f)
-        cv.drawText(leftS, pcx, y, lp2)
+        // (v679) «المتبقي» بقى هو الرقم الكبير (عدّاد ساعات:دقايق:ثواني بيتحط فوق الصورة من PrayerWidget)، والساعة بقت سطر صغير تحته
+        val cdTop = y + nameSz * 0.15f
+        if (geo != null) { geo.ok = left > 0L; geo.cx = pcx; geo.top = cdTop; geo.leftMs = left; geo.wDp = wDp; geo.hDp = hDp }
+        if (showClk) {
+            val cp2 = txt(0xFFE3E9F5.toInt(), clkSz, false, Paint.Align.CENTER)
+            fit(cp2, clkS, pw - 16f)
+            cv.drawText(clkS, pcx, cdTop + cdH + clkSz * 1.05f, cp2)
+        }
 
         cv.restore()
         return bmp

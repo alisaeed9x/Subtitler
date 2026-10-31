@@ -10,7 +10,7 @@ android {
     }
     namespace = "com.tttt.subtitler"
     compileSdk = 36
-    defaultConfig { applicationId = "com.tttt.joyboy"; minSdk = 26; targetSdk = 34; versionCode = (System.getenv("JB_VERSION_CODE")?.toIntOrNull() ?: (System.currentTimeMillis() / 60000L).toInt()); versionName = "6.77"   // (v656) versionCode = وقت البناء بالدقايق: أي بيلد (حتى من سورس قديم) كوده أعلى من اللي قبله ← أندرويد يقبل التثبيت فوق الأحدث من غير حذف ولا فقد بيانات (نفس الـkeystore)
+    defaultConfig { applicationId = "com.tttt.joyboy"; minSdk = 26; targetSdk = 34; versionCode = (System.getenv("JB_VERSION_CODE")?.toIntOrNull() ?: (System.currentTimeMillis() / 60000L).toInt()); versionName = "6.79"   // (v656) versionCode = وقت البناء بالدقايق: أي بيلد (حتى من سورس قديم) كوده أعلى من اللي قبله ← أندرويد يقبل التثبيت فوق الأحدث من غير حذف ولا فقد بيانات (نفس الـkeystore)
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild { cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release"); abiFilters += listOf("arm64-v8a", "armeabi-v7a") } }   // (v253) whisper.cpp + (v307) substem: arm64 بس (armeabi-v7a من غير أوفلاين)   // (v181) معماريات الموبايل بس: بتصغّر مكتبة onnxruntime
     }
